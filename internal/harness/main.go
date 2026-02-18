@@ -1,9 +1,11 @@
 // Package harness implements the guest-side agent harness that runs as PID 1
 // inside Aegis microVMs.
 //
-// The harness connects outbound to the host's RPC listener via TSI (Transparent
-// Socket Impersonation) and handles JSON-RPC 2.0 commands. TSI transparently
-// routes AF_INET connections from the guest through vsock to the host.
+// The harness connects outbound to the host's RPC listener using a plain TCP
+// dial. In libkrun's standard mode, TSI (Transparent Socket Impersonation)
+// intercepts the guest's AF_INET connect() syscall and tunnels it to the host,
+// so 127.0.0.1:PORT from inside the VM reaches the host's actual localhost.
+// The harness itself has no transport-specific code — it just dials TCP.
 //
 // Build: GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o aegis-harness ./internal/harness
 package harness
