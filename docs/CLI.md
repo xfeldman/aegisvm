@@ -12,6 +12,25 @@ Run `aegis help` to print top-level usage.
 
 ---
 
+## Aegis Is Not Docker
+
+Aegis uses OCI images for the **filesystem only**. If you are coming from Docker,
+these differences matter:
+
+| Docker concept | Aegis behavior |
+|----------------|----------------|
+| `ENTRYPOINT` | Ignored. PID 1 is always `aegis-harness`. |
+| `CMD` | Ignored. The command comes from `aegis run -- CMD` or `aegis app create -- CMD`. |
+| `ENV` | Ignored. Environment is set by secrets + RPC params. |
+| `EXPOSE` | Ignored. Ports are declared via `--expose` flag or kit manifest. |
+| `VOLUME` | Ignored. Writable paths are fixed (`/workspace`, `/tmp`, `/run`, `/var`). |
+
+One server process per VM. No `docker compose`. No restart supervisor -- if your
+process exits, the instance stops. See `docs/AGENT_CONVENTIONS.md` for the full
+guest environment contract.
+
+---
+
 ## Platform Commands
 
 ### aegis up
@@ -88,7 +107,7 @@ aegis doctor
 Checks for the presence of required tools and libraries:
 
 - Go
-- krunvm (libkrun CLI)
+- krunvm (optional -- libkrun CLI, not used by Aegis directly)
 - libkrun shared library (`/opt/homebrew/lib/libkrun.dylib`, `/usr/local/lib/libkrun.dylib`, or `/usr/lib/libkrun.so`)
 - e2fsprogs / `mkfs.ext4`
 - Daemon status
@@ -107,7 +126,7 @@ Aegis Doctor
 ============
 
 Go:       installed
-krunvm:   found (libkrun CLI available)
+krunvm:   found (optional, not used by Aegis)
 libkrun:  found at /opt/homebrew/lib/libkrun.dylib
 e2fsprogs: found
 

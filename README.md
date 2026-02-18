@@ -109,49 +109,48 @@ make test
 Integration tests (boots real VMs, requires built binaries + base rootfs installed at `~/.aegis/base-rootfs`):
 
 ```bash
-make integration          # full suite (~90s, includes pause/resume)
-make integration SHORT=1  # skip pause/resume test (~17s)
+make integration          # full suite (includes pause/resume)
+make integration SHORT=1  # skip pause/resume test
+make test-m3              # M3 + conformance tests only
 ```
 
-The integration suite manages the daemon lifecycle automatically — it starts aegisd before tests and stops it after. Tests cover:
+The integration suite manages the daemon lifecycle automatically. Tests cover M0 (task mode), M1 (serve + pause/resume), M2 (images + apps + releases), and M3 (secrets + kits + conformance).
 
-**M0 — Task mode:**
-- Echo command output
-- Non-zero exit code propagation
-- Stderr streaming
-- Multiline output (multiple log lines delivered correctly)
-- Python available in VM
-- Daemon status reporting
-
-**M1 — Serve mode:**
-- HTTP server in VM reachable via router on `:8099`
-- Multiple sequential requests succeed
-- Pause after 60s idle, resume on next request (SIGSTOP/SIGCONT)
-- Clean instance shutdown via API
-- Task mode still works after serve tests
-
-Tests are gated by `//go:build integration` so `go test ./...` skips them. Run explicitly via `make integration` or:
+Python SDK tests:
 
 ```bash
-go test -tags integration -v -count=1 -timeout 10m ./test/integration/
+cd sdk/python && python3 -m venv .venv && .venv/bin/pip install pytest
+.venv/bin/python -m pytest tests/ -v
 ```
+
+## Documentation
+
+- [Quickstart](docs/QUICKSTART.md) — zero to running agent in 5 minutes
+- [Agent Conventions](docs/AGENT_CONVENTIONS.md) — guest environment contract (filesystem, secrets, logging, signals)
+- [CLI Reference](docs/CLI.md) — complete command reference
+- [Router](docs/ROUTER.md) — app resolution, wake-on-connect, idle behavior
+- [Workspaces](docs/WORKSPACES.md) — persistent volumes, host paths, lifecycle
+- [Secrets](docs/SECRETS.md) — encryption, scopes, injection, threat model
+- [Kits](docs/KITS.md) — manifest schema, hooks, kit boundary
+- [Troubleshooting](docs/TROUBLESHOOTING.md) — common issues and fixes
 
 ## Specs
 
 - [Platform spec](specs/AEGIS_PLATFORM_SPEC.md) — architecture, lifecycle, APIs, security model
-- [Implementation kickoff](specs/IMPLEMENTATION_KICKOFF.md) — engineering decisions, milestones, M0 notes
+- [Implementation kickoff](specs/IMPLEMENTATION_KICKOFF.md) — engineering decisions, milestones, implementation notes
 - [Famiglia kit](specs/FAMIGLIA_KIT_SPEC.md) — team agents with chat and data integration
 - [OpenClaw kit](specs/OPENCLAW_KIT_SPEC.md) — multi-agent autonomous runtime
 
 ## Status
 
-**M1 complete.** Serve mode with pause/resume and wake-on-connect works end-to-end.
+**M3a complete.** Kits, secrets, conformance suite, agent conventions, SDK, and docs all shipped.
 
 | Milestone | Status | Adds |
 |---|---|---|
 | **M0** | **Done** | Boot + run. libkrun backend, VMM interface, harness, CLI. |
 | **M1** | **Done** | Serve mode, router with wake-on-connect, SIGSTOP/SIGCONT pause/resume, SQLite registry. |
-| M2 | Next | Releases, publishing, OCI images, overlays, workspace volumes. |
-| M3 | — | Kits, secrets, conformance test suite. |
-| M4 | — | Firecracker on Linux. Both backends pass conformance. |
+| **M2** | **Done** | Releases, publishing, OCI images, overlays, workspace volumes. |
+| **M3** | **Done** | Kits, secrets, conformance test suite. |
+| **M3a** | **Done** | Agent conventions, Python SDK, CLI docs, base images, examples. |
+| M4 | Next | Firecracker on Linux. Both backends pass conformance. |
 | M5 | — | Shared workspaces, network groups, warm pool, GC. |
