@@ -59,6 +59,10 @@ func run(cfg WorkerConfig) error {
 		return fmt.Errorf("krun_create_ctx failed: %d", ctxID)
 	}
 
+	// Note: we intentionally keep the implicit console enabled for future
+	// remote console support (aegis logs, aegis attach). The "Failed to set
+	// terminal to raw mode" warning when stdout isn't a TTY is harmless.
+
 	// Configure VM resources
 	ret := C.krun_set_vm_config(C.uint32_t(ctxID), C.uint8_t(cfg.VCPUs), C.uint32_t(cfg.MemoryMB))
 	if ret < 0 {
