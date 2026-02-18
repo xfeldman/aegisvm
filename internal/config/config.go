@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Config holds aegisd runtime configuration.
@@ -24,6 +25,18 @@ type Config struct {
 
 	// DefaultVCPUs is the default number of virtual CPUs.
 	DefaultVCPUs int
+
+	// RouterAddr is the address for the HTTP router (serve mode).
+	RouterAddr string
+
+	// DBPath is the path to the SQLite database.
+	DBPath string
+
+	// PauseAfterIdle is the duration after which an idle instance is paused (SIGSTOP).
+	PauseAfterIdle time.Duration
+
+	// TerminateAfterIdle is the duration after which a paused instance is terminated.
+	TerminateAfterIdle time.Duration
 }
 
 // DefaultConfig returns the default configuration.
@@ -33,12 +46,16 @@ func DefaultConfig() *Config {
 	execDir := executableDir()
 
 	return &Config{
-		DataDir:         filepath.Join(aegisDir, "data"),
-		BinDir:          execDir,
-		SocketPath:      filepath.Join(aegisDir, "aegisd.sock"),
-		BaseRootfsPath:  filepath.Join(aegisDir, "base-rootfs"),
-		DefaultMemoryMB: 512,
-		DefaultVCPUs:    1,
+		DataDir:            filepath.Join(aegisDir, "data"),
+		BinDir:             execDir,
+		SocketPath:         filepath.Join(aegisDir, "aegisd.sock"),
+		BaseRootfsPath:     filepath.Join(aegisDir, "base-rootfs"),
+		DefaultMemoryMB:    512,
+		DefaultVCPUs:       1,
+		RouterAddr:         "127.0.0.1:8099",
+		DBPath:             filepath.Join(aegisDir, "data", "aegis.db"),
+		PauseAfterIdle:     60 * time.Second,
+		TerminateAfterIdle: 20 * time.Minute,
 	}
 }
 

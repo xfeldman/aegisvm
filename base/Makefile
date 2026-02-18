@@ -14,7 +14,7 @@ SHELL := /bin/bash
 
 ROOTFS_DIR := rootfs
 HARNESS_BIN := ../bin/aegis-harness
-ALPINE_VERSION := 3.21
+BASE_IMAGE := python:3.12-alpine3.21
 ALPINE_ARCH := aarch64
 
 .PHONY: all rootfs ext4 clean
@@ -23,13 +23,13 @@ all: rootfs
 
 # Create rootfs directory from Alpine Docker image
 rootfs: $(HARNESS_BIN)
-	@echo "==> Building base rootfs (Alpine $(ALPINE_VERSION) $(ALPINE_ARCH))"
+	@echo "==> Building base rootfs ($(BASE_IMAGE) $(ALPINE_ARCH))"
 	@rm -rf $(ROOTFS_DIR)
 	@mkdir -p $(ROOTFS_DIR)
 
-	# Extract Alpine rootfs using Docker
-	@echo "==> Extracting Alpine rootfs..."
-	docker create --name aegis-rootfs-tmp --platform linux/arm64 alpine:$(ALPINE_VERSION) /bin/true
+	# Extract rootfs using Docker
+	@echo "==> Extracting rootfs from $(BASE_IMAGE)..."
+	docker create --name aegis-rootfs-tmp --platform linux/arm64 $(BASE_IMAGE) /bin/true
 	docker export aegis-rootfs-tmp | tar -C $(ROOTFS_DIR) -xf -
 	docker rm aegis-rootfs-tmp
 

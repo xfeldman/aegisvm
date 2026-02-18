@@ -785,3 +785,271 @@ aegis/
 ├── Makefile                        # Top-level build
 └── CLAUDE.md
 ```
+
+---
+
+## 8. M1 Implementation Notes
+
+**Documented after completing M1. These are design choices and corrections to §1.8, §1.9, §1.11 based on building serve mode against the M0 codebase and libkrun 1.17.4 on macOS ARM64.**
+
+### 8.1 Port Mapping via `krun_set_port_map`, Not Custom Tunneling
+
+**Original assumption (§1.11):** libkrun networking would need investigation; possibly insufficient for serve mode.
+
+**Reality:** libkrun's TSI has a port mapping API (`krun_set_port_map`) that controls exactly which guest listening ports are exposed on which host ports. Without calling it, all guest listening ports are exposed on the same port number on the host (which causes conflicts with multiple VMs). With explicit mappings, we get predictable, conflict-free host ports.
+
+**Solution:** At VM creation, aegisd allocates a random available host port per exposed guest port (bind `:0`, read the assigned port, close). These mappings are passed to the vmm-worker as `["8234:80"]` (host:guest). The worker calls `krun_set_port_map()` before `krun_start_enter()`.
+
+```
+aegisd                          vmm-worker                   Guest VM
+  │                                │                           │
+  ├─ allocate host port            │                           │
+  │  net.Listen(":0") → :8234     │                           │
+  │  close listener                │                           │
+  │                                │                           │
+  ├─ WorkerConfig.PortMap =        │                           │
+  │    ["8234:80"]                 │                           │
+  │                                │                           │
+  │                                ├─ krun_set_port_map()      │
+  │                                ├─ krun_start_enter()       │
+  │                                │                           │
+  │                                │                    python -m http.server 80
+  │                                │                    (listens on :80)
+  │                                │                           │
+  curl 127.0.0.1:8234 ──────────────────── TSI ──────────────► :80
+```
+
+The traffic path is standard TCP — no multiplexing, no custom tunneling. The router proxies to `127.0.0.1:{mapped_port}` and the request reaches the guest server transparently.
+
+This also means no `internal/network/` package was needed for M1. libkrun's built-in TSI + port mapping handles everything on macOS. The network package remains deferred to M4 (Firecracker TAP/bridge).
+
+### 8.2 Pause/Resume via SIGSTOP/SIGCONT, Not libkrun API
+
+**Original assumption (§1.5):** PauseVM/ResumeVM implemented via the VMM backend's native API.
+
+**Reality:** libkrun's C API does not expose pause/resume. But each VM is a vmm-worker subprocess (§7.1), and `SIGSTOP` freezes the entire process — vCPU threads, TSI networking, everything. `SIGCONT` resumes it. The guest doesn't know it was paused. RAM stays allocated. TSI port mappings survive.
+
+**Solution:**
+
+```go
+func (l *LibkrunVMM) PauseVM(h Handle) error {
+    return inst.cmd.Process.Signal(syscall.SIGSTOP)
+}
+
+func (l *LibkrunVMM) ResumeVM(h Handle) error {
+    return inst.cmd.Process.Signal(syscall.SIGCONT)
+}
+```
+
+This gives sub-second resume without any libkrun API changes. `Capabilities().Pause` is now `true` for the libkrun backend.
+
+This approach is macOS/libkrun-specific. Firecracker (M4) has native `Pause`/`Resume` in its API, so the FirecrackerVMM implementation will use the real thing. The VMM interface abstracts the difference — core doesn't know or care whether pause means SIGSTOP or a hypervisor-level vCPU halt.
+
+### 8.3 VMM Interface Extensions for Serve Mode
+
+**Two additions to the frozen VMM interface:**
+
+```go
+// In VMConfig (input to CreateVM):
+type PortExpose struct {
+    GuestPort int
+    Protocol  string  // "http", "tcp", "grpc"
+}
+
+VMConfig.ExposePorts []PortExpose  // new field
+
+// New method on VMM interface:
+HostEndpoints(h Handle) ([]HostEndpoint, error)
+
+type HostEndpoint struct {
+    GuestPort int
+    HostPort  int
+    Protocol  string
+}
+```
+
+`ExposePorts` tells the backend which guest ports to map. `HostEndpoints` returns the resolved mappings after `StartVM` completes (the backend allocates host ports). This keeps port allocation backend-specific — Firecracker might use different port forwarding mechanisms.
+
+The interface remains backward-compatible: `ExposePorts` is nil for task mode (no port mapping), and `HostEndpoints` returns an empty slice for VMs without exposed ports.
+
+### 8.4 Harness `startServer` RPC — Long-Lived Processes
+
+**New capability.** M0 harness only had `runTask` (block until process exits). Serve mode needs `startServer` — start a background process and keep it running.
+
+**Key differences from `runTask`:**
+
+| | `runTask` | `startServer` |
+|---|---|---|
+| Returns | After process exits | Immediately after process starts |
+| Process lifetime | Request-scoped | Lives until shutdown |
+| Readiness | N/A | Polls `readiness_port` via TCP connect |
+| Notification | None | `serverReady` or `serverFailed` |
+
+The harness now tracks server processes via a `serverTracker` and kills them all on shutdown. The readiness probe (`waitForPort`) does TCP connect attempts with 200ms backoff for up to 30 seconds, then sends a `serverReady` notification to the host.
+
+```json
+// Request
+{"jsonrpc":"2.0","method":"startServer","params":{"command":["python","-m","http.server","80"],"readiness_port":80},"id":1}
+
+// Immediate response (process started)
+{"jsonrpc":"2.0","result":{"pid":42},"id":1}
+
+// Async notification (port accepting connections)
+{"jsonrpc":"2.0","method":"serverReady","params":{"port":80}}
+```
+
+### 8.5 Lifecycle Manager — State Machine + Idle Timers
+
+**New package: `internal/lifecycle/manager.go`**
+
+The lifecycle manager owns all serve-mode instances and drives transitions:
+
+```
+STOPPED → STARTING → RUNNING ⇄ PAUSED → TERMINATED
+```
+
+Key design choices:
+
+**1. Idempotent `EnsureInstance(id)`** — the single entry point for the router. If stopped → boot. If paused → SIGCONT. If running → noop. If starting → wait. The router never needs to know the current state; it just calls `EnsureInstance` and gets back either success (instance is running) or an error.
+
+**2. Connection-counted idle** — the router calls `ResetActivity(id)` on each new connection and `OnConnectionClose(id)` when it ends. The idle timer only starts when active connections drop to zero. This prevents the VM from pausing while requests are in flight.
+
+**3. Two-stage idle shutdown:**
+
+| Timer | Default | Action |
+|---|---|---|
+| `PauseAfterIdle` | 60s | SIGSTOP the worker process |
+| `TerminateAfterIdle` | 20min | StopVM (kill process, free resources) |
+
+The pause timer starts when the last connection closes. If a new request arrives while paused, SIGCONT resumes in <100ms and the terminate timer is cancelled. If no request arrives for 20 minutes, the VM is terminated fully.
+
+**4. State change callbacks** — the manager fires `onStateChange(id, state)` on every transition. aegisd hooks this to persist state to the SQLite registry.
+
+### 8.6 Router — Simpler Than Spec
+
+**Original assumption (§1.8):** Path-based routing (`/app/{appId}/...`), WebSocket via `nhooyr.io/websocket`, per-protocol wake behavior matrix.
+
+**Reality for M1:** Single-instance routing. All traffic to `:8099` goes to the one active serve instance. No path parsing, no app ID resolution. This is correct for M1 — multi-app routing is an M2 concern.
+
+**Simplifications over the spec:**
+
+- **No external dependencies** — WebSocket upgrade handled via `net.Conn` hijack + bidirectional `io.Copy`, not `nhooyr.io/websocket`. Raw TCP proxying is sufficient for WebSocket since we're just forwarding bytes.
+- **No per-protocol wake behavior matrix** — all protocols get the same treatment: ensure instance is running, then proxy. If the instance is booting, HTML clients get a loading page with `<meta http-equiv="refresh" content="3">`, non-HTML clients get `503 + Retry-After: 3`.
+- **Routing lookup is trivial** — `GetDefaultInstance()` returns the first non-terminated instance. Path-based resolution comes in M2.
+
+The router embeds in aegisd as designed (§1.8) — it's a goroutine with an `http.Server`, shares the lifecycle manager in-process.
+
+### 8.7 SQLite Registry — Minimal M1 Schema
+
+**Original assumption (§1.9):** Six tables (apps, releases, instances, kits, secrets, workspaces).
+
+**Reality:** M1 only needs `instances`. Apps, releases, kits, secrets, and workspaces are all M2+ concerns. Shipping unused tables would be premature — the schema will evolve as those features are built.
+
+```sql
+CREATE TABLE IF NOT EXISTS instances (
+    id          TEXT PRIMARY KEY,
+    state       TEXT NOT NULL DEFAULT 'stopped',
+    command     TEXT NOT NULL,         -- JSON array
+    expose_ports TEXT NOT NULL DEFAULT '[]',  -- JSON array of ints
+    vm_id       TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+**Implementation choice: `modernc.org/sqlite`** — pure Go SQLite, no cgo. This is the first (and so far only) external dependency. The entire module is `CGO_ENABLED=0` compatible, keeping aegisd a pure Go binary. WAL mode enabled for concurrent read performance.
+
+DB path: `~/.aegis/data/aegis.db`.
+
+### 8.8 CLI `--expose` Flag
+
+**New:** `aegis run --expose PORT -- <command>` enters serve mode. Without `--expose`, behavior is unchanged (task mode).
+
+```bash
+# Serve mode (M1)
+aegis run --expose 80 -- python -m http.server 80
+# → Serving on http://127.0.0.1:8099
+# → Instance: inst-1739893456
+# → Press Ctrl+C to stop
+
+# Task mode (M0, unchanged)
+aegis run -- echo hello
+# → hello
+```
+
+Serve mode creates an instance via `POST /v1/instances`, prints the router URL, and blocks until Ctrl+C. On interrupt it sends `DELETE /v1/instances/{id}` for clean shutdown.
+
+Multiple `--expose` flags can be specified to expose multiple ports (e.g., `--expose 80 --expose 443`).
+
+### 8.9 API Additions
+
+Three new routes on the unix socket API:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST /v1/instances` | Create + boot a serve instance | `{"command": [...], "expose_ports": [80]}` |
+| `GET /v1/instances/{id}` | Get instance state | Returns `{id, state}` |
+| `DELETE /v1/instances/{id}` | Stop + remove instance | Sends shutdown RPC, kills VM |
+
+Task routes (`/v1/tasks/*`) are unchanged and continue to work for task mode.
+
+### 8.10 aegisd Init Sequence (M1)
+
+```go
+cfg := config.DefaultConfig()
+backend := vmm.NewLibkrunVMM(cfg)
+reg := registry.Open(cfg.DBPath)           // new: SQLite
+lm := lifecycle.NewManager(backend, cfg)    // new: state machine
+rtr := router.New(lm, cfg.RouterAddr)       // new: HTTP proxy on :8099
+server := api.NewServer(cfg, backend, lm, reg)
+
+rtr.Start()
+server.Start()
+// ... wait for signal ...
+lm.Shutdown()    // stops all VMs
+rtr.Stop()
+server.Stop()
+reg.Close()
+```
+
+The lifecycle manager's `onStateChange` callback persists state transitions to the registry. On shutdown, `lm.Shutdown()` stops all running/paused instances before the registry and router close.
+
+### 8.11 Project Structure (Actual, M1)
+
+Three new packages, no new binaries:
+
+```
+aegis/
+├── cmd/
+│   ├── aegisd/main.go              # + lifecycle, registry, router init
+│   ├── aegis/main.go               # + --expose flag, serve mode
+│   ├── aegis-harness/main.go       # unchanged
+│   └── aegis-vmm-worker/main.go    # + krun_set_port_map
+├── internal/
+│   ├── vmm/vmm.go                  # + PortExpose, HostEndpoint, HostEndpoints()
+│   ├── vmm/libkrun.go              # + port mapping, SIGSTOP/SIGCONT, endpoints
+│   ├── vmm/channel.go              # unchanged
+│   ├── harness/                    # + startServer RPC, server tracker, waitForPort
+│   ├── api/                        # + instance CRUD routes
+│   ├── config/                     # + RouterAddr, DBPath, idle timeouts
+│   ├── lifecycle/manager.go        # NEW: state machine, idle timers
+│   ├── router/router.go            # NEW: HTTP proxy, wake-on-connect
+│   └── registry/                   # NEW: SQLite, instances CRUD
+│       ├── db.go
+│       └── instances.go
+├── go.mod                          # + modernc.org/sqlite
+├── go.sum                          # NEW
+└── ...
+```
+
+### 8.12 M1 Dependencies (Actual)
+
+```
+macOS (confirmed working):
+  All M0 dependencies (go 1.26+, libkrun, Docker, codesign)
+  + modernc.org/sqlite v1.46.1 (pure Go, no cgo — first external dep)
+
+Not needed for M1 (deferred):
+  nhooyr.io/websocket (raw hijack sufficient)
+  internal/network/ package (TSI handles everything)
+```

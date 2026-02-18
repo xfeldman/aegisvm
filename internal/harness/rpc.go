@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os/exec"
+	"sync"
+	"time"
 )
 
 // JSON-RPC 2.0 message types
@@ -54,14 +57,50 @@ type healthResult struct {
 	Status string `json:"status"`
 }
 
+type startServerParams struct {
+	Command      []string          `json:"command"`
+	Env          map[string]string `json:"env,omitempty"`
+	Workdir      string            `json:"workdir,omitempty"`
+	ReadinessPort int              `json:"readiness_port"`
+}
+
+type startServerResult struct {
+	PID int `json:"pid"`
+}
+
 type logParams struct {
 	Stream string `json:"stream"` // "stdout" or "stderr"
 	Line   string `json:"line"`
 }
 
+// serverTracker tracks running server processes for cleanup on shutdown.
+type serverTracker struct {
+	mu      sync.Mutex
+	servers []*exec.Cmd
+}
+
+func (st *serverTracker) add(cmd *exec.Cmd) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.servers = append(st.servers, cmd)
+}
+
+func (st *serverTracker) killAll() {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for _, cmd := range st.servers {
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+	}
+}
+
 // handleConnection processes JSON-RPC messages from a single host connection.
 func handleConnection(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
+
+	tracker := &serverTracker{}
+	defer tracker.killAll()
 
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB max message
@@ -90,7 +129,7 @@ func handleConnection(ctx context.Context, conn net.Conn) {
 			continue
 		}
 
-		resp := dispatch(ctx, &req, conn)
+		resp := dispatch(ctx, &req, conn, tracker)
 		if resp != nil {
 			if err := encoder.Encode(resp); err != nil {
 				log.Printf("write response: %v", err)
@@ -110,10 +149,13 @@ func handleConnection(ctx context.Context, conn net.Conn) {
 }
 
 // dispatch routes a JSON-RPC request to the appropriate handler.
-func dispatch(ctx context.Context, req *rpcRequest, conn net.Conn) *rpcResponse {
+func dispatch(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *serverTracker) *rpcResponse {
 	switch req.Method {
 	case "runTask":
 		return handleRunTask(ctx, req, conn)
+
+	case "startServer":
+		return handleStartServer(ctx, req, conn, tracker)
 
 	case "health":
 		return &rpcResponse{
@@ -187,6 +229,81 @@ func handleRunTask(ctx context.Context, req *rpcRequest, conn net.Conn) *rpcResp
 			ExitCode: exitCode,
 		},
 		ID: req.ID,
+	}
+}
+
+// handleStartServer starts a long-lived server process, polls its readiness port,
+// and sends a serverReady notification when the port accepts connections.
+func handleStartServer(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *serverTracker) *rpcResponse {
+	var params startServerParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return &rpcResponse{
+			JSONRPC: "2.0",
+			Error: &rpcError{
+				Code:    -32602,
+				Message: fmt.Sprintf("invalid params: %v", err),
+			},
+			ID: req.ID,
+		}
+	}
+
+	if len(params.Command) == 0 {
+		return &rpcResponse{
+			JSONRPC: "2.0",
+			Error: &rpcError{
+				Code:    -32602,
+				Message: "command is required",
+			},
+			ID: req.ID,
+		}
+	}
+
+	if params.ReadinessPort <= 0 {
+		return &rpcResponse{
+			JSONRPC: "2.0",
+			Error: &rpcError{
+				Code:    -32602,
+				Message: "readiness_port is required",
+			},
+			ID: req.ID,
+		}
+	}
+
+	log.Printf("startServer: %v (readiness port %d)", params.Command, params.ReadinessPort)
+
+	cmd, err := startServerProcess(ctx, params, conn)
+	if err != nil {
+		return &rpcResponse{
+			JSONRPC: "2.0",
+			Error: &rpcError{
+				Code:    -32000,
+				Message: fmt.Sprintf("start server: %v", err),
+			},
+			ID: req.ID,
+		}
+	}
+
+	tracker.add(cmd)
+
+	// Poll readiness in background, send notification when ready
+	go func() {
+		if err := waitForPort(params.ReadinessPort, 30*time.Second); err != nil {
+			log.Printf("server readiness check failed: %v", err)
+			sendNotification(conn, "serverFailed", map[string]string{
+				"error": err.Error(),
+			})
+			return
+		}
+		log.Printf("server ready on port %d", params.ReadinessPort)
+		sendNotification(conn, "serverReady", map[string]interface{}{
+			"port": params.ReadinessPort,
+		})
+	}()
+
+	return &rpcResponse{
+		JSONRPC: "2.0",
+		Result:  startServerResult{PID: cmd.Process.Pid},
+		ID:      req.ID,
 	}
 }
 

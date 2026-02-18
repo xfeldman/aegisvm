@@ -30,7 +30,7 @@ ifeq ($(HOST_OS),darwin)
 	CGO_LDFLAGS := -L/opt/homebrew/lib
 endif
 
-.PHONY: all aegisd aegis harness vmm-worker base-rootfs clean test
+.PHONY: all aegisd aegis harness vmm-worker base-rootfs clean test integration
 
 all: aegisd aegis harness vmm-worker
 
@@ -70,6 +70,11 @@ base-rootfs: harness
 # Run unit tests
 test:
 	$(GO) test ./...
+
+# Run integration tests (requires built binaries + base rootfs installed)
+# Use -short to skip the pause/resume test (70s+ wait)
+integration: all
+	$(GO) test -tags integration -v -count=1 -timeout 10m ./test/integration/
 
 # Clean build artifacts
 clean:

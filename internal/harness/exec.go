@@ -8,6 +8,7 @@ import (
 	"net"
 	"os/exec"
 	"syscall"
+	"time"
 )
 
 // executeCommand runs a command and streams stdout/stderr as JSON-RPC log notifications.
@@ -96,4 +97,74 @@ func executeCommand(ctx context.Context, params runTaskParams, conn net.Conn) (i
 	}
 
 	return exitCode, nil
+}
+
+// startServerProcess starts a long-lived server process and streams its output.
+// Unlike executeCommand, it returns immediately after starting the process.
+// The caller is responsible for killing the process.
+func startServerProcess(ctx context.Context, params startServerParams, conn net.Conn) (*exec.Cmd, error) {
+	if len(params.Command) == 0 {
+		return nil, fmt.Errorf("empty command")
+	}
+
+	cmd := exec.CommandContext(ctx, params.Command[0], params.Command[1:]...)
+
+	if params.Workdir != "" {
+		cmd.Dir = params.Workdir
+	}
+
+	if len(params.Env) > 0 {
+		env := cmd.Environ()
+		for k, v := range params.Env {
+			env = append(env, k+"="+v)
+		}
+		cmd.Env = env
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stderr pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start command: %w", err)
+	}
+
+	// Stream stdout/stderr as log notifications in background
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			sendNotification(conn, "log", logParams{Stream: "stdout", Line: scanner.Text()})
+		}
+	}()
+
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			sendNotification(conn, "log", logParams{Stream: "stderr", Line: scanner.Text()})
+		}
+	}()
+
+	return cmd, nil
+}
+
+// waitForPort polls a TCP port until it accepts connections or the timeout expires.
+func waitForPort(port int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("port %d not ready after %v", port, timeout)
 }

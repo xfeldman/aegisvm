@@ -23,11 +23,12 @@ import (
 )
 
 type WorkerConfig struct {
-	RootfsPath string `json:"rootfs_path"`
-	MemoryMB   int    `json:"memory_mb"`
-	VCPUs      int    `json:"vcpus"`
-	ExecPath   string `json:"exec_path"`
-	HostAddr   string `json:"host_addr"` // host:port for harness to connect back to
+	RootfsPath string   `json:"rootfs_path"`
+	MemoryMB   int      `json:"memory_mb"`
+	VCPUs      int      `json:"vcpus"`
+	ExecPath   string   `json:"exec_path"`
+	HostAddr   string   `json:"host_addr"`   // host:port for harness to connect back to
+	PortMap    []string `json:"port_map"`     // e.g. ["8080:80"] — host_port:guest_port
 }
 
 func main() {
@@ -108,6 +109,22 @@ func run(cfg WorkerConfig) error {
 	ret = C.krun_set_exec(C.uint32_t(ctxID), cExecPath, &argv[0], &cEnvPtrs[0])
 	if ret < 0 {
 		return fmt.Errorf("krun_set_exec failed: %d", ret)
+	}
+
+	// Set port mapping if any ports are exposed.
+	// Each entry is "host_port:guest_port", e.g. "8080:80".
+	// This tells libkrun's TSI to expose guest listening ports on specific host ports.
+	if len(cfg.PortMap) > 0 {
+		cPortPtrs := make([]*C.char, len(cfg.PortMap)+1)
+		for i, pm := range cfg.PortMap {
+			cPortPtrs[i] = C.CString(pm)
+			defer C.free(unsafe.Pointer(cPortPtrs[i]))
+		}
+		cPortPtrs[len(cfg.PortMap)] = nil
+		ret = C.krun_set_port_map(C.uint32_t(ctxID), &cPortPtrs[0])
+		if ret < 0 {
+			return fmt.Errorf("krun_set_port_map failed: %d", ret)
+		}
 	}
 
 	// Start the VM — this never returns on success.

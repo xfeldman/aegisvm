@@ -3,33 +3,41 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/xfeldman/aegis/internal/config"
+	"github.com/xfeldman/aegis/internal/lifecycle"
+	"github.com/xfeldman/aegis/internal/registry"
 	"github.com/xfeldman/aegis/internal/vmm"
 )
 
 // Server is the aegisd HTTP API server.
 type Server struct {
-	cfg    *config.Config
-	vmm    vmm.VMM
-	tasks  *TaskStore
-	mux    *http.ServeMux
-	server *http.Server
-	ln     net.Listener
+	cfg       *config.Config
+	vmm       vmm.VMM
+	tasks     *TaskStore
+	lifecycle *lifecycle.Manager
+	registry  *registry.DB
+	mux       *http.ServeMux
+	server    *http.Server
+	ln        net.Listener
 }
 
 // NewServer creates a new API server.
-func NewServer(cfg *config.Config, v vmm.VMM) *Server {
+func NewServer(cfg *config.Config, v vmm.VMM, lm *lifecycle.Manager, reg *registry.DB) *Server {
 	s := &Server{
-		cfg:   cfg,
-		vmm:   v,
-		tasks: NewTaskStore(v, cfg),
-		mux:   http.NewServeMux(),
+		cfg:       cfg,
+		vmm:       v,
+		tasks:     NewTaskStore(v, cfg),
+		lifecycle: lm,
+		registry:  reg,
+		mux:       http.NewServeMux(),
 	}
 	s.registerRoutes()
 	s.server = &http.Server{Handler: s.mux}
@@ -40,6 +48,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v1/tasks", s.handleCreateTask)
 	s.mux.HandleFunc("GET /v1/tasks/{id}", s.handleGetTask)
 	s.mux.HandleFunc("GET /v1/tasks/{id}/logs", s.handleGetTaskLogs)
+	s.mux.HandleFunc("POST /v1/instances", s.handleCreateInstance)
+	s.mux.HandleFunc("GET /v1/instances/{id}", s.handleGetInstance)
+	s.mux.HandleFunc("DELETE /v1/instances/{id}", s.handleDeleteInstance)
 	s.mux.HandleFunc("GET /v1/status", s.handleStatus)
 }
 
@@ -87,6 +98,111 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Status:  "running",
 		Backend: caps.Name,
 	})
+}
+
+// Instance API types
+
+type createInstanceRequest struct {
+	Command     []string `json:"command"`
+	ExposePorts []int    `json:"expose_ports"`
+}
+
+type instanceResponse struct {
+	ID          string   `json:"id"`
+	State       string   `json:"state"`
+	Command     []string `json:"command"`
+	ExposePorts []int    `json:"expose_ports"`
+	RouterAddr  string   `json:"router_addr,omitempty"`
+}
+
+func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
+	var req createInstanceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
+		return
+	}
+	if len(req.Command) == 0 {
+		writeError(w, http.StatusBadRequest, "command is required")
+		return
+	}
+	if len(req.ExposePorts) == 0 {
+		writeError(w, http.StatusBadRequest, "expose_ports is required")
+		return
+	}
+
+	id := fmt.Sprintf("inst-%d", time.Now().UnixNano())
+
+	// Build PortExpose list
+	var exposePorts []vmm.PortExpose
+	for _, p := range req.ExposePorts {
+		exposePorts = append(exposePorts, vmm.PortExpose{
+			GuestPort: p,
+			Protocol:  "http",
+		})
+	}
+
+	// Create in lifecycle manager
+	s.lifecycle.CreateInstance(id, req.Command, exposePorts)
+
+	// Persist to registry
+	if s.registry != nil {
+		regInst := &registry.Instance{
+			ID:          id,
+			State:       "stopped",
+			Command:     req.Command,
+			ExposePorts: req.ExposePorts,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+		}
+		if err := s.registry.SaveInstance(regInst); err != nil {
+			log.Printf("save instance to registry: %v", err)
+		}
+	}
+
+	// Boot the instance
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := s.lifecycle.EnsureInstance(ctx, id); err != nil {
+			log.Printf("instance %s boot failed: %v", id, err)
+		}
+	}()
+
+	writeJSON(w, http.StatusCreated, instanceResponse{
+		ID:          id,
+		State:       "starting",
+		Command:     req.Command,
+		ExposePorts: req.ExposePorts,
+		RouterAddr:  s.cfg.RouterAddr,
+	})
+}
+
+func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id":    inst.ID,
+		"state": inst.State,
+	})
+}
+
+func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+	if err := s.lifecycle.StopInstance(id); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	if s.registry != nil {
+		s.registry.DeleteInstance(id)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
 }
 
 // writeJSON writes a JSON response.

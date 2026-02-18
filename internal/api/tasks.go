@@ -342,12 +342,21 @@ func (s *Server) handleGetTaskLogs(w http.ResponseWriter, r *http.Request) {
 				}
 				streamJSON(w, ll)
 			case <-ticker.C:
-				// Periodically check if task is done (in case last log
-				// arrived before state transitioned to terminal)
-			}
-			t, _ := s.tasks.getTask(id)
-			if t != nil && t.State != TaskQueued && t.State != TaskRunning {
-				return
+				t, _ := s.tasks.getTask(id)
+				if t != nil && t.State != TaskQueued && t.State != TaskRunning {
+					// Task is done — drain any remaining buffered logs
+					for {
+						select {
+						case ll, ok := <-ch:
+							if !ok {
+								return
+							}
+							streamJSON(w, ll)
+						default:
+							return
+						}
+					}
+				}
 			}
 		}
 	} else {

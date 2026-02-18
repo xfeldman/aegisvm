@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/xfeldman/aegis/internal/config"
@@ -16,18 +17,20 @@ import (
 // WorkerConfig is the JSON configuration sent to the vmm-worker process.
 // Must match the WorkerConfig in cmd/aegis-vmm-worker/main.go.
 type WorkerConfig struct {
-	RootfsPath string `json:"rootfs_path"`
-	MemoryMB   int    `json:"memory_mb"`
-	VCPUs      int    `json:"vcpus"`
-	ExecPath   string `json:"exec_path"`
-	HostAddr   string `json:"host_addr"`
+	RootfsPath string   `json:"rootfs_path"`
+	MemoryMB   int      `json:"memory_mb"`
+	VCPUs      int      `json:"vcpus"`
+	ExecPath   string   `json:"exec_path"`
+	HostAddr   string   `json:"host_addr"`
+	PortMap    []string `json:"port_map,omitempty"` // e.g. ["8080:80"] — host_port:guest_port
 }
 
 type vmInstance struct {
-	id     string
-	config VMConfig
-	cmd    *exec.Cmd
-	done   chan struct{}
+	id        string
+	config    VMConfig
+	cmd       *exec.Cmd
+	done      chan struct{}
+	endpoints []HostEndpoint
 }
 
 // LibkrunVMM implements the VMM interface using libkrun on macOS.
@@ -92,13 +95,40 @@ func (l *LibkrunVMM) StartVM(h Handle) (ControlChannel, error) {
 
 	hostAddr := ln.Addr().String()
 
-	// 2. Spawn vmm-worker
+	// 2. Allocate host ports for exposed guest ports
+	var portMap []string
+	var endpoints []HostEndpoint
+	for _, ep := range cfg.ExposePorts {
+		// Allocate a random host port by binding to :0 then closing
+		tmpLn, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			ln.Close()
+			return nil, fmt.Errorf("allocate port for guest port %d: %w", ep.GuestPort, err)
+		}
+		hostPort := tmpLn.Addr().(*net.TCPAddr).Port
+		tmpLn.Close()
+
+		portMap = append(portMap, fmt.Sprintf("%d:%d", hostPort, ep.GuestPort))
+		endpoints = append(endpoints, HostEndpoint{
+			GuestPort: ep.GuestPort,
+			HostPort:  hostPort,
+			Protocol:  ep.Protocol,
+		})
+	}
+
+	// Store endpoints on instance
+	l.mu.Lock()
+	inst.endpoints = endpoints
+	l.mu.Unlock()
+
+	// 3. Spawn vmm-worker
 	wc := WorkerConfig{
 		RootfsPath: cfg.Rootfs.Path,
 		MemoryMB:   cfg.MemoryMB,
 		VCPUs:      cfg.VCPUs,
 		ExecPath:   "/usr/bin/aegis-harness",
 		HostAddr:   hostAddr,
+		PortMap:    portMap,
 	}
 
 	wcJSON, err := json.Marshal(wc)
@@ -131,7 +161,7 @@ func (l *LibkrunVMM) StartVM(h Handle) (ControlChannel, error) {
 		close(inst.done)
 	}()
 
-	// 3. Wait for harness to connect back (with timeout)
+	// 4. Wait for harness to connect back (with timeout)
 	ln.(*net.TCPListener).SetDeadline(time.Now().Add(30 * time.Second))
 	conn, err := ln.Accept()
 	ln.Close() // only need one connection
@@ -142,8 +172,43 @@ func (l *LibkrunVMM) StartVM(h Handle) (ControlChannel, error) {
 	return NewNetControlChannel(conn), nil
 }
 
-func (l *LibkrunVMM) PauseVM(h Handle) error  { return ErrNotSupported }
-func (l *LibkrunVMM) ResumeVM(h Handle) error { return ErrNotSupported }
+func (l *LibkrunVMM) HostEndpoints(h Handle) ([]HostEndpoint, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	inst, ok := l.instances[h.ID]
+	if !ok {
+		return nil, fmt.Errorf("vm %s not found", h.ID)
+	}
+	eps := make([]HostEndpoint, len(inst.endpoints))
+	copy(eps, inst.endpoints)
+	return eps, nil
+}
+
+func (l *LibkrunVMM) PauseVM(h Handle) error {
+	l.mu.Lock()
+	inst, ok := l.instances[h.ID]
+	l.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("vm %s not found", h.ID)
+	}
+	if inst.cmd == nil || inst.cmd.Process == nil {
+		return fmt.Errorf("vm %s has no running process", h.ID)
+	}
+	return inst.cmd.Process.Signal(syscall.SIGSTOP)
+}
+
+func (l *LibkrunVMM) ResumeVM(h Handle) error {
+	l.mu.Lock()
+	inst, ok := l.instances[h.ID]
+	l.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("vm %s not found", h.ID)
+	}
+	if inst.cmd == nil || inst.cmd.Process == nil {
+		return fmt.Errorf("vm %s has no running process", h.ID)
+	}
+	return inst.cmd.Process.Signal(syscall.SIGCONT)
+}
 
 func (l *LibkrunVMM) StopVM(h Handle) error {
 	l.mu.Lock()
@@ -176,7 +241,7 @@ func (l *LibkrunVMM) Restore(snapshotPath string) (Handle, error) {
 
 func (l *LibkrunVMM) Capabilities() BackendCaps {
 	return BackendCaps{
-		Pause:           false,
+		Pause:           true,
 		SnapshotRestore: false,
 		RootFSType:      RootFSDirectory,
 		Name:            "libkrun",

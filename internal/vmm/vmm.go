@@ -51,6 +51,12 @@ type RootFS struct {
 	Path string
 }
 
+// PortExpose describes a guest port to expose on the host.
+type PortExpose struct {
+	GuestPort int
+	Protocol  string // "http", "tcp", "grpc"
+}
+
 // VMConfig describes how to create a VM.
 type VMConfig struct {
 	// Rootfs is the root filesystem for the VM.
@@ -72,6 +78,17 @@ type VMConfig struct {
 	// WorkspacePath is the path to the workspace volume to mount.
 	// Empty means no workspace mount.
 	WorkspacePath string
+
+	// ExposePorts lists guest ports to expose on the host via port mapping.
+	// When set, the backend allocates random host ports and maps them to guest ports.
+	ExposePorts []PortExpose
+}
+
+// HostEndpoint describes a mapped port on the host side.
+type HostEndpoint struct {
+	GuestPort int
+	HostPort  int
+	Protocol  string
 }
 
 // BackendCaps reports what a VMM backend can do.
@@ -154,6 +171,10 @@ type VMM interface {
 	// Restore restores a VM from a previously saved snapshot.
 	// Returns ErrNotSupported if the backend does not support snapshots.
 	Restore(snapshotPath string) (Handle, error)
+
+	// HostEndpoints returns the resolved host endpoints for a VM's exposed ports.
+	// Only valid after StartVM returns successfully.
+	HostEndpoints(h Handle) ([]HostEndpoint, error)
 
 	// Capabilities returns what this backend supports.
 	Capabilities() BackendCaps
