@@ -12,32 +12,38 @@ import (
 	"time"
 
 	"github.com/xfeldman/aegis/internal/config"
+	"github.com/xfeldman/aegis/internal/image"
 	"github.com/xfeldman/aegis/internal/lifecycle"
+	"github.com/xfeldman/aegis/internal/overlay"
 	"github.com/xfeldman/aegis/internal/registry"
 	"github.com/xfeldman/aegis/internal/vmm"
 )
 
 // Server is the aegisd HTTP API server.
 type Server struct {
-	cfg       *config.Config
-	vmm       vmm.VMM
-	tasks     *TaskStore
-	lifecycle *lifecycle.Manager
-	registry  *registry.DB
-	mux       *http.ServeMux
-	server    *http.Server
-	ln        net.Listener
+	cfg        *config.Config
+	vmm        vmm.VMM
+	tasks      *TaskStore
+	lifecycle  *lifecycle.Manager
+	registry   *registry.DB
+	imageCache *image.Cache
+	overlay    overlay.Overlay
+	mux        *http.ServeMux
+	server     *http.Server
+	ln         net.Listener
 }
 
 // NewServer creates a new API server.
-func NewServer(cfg *config.Config, v vmm.VMM, lm *lifecycle.Manager, reg *registry.DB) *Server {
+func NewServer(cfg *config.Config, v vmm.VMM, lm *lifecycle.Manager, reg *registry.DB, imgCache *image.Cache, ov overlay.Overlay) *Server {
 	s := &Server{
-		cfg:       cfg,
-		vmm:       v,
-		tasks:     NewTaskStore(v, cfg),
-		lifecycle: lm,
-		registry:  reg,
-		mux:       http.NewServeMux(),
+		cfg:        cfg,
+		vmm:        v,
+		tasks:      NewTaskStore(v, cfg, imgCache, ov),
+		lifecycle:  lm,
+		registry:   reg,
+		imageCache: imgCache,
+		overlay:    ov,
+		mux:        http.NewServeMux(),
 	}
 	s.registerRoutes()
 	s.server = &http.Server{Handler: s.mux}
@@ -52,6 +58,15 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /v1/instances/{id}", s.handleGetInstance)
 	s.mux.HandleFunc("DELETE /v1/instances/{id}", s.handleDeleteInstance)
 	s.mux.HandleFunc("GET /v1/status", s.handleStatus)
+
+	// App routes (M2)
+	s.mux.HandleFunc("POST /v1/apps", s.handleCreateApp)
+	s.mux.HandleFunc("GET /v1/apps", s.handleListApps)
+	s.mux.HandleFunc("GET /v1/apps/{id}", s.handleGetApp)
+	s.mux.HandleFunc("DELETE /v1/apps/{id}", s.handleDeleteApp)
+	s.mux.HandleFunc("POST /v1/apps/{id}/publish", s.handlePublishApp)
+	s.mux.HandleFunc("GET /v1/apps/{id}/releases", s.handleListReleases)
+	s.mux.HandleFunc("POST /v1/apps/{id}/serve", s.handleServeApp)
 }
 
 // Start begins listening on the unix socket.

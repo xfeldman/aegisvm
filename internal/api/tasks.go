@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/xfeldman/aegis/internal/config"
+	"github.com/xfeldman/aegis/internal/image"
+	"github.com/xfeldman/aegis/internal/overlay"
 	"github.com/xfeldman/aegis/internal/vmm"
 )
 
@@ -24,6 +27,7 @@ const (
 type CreateTaskRequest struct {
 	Command []string          `json:"command"`
 	Env     map[string]string `json:"env,omitempty"`
+	Image   string            `json:"image,omitempty"`
 }
 
 type Task struct {
@@ -44,11 +48,13 @@ type LogLine struct {
 }
 
 type TaskStore struct {
-	mu    sync.Mutex
-	tasks map[string]*taskEntry
-	vmm   vmm.VMM
-	cfg   *config.Config
-	seq   int
+	mu         sync.Mutex
+	tasks      map[string]*taskEntry
+	vmm        vmm.VMM
+	cfg        *config.Config
+	imageCache *image.Cache
+	overlay    overlay.Overlay
+	seq        int
 }
 
 type taskEntry struct {
@@ -57,11 +63,13 @@ type taskEntry struct {
 	subs []chan LogLine
 }
 
-func NewTaskStore(v vmm.VMM, cfg *config.Config) *TaskStore {
+func NewTaskStore(v vmm.VMM, cfg *config.Config, imgCache *image.Cache, ov overlay.Overlay) *TaskStore {
 	return &TaskStore{
-		tasks: make(map[string]*taskEntry),
-		vmm:   v,
-		cfg:   cfg,
+		tasks:      make(map[string]*taskEntry),
+		vmm:        v,
+		cfg:        cfg,
+		imageCache: imgCache,
+		overlay:    ov,
 	}
 }
 
@@ -173,10 +181,54 @@ func (ts *TaskStore) subscribeLogs(id string) (chan LogLine, []LogLine, func()) 
 func (ts *TaskStore) runTask(taskID string, req CreateTaskRequest) {
 	ts.updateState(taskID, TaskRunning)
 
+	rootfsPath := ts.cfg.BaseRootfsPath
+	var tempOverlayID string
+
+	// If an image is specified, pull and create a temp rootfs
+	if req.Image != "" && ts.imageCache != nil && ts.overlay != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		cachedDir, _, err := ts.imageCache.GetOrPull(ctx, req.Image)
+		cancel()
+		if err != nil {
+			ts.setResult(taskID, -1, fmt.Sprintf("pull image: %v", err))
+			ts.updateState(taskID, TaskFailed)
+			return
+		}
+
+		tempOverlayID = fmt.Sprintf("task-%s", taskID)
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Minute)
+		overlayDir, err := ts.overlay.Create(ctx2, cachedDir, tempOverlayID)
+		cancel2()
+		if err != nil {
+			ts.setResult(taskID, -1, fmt.Sprintf("create overlay: %v", err))
+			ts.updateState(taskID, TaskFailed)
+			return
+		}
+
+		harnessBin := filepath.Join(ts.cfg.BinDir, "aegis-harness")
+		if err := image.InjectHarness(overlayDir, harnessBin); err != nil {
+			ts.overlay.Remove(tempOverlayID)
+			ts.setResult(taskID, -1, fmt.Sprintf("inject harness: %v", err))
+			ts.updateState(taskID, TaskFailed)
+			return
+		}
+
+		rootfsPath = overlayDir
+	}
+
+	// Clean up temp overlay after task completes
+	if tempOverlayID != "" {
+		defer func() {
+			if err := ts.overlay.Remove(tempOverlayID); err != nil {
+				log.Printf("task %s: cleanup overlay: %v", taskID, err)
+			}
+		}()
+	}
+
 	vmCfg := vmm.VMConfig{
 		Rootfs: vmm.RootFS{
 			Type: ts.vmm.Capabilities().RootFSType,
-			Path: ts.cfg.BaseRootfsPath,
+			Path: rootfsPath,
 		},
 		MemoryMB: ts.cfg.DefaultMemoryMB,
 		VCPUs:    ts.cfg.DefaultVCPUs,

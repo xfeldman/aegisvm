@@ -1053,3 +1053,304 @@ Not needed for M1 (deferred):
   nhooyr.io/websocket (raw hijack sufficient)
   internal/network/ package (TSI handles everything)
 ```
+
+---
+
+## 9. M2 Implementation Notes
+
+**Documented after completing M2. These are design choices and corrections to §1.2, §1.3, §1.9, and the M2 milestone table, based on building the image pipeline, app/release system, and multi-app routing on top of the M1 codebase.**
+
+### 9.1 OCI Image Pipeline — Directory-Based, Not ext4
+
+**Original assumption (§1.2):** `go-containerregistry` for pull/unpack, `mkfs.ext4 -d` to produce an ext4 rootfs image.
+
+**Reality:** libkrun uses directory-based rootfs via `krun_set_root()` (§7.6). There is no need for ext4 image creation on macOS. The image pipeline unpacks OCI layers directly into a directory, and libkrun mounts it via virtiofs.
+
+**Actual pipeline:**
+
+1. `image.Pull(ctx, "python:3.12")` → resolves reference, pulls linux/arm64 manifest via `go-containerregistry`, handles both single-platform images and multi-platform index manifests
+2. `image.Unpack(img, destDir)` → extracts layers in order into a directory tree, handles OCI whiteout files (`.wh.` prefix for file deletion, `.wh..wh..opq` for opaque directory replacement)
+3. `image.Cache` → digest-keyed directory cache at `~/.aegis/data/images/sha256_{digest}/`. `GetOrPull(ctx, ref)` returns the cached directory or pulls + unpacks + caches atomically (via tmp dir + rename)
+4. `image.InjectHarness(rootfsDir, harnessBin)` → copies the harness binary into the rootfs at `/usr/bin/aegis-harness`
+
+Harness injection happens on the **release copy**, not the cache. The cache contains the clean OCI image; each release gets its own copy with the harness baked in.
+
+ext4 conversion (`mkfs.ext4 -d`) is deferred to M4 when Firecracker needs block device images. The existing `BackendCaps.RootFSType` abstraction handles this — the image pipeline will produce the right artifact based on the active backend's declared type.
+
+### 9.2 Overlay — tar Pipe, Not cp
+
+**Original assumption (§1.3):** Full rootfs copy per release on macOS.
+
+**Reality:** Correct — macOS has no device-mapper, so each release gets a full copy. But the copy method matters: macOS `cp -a` breaks busybox-style symlink layouts (§7.6). The `CopyOverlay` implementation uses a tar pipe:
+
+```bash
+tar -C source -cf - . | tar -C dest -xf -
+```
+
+This preserves all symlinks, hardlinks, and permissions correctly. The overlay interface is simple:
+
+```go
+type Overlay interface {
+    Create(ctx context.Context, sourceDir, destID string) (path, error)
+    Remove(id string) error
+    Path(id string) string
+}
+```
+
+`CopyOverlay` stores copies under `~/.aegis/data/releases/{releaseID}/`. The `dm.go` (device-mapper) implementation is deferred to M4.
+
+### 9.3 Registry Schema — apps + releases Tables
+
+**Original assumption (§1.9):** Six tables. M1 shipped with just `instances`.
+
+**M2 adds two tables:**
+
+```sql
+CREATE TABLE IF NOT EXISTS apps (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    image       TEXT NOT NULL,
+    command     TEXT NOT NULL DEFAULT '[]',
+    expose_ports TEXT NOT NULL DEFAULT '[]',
+    config      TEXT NOT NULL DEFAULT '{}',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS releases (
+    id           TEXT PRIMARY KEY,
+    app_id       TEXT NOT NULL REFERENCES apps(id),
+    image_digest TEXT NOT NULL,
+    rootfs_path  TEXT NOT NULL,
+    label        TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+Key differences from the spec schema (§1.9):
+
+- `apps.image` stores the OCI image reference directly (e.g., `python:3.12`), not a kit reference. Kits are M3.
+- `apps.command` and `apps.expose_ports` are stored as JSON arrays — the app definition includes everything needed to serve.
+- `releases.rootfs_path` is the absolute path to the release's rootfs directory on the host. On macOS this is a directory; on Linux (M4+) it could be a dm-snapshot ref.
+- `releases.overlay_ref` from §1.9 is replaced by `rootfs_path` — simpler and more explicit.
+- No `base_revision` column — the image digest serves the same purpose (identifying what the release was built from).
+- `kits`, `secrets`, `workspaces` tables deferred to M3.
+
+Migration is idempotent — `CREATE TABLE IF NOT EXISTS` runs on every `registry.Open()`.
+
+### 9.4 Workspace Volumes via virtiofs
+
+**Original assumption (§1.3):** Workspace volume is bind-mounted, separate from rootfs.
+
+**Reality:** libkrun supports `krun_add_virtiofs(ctx, tag, path)` which creates an independent virtio-fs device pointing to a host directory. The guest mounts it by tag.
+
+**Implementation:**
+
+1. **Host side:** `LibkrunVMM.StartVM()` checks `VMConfig.WorkspacePath`. If set, it passes `"workspace:/path"` in the `MappedVolumes` field of `WorkerConfig`. The vmm-worker calls `krun_add_virtiofs(ctx, "workspace", path)`.
+
+2. **Guest side:** The harness attempts `mount("workspace", "/workspace", "virtiofs", 0, "")` on startup. This is best-effort — if no workspace is configured, the mount fails silently and the harness continues. The mount code is in `mount_linux.go` (build-tagged, no-op on macOS).
+
+3. **App workspaces:** Each app gets a workspace directory at `~/.aegis/data/workspaces/{appID}/`. This is created when `aegis app serve` is called and passed to the instance via `lifecycle.WithWorkspace(path)`.
+
+No new env vars needed — virtiofs is configured at the libkrun level, and the harness mounts by the well-known `workspace` tag.
+
+### 9.5 Lifecycle Manager — Functional Options for Instances
+
+**Change:** `CreateInstance` now accepts variadic `InstanceOption` functions:
+
+```go
+func (m *Manager) CreateInstance(id string, cmd []string, ports []vmm.PortExpose, opts ...InstanceOption) *Instance
+
+// Available options:
+lifecycle.WithApp(appID, releaseID)     // associate with an app
+lifecycle.WithRootfs(path)              // custom rootfs (instead of base)
+lifecycle.WithWorkspace(path)           // workspace volume
+```
+
+The `Instance` struct gained four new fields: `AppID`, `ReleaseID`, `RootfsPath`, `WorkspacePath`. `bootInstance()` uses `inst.RootfsPath` if set, otherwise falls back to `cfg.BaseRootfsPath`. This preserves M1 backward compatibility — existing code that calls `CreateInstance(id, cmd, ports)` without options gets the base rootfs.
+
+New method: `GetInstanceByApp(appID) *Instance` — used by the router and serve handler to find the running instance for an app.
+
+### 9.6 Multi-App Router — Header-Based Resolution with Fallback
+
+**Original assumption (§1.8):** Path-based routing (`/app/{appId}/...`).
+
+**M2 reality:** The router supports app-aware routing via the `X-Aegis-App` HTTP header, with fallback to the M1 default instance behavior (first instance in the map). This keeps M1 backward compatibility while enabling multi-app routing.
+
+```go
+type AppResolver interface {
+    GetAppByName(name string) (appID string, ok bool)
+}
+```
+
+The router constructor accepts an optional `AppResolver`. On each request:
+
+1. Check `X-Aegis-App` header → look up app ID via resolver → find instance via `GetInstanceByApp(appID)`
+2. If no header or no match → fall back to `GetDefaultInstance()` (M1 behavior)
+
+Path-based routing (`/app/{appId}/...`) can be added later without changing the interface. For M2, the simple default instance fallback means `aegis app serve myapp` works with a plain `curl http://127.0.0.1:8099/` — since there's typically one serving app at a time in the local dev workflow.
+
+The resolver is implemented as a thin adapter wrapping the registry DB in `cmd/aegisd/main.go`.
+
+### 9.7 `--image` Flag on `aegis run`
+
+**New:** `aegis run --image alpine:3.21 -- echo hello` pulls an OCI image, creates a temporary rootfs with the harness injected, runs the task, and cleans up.
+
+The flow in `TaskStore.runTask()`:
+
+1. If `req.Image` is set → `imageCache.GetOrPull(ctx, image)` → get cached rootfs directory
+2. `overlay.Create(ctx, cachedDir, "task-"+taskID)` → full copy to temp release dir
+3. `image.InjectHarness(overlayDir, harnessBin)` → bake harness into temp rootfs
+4. Use temp rootfs as `VMConfig.Rootfs.Path`
+5. After task completes → `overlay.Remove("task-"+taskID)` (deferred cleanup)
+
+Without `--image`, behavior is unchanged — the base rootfs is used.
+
+### 9.8 App Lifecycle — Publish + Serve
+
+**New API routes (7 total):**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST /v1/apps` | Create app | `{name, image, command, expose_ports}` |
+| `GET /v1/apps` | List apps | |
+| `GET /v1/apps/{id}` | Get app (by ID or name) | |
+| `DELETE /v1/apps/{id}` | Delete app + releases + stop instances | |
+| `POST /v1/apps/{id}/publish` | Publish release | Pull → overlay → inject → record |
+| `GET /v1/apps/{id}/releases` | List releases | |
+| `POST /v1/apps/{id}/serve` | Serve app | Boot from latest release |
+
+**Publish flow** (`handlePublishApp`):
+
+1. Resolve app → get image reference
+2. `imageCache.GetOrPull(ctx, app.Image)` → cached or freshly pulled rootfs directory
+3. `overlay.Create(ctx, cachedDir, releaseID)` → full copy to release dir
+4. `image.InjectHarness(releaseDir, harnessBin)` → bake harness into release copy
+5. `registry.SaveRelease(release)` → record in DB with digest, rootfs path, optional label
+
+**Serve flow** (`handleServeApp`):
+
+1. Resolve app → get latest release → verify it exists
+2. Create workspace directory at `~/.aegis/data/workspaces/{appID}/`
+3. `lifecycle.CreateInstance(id, cmd, ports, WithApp(...), WithRootfs(...), WithWorkspace(...))`
+4. Boot instance asynchronously → scale-to-zero via existing idle timers
+5. If already serving → return existing instance info (idempotent)
+
+**App resolution:** All app endpoints accept either app ID (`app-1739...`) or app name (`myapp`) — the handler tries by ID first, then by name. This makes the CLI ergonomic: `aegis app publish myapp` works.
+
+### 9.9 CLI App Commands
+
+**New subcommand group:** `aegis app <subcommand>`
+
+```bash
+aegis app create --name myapp --image python:3.12 --expose 80 -- python -m http.server 80
+aegis app publish myapp [--label v1]
+aegis app serve myapp         # blocks until Ctrl+C
+aegis app list                # table format: NAME, IMAGE, ID
+aegis app info myapp          # details + release list
+aegis app delete myapp
+```
+
+`aegis app serve` behaves like `aegis run --expose` — it prints the router address, blocks until Ctrl+C, then cleans up the instance. The app and its releases persist across serve sessions.
+
+### 9.10 Config Additions
+
+Three new paths in `config.Config`:
+
+```go
+ImageCacheDir  string  // ~/.aegis/data/images     — digest-keyed OCI cache
+ReleasesDir    string  // ~/.aegis/data/releases    — release rootfs copies
+WorkspacesDir  string  // ~/.aegis/data/workspaces  — app workspace volumes
+```
+
+All three directories are created by `cfg.EnsureDirs()` at daemon startup.
+
+### 9.11 Harness — Platform-Specific Mount Code
+
+The mount code (`mountEssential`, `mountWorkspace`) uses `syscall.Mount` which is Linux-only. To keep `go build ./internal/...` working on macOS (for development), the mount code is split into build-tagged files:
+
+- `mount_linux.go` — real implementations using `syscall.Mount`
+- `mount_other.go` — no-op stubs (`//go:build !linux`)
+
+The harness binary is always built with `GOOS=linux GOARCH=arm64`, so the real mount code is used inside VMs. The stubs exist only to satisfy the Go compiler when building on macOS.
+
+### 9.12 aegisd Init Sequence (M2)
+
+```go
+cfg := config.DefaultConfig()
+backend := vmm.NewLibkrunVMM(cfg)
+reg := registry.Open(cfg.DBPath)
+imgCache := image.NewCache(cfg.ImageCacheDir)          // new
+ov := overlay.NewCopyOverlay(cfg.ReleasesDir)           // new
+lm := lifecycle.NewManager(backend, cfg)
+rtr := router.New(lm, cfg.RouterAddr, &appResolver{reg}) // new: app resolver
+server := api.NewServer(cfg, backend, lm, reg, imgCache, ov) // new: image + overlay
+
+rtr.Start()
+server.Start()
+// ... wait for signal ...
+lm.Shutdown()
+rtr.Stop()
+server.Stop()
+reg.Close()
+```
+
+### 9.13 Project Structure (Actual, M2)
+
+Three new packages, no new binaries:
+
+```
+aegis/
+├── cmd/
+│   ├── aegisd/main.go              # + image cache, overlay, app resolver init
+│   ├── aegis/main.go               # + --image flag, app subcommand group
+│   ├── aegis-harness/main.go       # unchanged
+│   └── aegis-vmm-worker/main.go    # + krun_add_virtiofs for workspace volumes
+├── internal/
+│   ├── vmm/vmm.go                  # unchanged
+│   ├── vmm/libkrun.go              # + MappedVolumes in WorkerConfig, workspace path
+│   ├── vmm/channel.go              # unchanged
+│   ├── harness/main.go             # mount code extracted to platform files
+│   ├── harness/mount_linux.go      # NEW: mountEssential + mountWorkspace
+│   ├── harness/mount_other.go      # NEW: no-op stubs for macOS builds
+│   ├── harness/rpc.go              # unchanged
+│   ├── harness/exec.go             # unchanged
+│   ├── api/server.go               # + imageCache, overlay fields; new app routes
+│   ├── api/tasks.go                # + Image field, image pull in runTask
+│   ├── api/apps.go                 # NEW: app CRUD + publish + serve handlers
+│   ├── config/config.go            # + ImageCacheDir, ReleasesDir, WorkspacesDir
+│   ├── config/platform.go          # unchanged
+│   ├── lifecycle/manager.go        # + InstanceOption, app fields, GetInstanceByApp
+│   ├── router/router.go            # + AppResolver interface, multi-app routing
+│   ├── registry/db.go              # + apps, releases tables in migration
+│   ├── registry/instances.go       # unchanged
+│   ├── registry/apps.go            # NEW: App CRUD
+│   ├── registry/releases.go        # NEW: Release CRUD
+│   ├── image/                      # NEW: OCI image pipeline
+│   │   ├── pull.go                 #   Pull with platform resolution
+│   │   ├── unpack.go               #   Layer extraction + whiteout handling
+│   │   └── cache.go                #   Digest-keyed cache + InjectHarness
+│   └── overlay/                    # NEW: rootfs copy management
+│       ├── overlay.go              #   Overlay interface
+│       └── copy.go                 #   tar-pipe CopyOverlay
+├── test/integration/
+│   ├── helpers_test.go             # unchanged
+│   ├── m0_test.go                  # unchanged
+│   ├── m1_test.go                  # unchanged
+│   └── m2_test.go                  # NEW: image pull, app lifecycle, cache tests
+├── go.mod                          # + github.com/google/go-containerregistry
+└── ...
+```
+
+### 9.14 M2 Dependencies (Actual)
+
+```
+macOS (confirmed working):
+  All M0 + M1 dependencies
+  + github.com/google/go-containerregistry v0.20.7 (pure Go, no cgo)
+    → OCI image pull/manifest/layer handling
+    → transitive deps: docker/cli, opencontainers/image-spec, etc.
+
+Not needed for M2 (deferred):
+  mkfs.ext4 / e2fsprogs (only for Firecracker ext4 images, M4)
+  device-mapper / dmsetup (Linux COW overlays, M4)
+```

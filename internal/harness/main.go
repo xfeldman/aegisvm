@@ -28,6 +28,9 @@ func Run() {
 	// Mount /proc and /tmp if not already mounted (we are PID 1)
 	mountEssential()
 
+	// Mount workspace virtiofs if available (best-effort)
+	mountWorkspace()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -73,26 +76,4 @@ func Run() {
 	handleConnection(ctx, conn)
 
 	log.Println("harness shutting down")
-}
-
-// mountEssential mounts /proc and /tmp if they are not already mounted.
-func mountEssential() {
-	mounts := []struct {
-		source string
-		target string
-		fstype string
-		flags  uintptr
-	}{
-		{"proc", "/proc", "proc", 0},
-		{"tmpfs", "/tmp", "tmpfs", 0},
-		{"tmpfs", "/run", "tmpfs", 0},
-	}
-
-	for _, m := range mounts {
-		_ = os.MkdirAll(m.target, 0755)
-		err := syscall.Mount(m.source, m.target, m.fstype, m.flags, "")
-		if err != nil && err != syscall.EBUSY {
-			log.Printf("mount %s on %s: %v (non-fatal)", m.source, m.target, err)
-		}
-	}
 }

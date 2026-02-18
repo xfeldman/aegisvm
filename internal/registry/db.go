@@ -48,8 +48,8 @@ func (d *DB) Close() error {
 }
 
 func (d *DB) migrate() error {
-	_, err := d.db.Exec(`
-		CREATE TABLE IF NOT EXISTS instances (
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS instances (
 			id          TEXT PRIMARY KEY,
 			state       TEXT NOT NULL DEFAULT 'stopped',
 			command     TEXT NOT NULL,
@@ -57,7 +57,29 @@ func (d *DB) migrate() error {
 			vm_id       TEXT NOT NULL DEFAULT '',
 			created_at  TEXT NOT NULL DEFAULT (datetime('now')),
 			updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-		)
-	`)
-	return err
+		)`,
+		`CREATE TABLE IF NOT EXISTS apps (
+			id          TEXT PRIMARY KEY,
+			name        TEXT NOT NULL UNIQUE,
+			image       TEXT NOT NULL,
+			command     TEXT NOT NULL DEFAULT '[]',
+			expose_ports TEXT NOT NULL DEFAULT '[]',
+			config      TEXT NOT NULL DEFAULT '{}',
+			created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+		`CREATE TABLE IF NOT EXISTS releases (
+			id           TEXT PRIMARY KEY,
+			app_id       TEXT NOT NULL REFERENCES apps(id),
+			image_digest TEXT NOT NULL,
+			rootfs_path  TEXT NOT NULL,
+			label        TEXT,
+			created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := d.db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -20,19 +20,26 @@ import (
 	"github.com/xfeldman/aegis/internal/lifecycle"
 )
 
+// AppResolver looks up an app by name or ID. Used for multi-app routing.
+type AppResolver interface {
+	GetAppByName(name string) (appID string, ok bool)
+}
+
 // Router is the HTTP reverse proxy for serve-mode instances.
 type Router struct {
-	lm     *lifecycle.Manager
-	addr   string
-	server *http.Server
-	mu     sync.Mutex
+	lm       *lifecycle.Manager
+	addr     string
+	server   *http.Server
+	resolver AppResolver
+	mu       sync.Mutex
 }
 
 // New creates a new router.
-func New(lm *lifecycle.Manager, addr string) *Router {
+func New(lm *lifecycle.Manager, addr string, resolver AppResolver) *Router {
 	r := &Router{
-		lm:   lm,
-		addr: addr,
+		lm:       lm,
+		addr:     addr,
+		resolver: resolver,
 	}
 	r.server = &http.Server{
 		Addr:    addr,
@@ -70,8 +77,12 @@ func (r *Router) Addr() string {
 }
 
 func (r *Router) handleRequest(w http.ResponseWriter, req *http.Request) {
-	// For M1: single instance — get the default one
-	inst := r.lm.GetDefaultInstance()
+	// M2: try app-based routing via X-Aegis-App header or Host
+	inst := r.resolveInstance(req)
+	if inst == nil {
+		// Fall back to default instance (M1 backward compat)
+		inst = r.lm.GetDefaultInstance()
+	}
 	if inst == nil {
 		http.Error(w, "No active instance", http.StatusServiceUnavailable)
 		return
@@ -201,6 +212,26 @@ func (r *Router) handleWebSocket(w http.ResponseWriter, req *http.Request, targe
 		done <- struct{}{}
 	}()
 	<-done
+}
+
+// resolveInstance attempts to find an instance for a request using app-aware routing.
+func (r *Router) resolveInstance(req *http.Request) *lifecycle.Instance {
+	if r.resolver == nil {
+		return nil
+	}
+
+	// Check X-Aegis-App header
+	appName := req.Header.Get("X-Aegis-App")
+	if appName == "" {
+		return nil
+	}
+
+	appID, ok := r.resolver.GetAppByName(appName)
+	if !ok {
+		return nil
+	}
+
+	return r.lm.GetInstanceByApp(appID)
 }
 
 func isWebSocketUpgrade(r *http.Request) bool {

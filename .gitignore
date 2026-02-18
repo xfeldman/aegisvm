@@ -1,8 +1,8 @@
-# Binaries
+# Binaries (anchored to repo root so cmd/ source dirs are not ignored)
 /bin/
-aegisd
-aegis
-aegis-harness
+/aegisd
+/aegis
+/aegis-harness
 
 # Base rootfs
 base/*.ext4

@@ -44,6 +44,12 @@ type Instance struct {
 	Channel     vmm.ControlChannel
 	Endpoints   []vmm.HostEndpoint
 
+	// App/release association (M2+)
+	AppID         string
+	ReleaseID     string
+	RootfsPath    string // if set, used instead of cfg.BaseRootfsPath
+	WorkspacePath string // if set, passed to VMConfig.WorkspacePath
+
 	// Connection tracking
 	activeConns int
 
@@ -88,13 +94,41 @@ func (m *Manager) OnStateChange(fn func(id, state string)) {
 	m.onStateChange = fn
 }
 
+// InstanceOption configures an instance at creation time.
+type InstanceOption func(*Instance)
+
+// WithApp sets the app and release association.
+func WithApp(appID, releaseID string) InstanceOption {
+	return func(inst *Instance) {
+		inst.AppID = appID
+		inst.ReleaseID = releaseID
+	}
+}
+
+// WithRootfs sets a custom rootfs path (instead of the default base rootfs).
+func WithRootfs(path string) InstanceOption {
+	return func(inst *Instance) {
+		inst.RootfsPath = path
+	}
+}
+
+// WithWorkspace sets a workspace volume path.
+func WithWorkspace(path string) InstanceOption {
+	return func(inst *Instance) {
+		inst.WorkspacePath = path
+	}
+}
+
 // CreateInstance creates a new instance definition without starting it.
-func (m *Manager) CreateInstance(id string, command []string, exposePorts []vmm.PortExpose) *Instance {
+func (m *Manager) CreateInstance(id string, command []string, exposePorts []vmm.PortExpose, opts ...InstanceOption) *Instance {
 	inst := &Instance{
 		ID:          id,
 		State:       StateStopped,
 		Command:     command,
 		ExposePorts: exposePorts,
+	}
+	for _, opt := range opts {
+		opt(inst)
 	}
 
 	m.mu.Lock()
@@ -151,14 +185,20 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 	inst.mu.Unlock()
 	m.notifyStateChange(inst.ID, StateStarting)
 
+	rootfsPath := m.cfg.BaseRootfsPath
+	if inst.RootfsPath != "" {
+		rootfsPath = inst.RootfsPath
+	}
+
 	vmCfg := vmm.VMConfig{
 		Rootfs: vmm.RootFS{
 			Type: m.vmm.Capabilities().RootFSType,
-			Path: m.cfg.BaseRootfsPath,
+			Path: rootfsPath,
 		},
-		MemoryMB:    m.cfg.DefaultMemoryMB,
-		VCPUs:       m.cfg.DefaultVCPUs,
-		ExposePorts: inst.ExposePorts,
+		MemoryMB:      m.cfg.DefaultMemoryMB,
+		VCPUs:         m.cfg.DefaultVCPUs,
+		ExposePorts:   inst.ExposePorts,
+		WorkspacePath: inst.WorkspacePath,
 	}
 
 	handle, err := m.vmm.CreateVM(vmCfg)
@@ -460,6 +500,18 @@ func (m *Manager) GetInstance(id string) *Instance {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.instances[id]
+}
+
+// GetInstanceByApp returns the instance associated with an app ID, or nil.
+func (m *Manager) GetInstanceByApp(appID string) *Instance {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, inst := range m.instances {
+		if inst.AppID == appID {
+			return inst
+		}
+	}
+	return nil
 }
 
 // GetDefaultInstance returns the first instance (for M1 single-instance routing).

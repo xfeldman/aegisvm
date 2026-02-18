@@ -17,12 +17,13 @@ import (
 // WorkerConfig is the JSON configuration sent to the vmm-worker process.
 // Must match the WorkerConfig in cmd/aegis-vmm-worker/main.go.
 type WorkerConfig struct {
-	RootfsPath string   `json:"rootfs_path"`
-	MemoryMB   int      `json:"memory_mb"`
-	VCPUs      int      `json:"vcpus"`
-	ExecPath   string   `json:"exec_path"`
-	HostAddr   string   `json:"host_addr"`
-	PortMap    []string `json:"port_map,omitempty"` // e.g. ["8080:80"] — host_port:guest_port
+	RootfsPath    string   `json:"rootfs_path"`
+	MemoryMB      int      `json:"memory_mb"`
+	VCPUs         int      `json:"vcpus"`
+	ExecPath      string   `json:"exec_path"`
+	HostAddr      string   `json:"host_addr"`
+	PortMap       []string `json:"port_map,omitempty"`       // e.g. ["8080:80"] — host_port:guest_port
+	MappedVolumes []string `json:"mapped_volumes,omitempty"` // e.g. ["workspace:/path"] — tag:path
 }
 
 type vmInstance struct {
@@ -121,14 +122,21 @@ func (l *LibkrunVMM) StartVM(h Handle) (ControlChannel, error) {
 	inst.endpoints = endpoints
 	l.mu.Unlock()
 
+	// Build mapped volumes list
+	var mappedVolumes []string
+	if cfg.WorkspacePath != "" {
+		mappedVolumes = append(mappedVolumes, "workspace:"+cfg.WorkspacePath)
+	}
+
 	// 3. Spawn vmm-worker
 	wc := WorkerConfig{
-		RootfsPath: cfg.Rootfs.Path,
-		MemoryMB:   cfg.MemoryMB,
-		VCPUs:      cfg.VCPUs,
-		ExecPath:   "/usr/bin/aegis-harness",
-		HostAddr:   hostAddr,
-		PortMap:    portMap,
+		RootfsPath:    cfg.Rootfs.Path,
+		MemoryMB:      cfg.MemoryMB,
+		VCPUs:         cfg.VCPUs,
+		ExecPath:      "/usr/bin/aegis-harness",
+		HostAddr:      hostAddr,
+		PortMap:       portMap,
+		MappedVolumes: mappedVolumes,
 	}
 
 	wcJSON, err := json.Marshal(wc)

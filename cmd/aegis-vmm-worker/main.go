@@ -23,12 +23,13 @@ import (
 )
 
 type WorkerConfig struct {
-	RootfsPath string   `json:"rootfs_path"`
-	MemoryMB   int      `json:"memory_mb"`
-	VCPUs      int      `json:"vcpus"`
-	ExecPath   string   `json:"exec_path"`
-	HostAddr   string   `json:"host_addr"`   // host:port for harness to connect back to
-	PortMap    []string `json:"port_map"`     // e.g. ["8080:80"] — host_port:guest_port
+	RootfsPath    string   `json:"rootfs_path"`
+	MemoryMB      int      `json:"memory_mb"`
+	VCPUs         int      `json:"vcpus"`
+	ExecPath      string   `json:"exec_path"`
+	HostAddr      string   `json:"host_addr"`       // host:port for harness to connect back to
+	PortMap       []string `json:"port_map"`         // e.g. ["8080:80"] — host_port:guest_port
+	MappedVolumes []string `json:"mapped_volumes"`   // e.g. ["workspace:/path/to/dir"] — tag:path
 }
 
 func main() {
@@ -127,10 +128,42 @@ func run(cfg WorkerConfig) error {
 		}
 	}
 
+	// Add virtiofs volumes if any
+	for _, vol := range cfg.MappedVolumes {
+		parts := splitVolume(vol)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid mapped volume format %q, expected tag:path", vol)
+		}
+		cTag := C.CString(parts[0])
+		defer C.free(unsafe.Pointer(cTag))
+		cPath := C.CString(parts[1])
+		defer C.free(unsafe.Pointer(cPath))
+		ret = C.krun_add_virtiofs(C.uint32_t(ctxID), cTag, cPath)
+		if ret < 0 {
+			return fmt.Errorf("krun_add_virtiofs(%s, %s) failed: %d", parts[0], parts[1], ret)
+		}
+	}
+
 	// Start the VM — this never returns on success.
 	// The process becomes the VM. On guest exit, the process exits.
 	ret = C.krun_start_enter(C.uint32_t(ctxID))
 
 	// Only reached on error
 	return fmt.Errorf("krun_start_enter failed: %d", ret)
+}
+
+// splitVolume splits "tag:path" into [tag, path], handling paths with colons.
+func splitVolume(s string) []string {
+	// Split on first colon only
+	idx := 0
+	for i, c := range s {
+		if c == ':' {
+			idx = i
+			break
+		}
+	}
+	if idx == 0 {
+		return nil
+	}
+	return []string{s[:idx], s[idx+1:]}
 }

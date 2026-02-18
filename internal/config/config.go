@@ -32,6 +32,15 @@ type Config struct {
 	// DBPath is the path to the SQLite database.
 	DBPath string
 
+	// ImageCacheDir is the directory for cached OCI image rootfs directories.
+	ImageCacheDir string
+
+	// ReleasesDir is the directory for release rootfs copies.
+	ReleasesDir string
+
+	// WorkspacesDir is the directory for app workspace volumes.
+	WorkspacesDir string
+
 	// PauseAfterIdle is the duration after which an idle instance is paused (SIGSTOP).
 	PauseAfterIdle time.Duration
 
@@ -54,6 +63,9 @@ func DefaultConfig() *Config {
 		DefaultVCPUs:       1,
 		RouterAddr:         "127.0.0.1:8099",
 		DBPath:             filepath.Join(aegisDir, "data", "aegis.db"),
+		ImageCacheDir:      filepath.Join(aegisDir, "data", "images"),
+		ReleasesDir:        filepath.Join(aegisDir, "data", "releases"),
+		WorkspacesDir:      filepath.Join(aegisDir, "data", "workspaces"),
 		PauseAfterIdle:     60 * time.Second,
 		TerminateAfterIdle: 20 * time.Minute,
 	}
@@ -65,6 +77,9 @@ func (c *Config) EnsureDirs() error {
 		c.DataDir,
 		filepath.Join(c.DataDir, "sockets"),
 		filepath.Dir(c.SocketPath),
+		c.ImageCacheDir,
+		c.ReleasesDir,
+		c.WorkspacesDir,
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0700); err != nil {
