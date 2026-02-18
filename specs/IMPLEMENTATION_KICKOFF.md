@@ -1474,12 +1474,17 @@ Not needed for M2 (deferred):
 
 **Reality for M3:** No harness changes were needed. Secrets are decrypted on the host and merged into the `env` map of the existing `runTask`/`startServer` RPC params. The harness already passes `env` to child processes via `execve` — secrets arrive as normal environment variables.
 
-This works because:
+**This approach is valid only while "restore" means "cold boot from disk layers."** In M3, restore always means: stop VM → boot fresh VM from release rootfs → send new `startServer` RPC with full env. There is no memory snapshot restore. Specifically:
 
-- **Terminate → restore** = fresh boot. A new `startServer` RPC is sent with the full env (including secrets).
-- **Pause → resume** = memory retained. The child process keeps its environment in memory. No re-injection needed.
+- **Terminate → restore** = cold boot. A new `startServer` RPC is sent with the full env (including secrets). The harness is a fresh process; no stale state.
+- **Pause → resume** = memory retained (SIGSTOP/SIGCONT). The child process keeps its environment in memory. No re-injection needed because nothing was lost.
 
-The dedicated `injectSecrets` RPC from §1.7 is deferred to M4+ for the snapshot restore case (where a running harness needs new secrets injected into an already-running process tree without restarting it). For M3's cold-boot-only model, merging into `env` is correct and simpler.
+**When memory snapshot restore arrives (M4+), this model breaks.** Snapshot restore reconstitutes a running harness from a memory image — the harness is already alive, child processes may already be running, and there is no `startServer` RPC to carry env. At that point, one of two approaches is needed:
+
+1. **`injectSecrets` RPC** (§1.7's original design): send secrets to the running harness via a dedicated RPC; harness stores them in memory and applies them to any newly spawned child processes. Already-running children would not receive updated secrets without a restart.
+2. **"Restart server process with env" contract**: after snapshot restore, the harness kills and re-spawns the server process with a fresh `execve` that includes the current secrets. Simpler than option 1 but adds a cold-start penalty to snapshot restore.
+
+The choice between these is deferred to M4. For M3's cold-boot-only model, merging into the existing `env` field is correct and simpler.
 
 **Bug fix:** The `startServer` RPC in `lifecycle/manager.go` was not passing `env` at all — the `"env"` key was missing from the RPC params. This meant secrets (and any environment variables) were silently dropped in serve mode. Fixed by adding `"env": inst.Env` to the `startServer` RPC params.
 
@@ -1505,6 +1510,7 @@ Key details:
 - **Master key location:** `~/.aegis/master.key` (configurable via `config.MasterKeyPath`)
 - **Auto-generation:** If the key file doesn't exist, 32 random bytes are generated via `crypto/rand` and written with `0600` permissions. The parent directory is created with `0700`.
 - **Format:** Each encrypted value is `nonce || ciphertext` (12-byte nonce prepended to the GCM ciphertext). No separate nonce storage needed.
+- **Key rotation:** Not supported in M3. Deleting `~/.aegis/master.key` invalidates all stored secrets — they become undecryptable garbage. The user must re-set all secrets after key deletion. A proper rotation mechanism (decrypt-all-with-old-key, re-encrypt-with-new-key) is a future concern, not needed for local single-user use.
 - **No new dependencies:** stdlib `crypto/aes`, `crypto/cipher`, `crypto/rand`.
 
 ### 10.3 Registry Schema — secrets + kits Tables
@@ -1596,7 +1602,7 @@ config:
     vcpus: 2
 ```
 
-`kit.ParseFile(path)` reads YAML, validates required fields (name, version, image), and returns a `*Manifest`. `manifest.ToKit()` converts to a `*registry.Kit` for storage.
+**YAML parsing lives server-side only.** `kit.ParseFile(path)` (in `internal/kit/`) uses `gopkg.in/yaml.v3` to parse the full manifest with all nested config sections, validates required fields (name, version, image), and returns a `*Manifest`. `manifest.ToKit()` converts to a `*registry.Kit` for storage. The CLI does **not** import `yaml.v3` — see §10.7 for how the CLI handles manifest files.
 
 **Hooks interface:**
 
@@ -1642,7 +1648,9 @@ aegis kit info famiglia             # detailed view
 aegis kit uninstall famiglia
 ```
 
-The `kit install` command parses top-level YAML fields from the manifest file on the client side (simple line-based parser for the CLI binary, avoiding a yaml.v3 dependency in the CLI). The parsed fields are sent as JSON to `POST /v1/kits`.
+**CLI-side manifest parsing:** The `kit install` command uses a simple line-based parser (`parseSimpleYAML`) that extracts only top-level scalar fields (`name`, `version`, `image`, `description`) from the manifest YAML. It does **not** parse nested `config:` sections — it sends the top-level fields as JSON to `POST /v1/kits`. This avoids pulling `gopkg.in/yaml.v3` into the CLI binary.
+
+This means `aegis kit install` currently registers the kit's identity (name, version, image) but drops the nested config. For full config registration, use the API directly or add a future `POST /v1/kits/manifest` endpoint that accepts raw YAML and parses server-side with the full `kit.ParseFile()` pipeline.
 
 ### 10.8 Enhanced `aegis doctor` — Capability Matrix
 
@@ -1733,9 +1741,9 @@ type CreateTaskRequest struct {
 }
 ```
 
-When `AppID` is set, `handleCreateTask` resolves the app (by ID or name via `resolveApp`), decrypts its secrets, and merges them into `req.Env`. Explicit env values in the request take precedence over secrets (no overwrite if key already exists).
+**`AppID` accepts either an app ID (`app-1739...`) or an app name (`myapp`).** When set, `handleCreateTask` calls `resolveApp(appID)` — which tries by ID first, then by name (same resolution used by all app endpoints since M2) — to get the canonical app ID, then decrypts that app's secrets and merges them into `req.Env`. Explicit env values in the request take precedence over secrets (no overwrite if key already exists).
 
-This enables secret-injected tasks without modifying the harness: `aegis run` sends `app_id` in the task request, and the daemon handles decryption and env merging before the RPC is sent.
+This enables secret-injected tasks without modifying the harness. From the CLI: `aegis run --app myapp -- sh -c 'echo $SECRET'` would send `app_id: "myapp"` in the task request. The daemon resolves the name, decrypts secrets, and merges them into the env before the RPC is sent to the harness.
 
 ### 10.11 aegisd Init Sequence (M3)
 
