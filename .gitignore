@@ -1,0 +1,27 @@
+# Binaries
+/bin/
+aegisd
+aegis
+aegis-harness
+
+# Base rootfs
+base/*.ext4
+base/rootfs/
+
+# Runtime
+/data/
+*.sock
+
+# Go
+*.exe
+*.test
+*.out
+vendor/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
