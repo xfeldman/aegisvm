@@ -71,6 +71,10 @@ func (c *Cache) GetOrPull(ctx context.Context, imageRef string) (rootfsDir strin
 }
 
 // InjectHarness copies the harness binary into the rootfs at /usr/bin/aegis-harness.
+// This path must match the ExecPath in the vmm-worker config — libkrun's
+// krun_set_exec() always starts /usr/bin/aegis-harness as PID 1, regardless
+// of the OCI image's ENTRYPOINT or CMD. Any existing file at this path in
+// the image is intentionally overwritten.
 func InjectHarness(rootfsDir, harnessBin string) error {
 	destPath := filepath.Join(rootfsDir, "usr", "bin", "aegis-harness")
 	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {

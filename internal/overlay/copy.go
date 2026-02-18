@@ -3,9 +3,12 @@ package overlay
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 // CopyOverlay implements Overlay using full directory copies.
@@ -70,4 +73,29 @@ func (o *CopyOverlay) Remove(id string) error {
 
 func (o *CopyOverlay) Path(id string) string {
 	return filepath.Join(o.baseDir, id)
+}
+
+// CleanStaleTasks removes task-* overlay directories older than maxAge.
+// Called on daemon startup to clean up after crashes.
+func (o *CopyOverlay) CleanStaleTasks(maxAge time.Duration) {
+	entries, err := os.ReadDir(o.baseDir)
+	if err != nil {
+		return
+	}
+
+	cutoff := time.Now().Add(-maxAge)
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "task-") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			path := filepath.Join(o.baseDir, e.Name())
+			log.Printf("overlay GC: removing stale task overlay %s (age=%v)", e.Name(), time.Since(info.ModTime()).Round(time.Minute))
+			os.RemoveAll(path)
+		}
+	}
 }

@@ -67,6 +67,9 @@ func main() {
 	imgCache := image.NewCache(cfg.ImageCacheDir)
 	ov := overlay.NewCopyOverlay(cfg.ReleasesDir)
 
+	// Clean up stale task overlays from previous crashes (older than 1 hour)
+	ov.CleanStaleTasks(1 * time.Hour)
+
 	// Create lifecycle manager
 	lm := lifecycle.NewManager(backend, cfg)
 	lm.OnStateChange(func(id, state string) {

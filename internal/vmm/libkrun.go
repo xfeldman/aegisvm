@@ -129,6 +129,9 @@ func (l *LibkrunVMM) StartVM(h Handle) (ControlChannel, error) {
 	}
 
 	// 3. Spawn vmm-worker
+	// ExecPath is always the harness, regardless of OCI image entrypoint.
+	// krun_set_exec() sets the guest PID 1 — the image's ENTRYPOINT/CMD
+	// is ignored. The harness then starts user commands via RPC.
 	wc := WorkerConfig{
 		RootfsPath:    cfg.Rootfs.Path,
 		MemoryMB:      cfg.MemoryMB,

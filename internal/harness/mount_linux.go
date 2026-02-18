@@ -6,18 +6,24 @@ import (
 	"syscall"
 )
 
-// mountWorkspace attempts to mount the "workspace" virtiofs tag at /workspace.
-// This is best-effort — if the tag isn't available (no workspace configured),
-// the mount will fail silently.
+// mountWorkspace mounts the "workspace" virtiofs tag at /workspace.
+// Behavior depends on whether a workspace was configured by the host:
+//   - AEGIS_WORKSPACE=1 set → workspace was configured, mount failure is fatal
+//   - AEGIS_WORKSPACE not set → no workspace configured, skip silently
 func mountWorkspace() {
+	configured := os.Getenv("AEGIS_WORKSPACE") == "1"
+
+	if !configured {
+		return
+	}
+
 	target := "/workspace"
 	_ = os.MkdirAll(target, 0755)
 	err := syscall.Mount("workspace", target, "virtiofs", 0, "")
 	if err != nil {
-		log.Printf("workspace mount: %v (non-fatal, workspace may not be configured)", err)
-	} else {
-		log.Printf("workspace mounted at %s", target)
+		log.Fatalf("workspace mount failed: %v (workspace was configured but virtiofs mount failed)", err)
 	}
+	log.Printf("workspace mounted at %s", target)
 }
 
 // mountEssential mounts /proc and /tmp if they are not already mounted.

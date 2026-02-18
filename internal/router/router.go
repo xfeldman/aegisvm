@@ -215,23 +215,45 @@ func (r *Router) handleWebSocket(w http.ResponseWriter, req *http.Request, targe
 }
 
 // resolveInstance attempts to find an instance for a request using app-aware routing.
+// Resolution order:
+//  1. Path prefix: /app/{name}/... → strip prefix, route to app
+//  2. X-Aegis-App header → route to named app
+//  3. Fall through to default instance (caller handles this)
 func (r *Router) resolveInstance(req *http.Request) *lifecycle.Instance {
 	if r.resolver == nil {
 		return nil
 	}
 
-	// Check X-Aegis-App header
+	// 1. Path-based routing: /app/{name}/...
+	if strings.HasPrefix(req.URL.Path, "/app/") {
+		rest := strings.TrimPrefix(req.URL.Path, "/app/")
+		slashIdx := strings.IndexByte(rest, '/')
+		var appName string
+		if slashIdx >= 0 {
+			appName = rest[:slashIdx]
+			// Strip the /app/{name} prefix — backend sees the remainder
+			req.URL.Path = rest[slashIdx:]
+		} else {
+			appName = rest
+			req.URL.Path = "/"
+		}
+
+		if appName != "" {
+			if appID, ok := r.resolver.GetAppByName(appName); ok {
+				return r.lm.GetInstanceByApp(appID)
+			}
+		}
+	}
+
+	// 2. Header-based routing: X-Aegis-App
 	appName := req.Header.Get("X-Aegis-App")
-	if appName == "" {
-		return nil
+	if appName != "" {
+		if appID, ok := r.resolver.GetAppByName(appName); ok {
+			return r.lm.GetInstanceByApp(appID)
+		}
 	}
 
-	appID, ok := r.resolver.GetAppByName(appName)
-	if !ok {
-		return nil
-	}
-
-	return r.lm.GetInstanceByApp(appID)
+	return nil
 }
 
 func isWebSocketUpgrade(r *http.Request) bool {

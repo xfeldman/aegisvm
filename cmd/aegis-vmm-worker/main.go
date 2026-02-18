@@ -100,6 +100,11 @@ func run(cfg WorkerConfig) error {
 		"TERM=linux",
 		fmt.Sprintf("AEGIS_HOST_ADDR=%s", cfg.HostAddr),
 	}
+	// Signal to the harness whether a workspace volume was configured.
+	// If set, the harness must fail on mount error rather than silently skip.
+	if len(cfg.MappedVolumes) > 0 {
+		envVars = append(envVars, "AEGIS_WORKSPACE=1")
+	}
 	cEnvPtrs := make([]*C.char, len(envVars)+1)
 	for i, e := range envVars {
 		cEnvPtrs[i] = C.CString(e)

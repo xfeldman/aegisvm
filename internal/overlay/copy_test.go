@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestCopyOverlayCreateAndRemove(t *testing.T) {
@@ -71,6 +72,47 @@ func TestCopyOverlayCreateAndRemove(t *testing.T) {
 	}
 	if _, err := os.Stat(dest); !os.IsNotExist(err) {
 		t.Error("directory still exists after remove")
+	}
+}
+
+func TestCleanStaleTasks(t *testing.T) {
+	baseDir := t.TempDir()
+	ov := NewCopyOverlay(baseDir)
+
+	// Create a stale task dir (fake old modtime)
+	staleDir := filepath.Join(baseDir, "task-task-1")
+	os.MkdirAll(staleDir, 0755)
+	os.WriteFile(filepath.Join(staleDir, "file"), []byte("x"), 0644)
+	oldTime := time.Now().Add(-3 * time.Hour)
+	os.Chtimes(staleDir, oldTime, oldTime)
+
+	// Create a fresh task dir
+	freshDir := filepath.Join(baseDir, "task-task-2")
+	os.MkdirAll(freshDir, 0755)
+	os.WriteFile(filepath.Join(freshDir, "file"), []byte("x"), 0644)
+
+	// Create a release dir (not a task — should not be cleaned)
+	releaseDir := filepath.Join(baseDir, "rel-123")
+	os.MkdirAll(releaseDir, 0755)
+	oldTime2 := time.Now().Add(-5 * time.Hour)
+	os.Chtimes(releaseDir, oldTime2, oldTime2)
+
+	// Run GC with 1 hour max age
+	ov.CleanStaleTasks(1 * time.Hour)
+
+	// Stale task dir should be removed
+	if _, err := os.Stat(staleDir); !os.IsNotExist(err) {
+		t.Error("stale task dir should have been removed")
+	}
+
+	// Fresh task dir should still exist
+	if _, err := os.Stat(freshDir); err != nil {
+		t.Error("fresh task dir should still exist")
+	}
+
+	// Release dir should still exist (not a task-*)
+	if _, err := os.Stat(releaseDir); err != nil {
+		t.Error("release dir should not be cleaned by task GC")
 	}
 }
 

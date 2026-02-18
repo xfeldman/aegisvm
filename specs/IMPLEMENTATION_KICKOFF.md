@@ -26,17 +26,17 @@ This does not change any architecture, invariants, or semantics. It only changes
 
 ## 1. Engineering Decisions
 
-### 1.1 Vsock Wire Protocol
+### 1.1 Control Channel Wire Protocol
 
-**Decision: JSON-RPC 2.0 over vsock.**
+**Decision: JSON-RPC 2.0 over ControlChannel.**
 
 - Human-readable, debuggable with `socat`
 - Trivial to implement in Go (host) and any guest language
 - No code generation step (vs protobuf)
-- Performance is not a bottleneck — vsock messages are control plane (start/stop/health), not data plane
+- Performance is not a bottleneck — control plane messages (start/stop/health), not data plane
 - Upgrade path: switch to protobuf later if profiling shows serialization overhead matters (it won't)
 
-Wire format: newline-delimited JSON-RPC 2.0 messages over `AF_VSOCK`. Host is the client, guest harness is the server.
+Wire format: newline-delimited JSON-RPC 2.0 messages over a ControlChannel (TSI TCP on macOS/libkrun, AF_VSOCK on Linux/Firecracker — see §7.2 for transport details). Host is the client, guest harness is the server.
 
 ```json
 {"jsonrpc":"2.0","method":"runTask","params":{"command":["python","main.py"]},"id":1}
@@ -1073,7 +1073,9 @@ Not needed for M1 (deferred):
 3. `image.Cache` → digest-keyed directory cache at `~/.aegis/data/images/sha256_{digest}/`. `GetOrPull(ctx, ref)` returns the cached directory or pulls + unpacks + caches atomically (via tmp dir + rename)
 4. `image.InjectHarness(rootfsDir, harnessBin)` → copies the harness binary into the rootfs at `/usr/bin/aegis-harness`
 
-Harness injection happens on the **release copy**, not the cache. The cache contains the clean OCI image; each release gets its own copy with the harness baked in.
+Harness injection happens on the **release copy**, not the cache. The cache contains the clean OCI image; each release gets its own copy with the harness baked in. Any existing `/usr/bin/aegis-harness` in the OCI image is intentionally overwritten.
+
+**PID 1 guarantee:** `krun_set_exec()` always runs `/usr/bin/aegis-harness` as guest PID 1, regardless of the OCI image's `ENTRYPOINT` or `CMD`. The image's entrypoint is ignored — the harness starts user commands via RPC (`runTask`/`startServer`). This is by design: the harness must be PID 1 for signal handling, mount setup, and host communication.
 
 ext4 conversion (`mkfs.ext4 -d`) is deferred to M4 when Firecracker needs block device images. The existing `BackendCaps.RootFSType` abstraction handles this — the image pipeline will produce the right artifact based on the active backend's declared type.
 
@@ -1147,11 +1149,9 @@ Migration is idempotent — `CREATE TABLE IF NOT EXISTS` runs on every `registry
 
 1. **Host side:** `LibkrunVMM.StartVM()` checks `VMConfig.WorkspacePath`. If set, it passes `"workspace:/path"` in the `MappedVolumes` field of `WorkerConfig`. The vmm-worker calls `krun_add_virtiofs(ctx, "workspace", path)`.
 
-2. **Guest side:** The harness attempts `mount("workspace", "/workspace", "virtiofs", 0, "")` on startup. This is best-effort — if no workspace is configured, the mount fails silently and the harness continues. The mount code is in `mount_linux.go` (build-tagged, no-op on macOS).
+2. **Guest side:** The harness checks `AEGIS_WORKSPACE=1` (set by vmm-worker when volumes are configured). If set, it mounts the `workspace` virtiofs tag at `/workspace` and **fails fatally** if the mount fails — preventing silent data-loss bugs where files appear to write but don't persist. If `AEGIS_WORKSPACE` is not set, the harness skips the mount entirely. The mount code is in `mount_linux.go` (build-tagged, no-op on macOS).
 
 3. **App workspaces:** Each app gets a workspace directory at `~/.aegis/data/workspaces/{appID}/`. This is created when `aegis app serve` is called and passed to the instance via `lifecycle.WithWorkspace(path)`.
-
-No new env vars needed — virtiofs is configured at the libkrun level, and the harness mounts by the well-known `workspace` tag.
 
 ### 9.5 Lifecycle Manager — Functional Options for Instances
 
@@ -1170,11 +1170,11 @@ The `Instance` struct gained four new fields: `AppID`, `ReleaseID`, `RootfsPath`
 
 New method: `GetInstanceByApp(appID) *Instance` — used by the router and serve handler to find the running instance for an app.
 
-### 9.6 Multi-App Router — Header-Based Resolution with Fallback
+### 9.6 Multi-App Router — Path + Header Routing with Fallback
 
 **Original assumption (§1.8):** Path-based routing (`/app/{appId}/...`).
 
-**M2 reality:** The router supports app-aware routing via the `X-Aegis-App` HTTP header, with fallback to the M1 default instance behavior (first instance in the map). This keeps M1 backward compatibility while enabling multi-app routing.
+**M2 reality:** The router supports two app resolution methods, plus a fallback:
 
 ```go
 type AppResolver interface {
@@ -1182,12 +1182,13 @@ type AppResolver interface {
 }
 ```
 
-The router constructor accepts an optional `AppResolver`. On each request:
+Resolution order on each request:
 
-1. Check `X-Aegis-App` header → look up app ID via resolver → find instance via `GetInstanceByApp(appID)`
-2. If no header or no match → fall back to `GetDefaultInstance()` (M1 behavior)
+1. **Path prefix:** `/app/{name}/...` → strip `/app/{name}` prefix, route to named app. The backend sees the path remainder (e.g., `/app/myapp/status` → backend sees `/status`).
+2. **Header:** `X-Aegis-App: myapp` → route to named app (useful for programmatic clients).
+3. **Default fallback:** `GetDefaultInstance()` — first instance in the map (M1 backward compat).
 
-Path-based routing (`/app/{appId}/...`) can be added later without changing the interface. For M2, the simple default instance fallback means `aegis app serve myapp` works with a plain `curl http://127.0.0.1:8099/` — since there's typically one serving app at a time in the local dev workflow.
+The default fallback means `curl http://127.0.0.1:8099/` works when a single app is served. **Multi-app concurrent serve** requires path or header routing — plain root requests go to the default instance, which is non-deterministic with multiple apps.
 
 The resolver is implemented as a thin adapter wrapping the registry DB in `cmd/aegisd/main.go`.
 
@@ -1204,6 +1205,8 @@ The flow in `TaskStore.runTask()`:
 5. After task completes → `overlay.Remove("task-"+taskID)` (deferred cleanup)
 
 Without `--image`, behavior is unchanged — the base rootfs is used.
+
+**Crash resilience:** On daemon startup, `CopyOverlay.CleanStaleTasks(1h)` scans the releases directory for `task-*` entries older than 1 hour and removes them. This prevents disk leaks from crashed tasks that didn't run their deferred cleanup.
 
 ### 9.8 App Lifecycle — Publish + Serve
 
