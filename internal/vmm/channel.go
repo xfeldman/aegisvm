@@ -2,18 +2,21 @@ package vmm
 
 import (
 	"bufio"
+	"context"
 	"net"
+	"time"
 )
 
 // NetControlChannel implements ControlChannel over a net.Conn.
-// Used by libkrun (TCP via TSI) and can be reused by any backend
-// that provides a net.Conn (including vsock via unix socket).
+// Used by libkrun (TCP via TSI) and reusable by any backend that provides
+// a net.Conn (including Firecracker vsock via unix socket).
+//
+// Framing: newline-delimited JSON. Send appends '\n', Recv strips it.
 type NetControlChannel struct {
 	conn    net.Conn
 	scanner *bufio.Scanner
 }
 
-// NewNetControlChannel wraps a net.Conn as a ControlChannel.
 func NewNetControlChannel(conn net.Conn) *NetControlChannel {
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB max message
@@ -23,7 +26,12 @@ func NewNetControlChannel(conn net.Conn) *NetControlChannel {
 	}
 }
 
-func (c *NetControlChannel) Send(msg []byte) error {
+func (c *NetControlChannel) Send(ctx context.Context, msg []byte) error {
+	if deadline, ok := ctx.Deadline(); ok {
+		c.conn.SetWriteDeadline(deadline)
+		defer c.conn.SetWriteDeadline(time.Time{})
+	}
+
 	// Append newline delimiter if not present
 	if len(msg) == 0 || msg[len(msg)-1] != '\n' {
 		msg = append(msg, '\n')
@@ -32,9 +40,13 @@ func (c *NetControlChannel) Send(msg []byte) error {
 	return err
 }
 
-func (c *NetControlChannel) Recv() ([]byte, error) {
+func (c *NetControlChannel) Recv(ctx context.Context) ([]byte, error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		c.conn.SetReadDeadline(deadline)
+		defer c.conn.SetReadDeadline(time.Time{})
+	}
+
 	if c.scanner.Scan() {
-		// Return a copy so the caller owns the bytes
 		line := c.scanner.Bytes()
 		out := make([]byte, len(line))
 		copy(out, line)

@@ -4,6 +4,7 @@
 package vmm
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -93,21 +94,32 @@ func (c BackendCaps) String() string {
 		c.Name, c.Pause, c.SnapshotRestore, c.RootFSType)
 }
 
-// ControlChannel is a bidirectional, newline-delimited byte stream between
-// aegisd and the guest harness. The underlying transport is backend-specific:
+// ControlChannel is a message-oriented, bidirectional channel between aegisd
+// and the guest harness. The underlying transport is backend-specific:
 //   - libkrun: TCP over TSI (harness connects outbound to host listener)
 //   - Firecracker: vsock (host connects to guest via AF_VSOCK)
+//
+// Framing contract:
+//   - Each message is exactly one complete JSON-RPC 2.0 object.
+//   - Send writes one message. Recv returns one message.
+//   - The wire encoding is newline-delimited JSON (one JSON object per line).
+//   - Implementations handle framing internally — callers never see delimiters.
 //
 // Core code uses ControlChannel for all harness communication. It never
 // sees TCP, vsock, or unix sockets — only Send/Recv/Close.
 type ControlChannel interface {
-	// Send writes a message (typically a JSON-RPC line) to the harness.
-	Send(msg []byte) error
+	// Send writes exactly one JSON-RPC message to the harness.
+	// msg must be a complete JSON object (no trailing newline required —
+	// the implementation adds framing).
+	// Respects the context deadline for write timeout.
+	Send(ctx context.Context, msg []byte) error
 
-	// Recv reads the next message from the harness. Blocks until data is available.
-	Recv() ([]byte, error)
+	// Recv reads and returns exactly one complete JSON-RPC message from the
+	// harness. Blocks until a full message is available or the context is done.
+	// The returned bytes are a complete JSON object with no trailing newline.
+	Recv(ctx context.Context) ([]byte, error)
 
-	// Close shuts down the channel.
+	// Close shuts down the channel and releases resources.
 	Close() error
 }
 

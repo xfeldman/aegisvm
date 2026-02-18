@@ -199,6 +199,10 @@ func (ts *TaskStore) runTask(taskID string, req CreateTaskRequest) {
 	defer ch.Close()
 	log.Printf("task %s: harness connected", taskID)
 
+	// Task-scoped context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+
 	// Send runTask RPC
 	rpcReq, _ := json.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -209,7 +213,7 @@ func (ts *TaskStore) runTask(taskID string, req CreateTaskRequest) {
 		},
 		"id": 1,
 	})
-	if err := ch.Send(rpcReq); err != nil {
+	if err := ch.Send(ctx, rpcReq); err != nil {
 		ts.setResult(taskID, -1, fmt.Sprintf("send runTask: %v", err))
 		ts.updateState(taskID, TaskFailed)
 		return
@@ -217,9 +221,13 @@ func (ts *TaskStore) runTask(taskID string, req CreateTaskRequest) {
 
 	// Read responses (log notifications and final result)
 	for {
-		msg, err := ch.Recv()
+		msg, err := ch.Recv(ctx)
 		if err != nil {
 			log.Printf("task %s: recv error: %v", taskID, err)
+			if ctx.Err() != nil {
+				ts.setResult(taskID, -1, "task timed out")
+				ts.updateState(taskID, TaskTimedOut)
+			}
 			break
 		}
 
@@ -258,14 +266,16 @@ func (ts *TaskStore) runTask(taskID string, req CreateTaskRequest) {
 		}
 	}
 
-	// Send shutdown
+	// Send shutdown (short deadline — don't block if guest is stuck)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
 	shutdownReq, _ := json.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  "shutdown",
 		"params":  nil,
 		"id":      2,
 	})
-	ch.Send(shutdownReq)
+	ch.Send(shutdownCtx, shutdownReq)
 }
 
 // HTTP handlers
@@ -348,5 +358,3 @@ func (s *Server) handleGetTaskLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
-
-var _ = context.Background
