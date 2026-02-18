@@ -507,6 +507,96 @@ No OCI, no SQLite, no networking, no router, no Firecracker.
 
 Conformance suite is written **before** adding Firecracker so it defines the contract, not the implementation.
 
+### M3a: Agent Conventions + SDK + CLI Docs (1 week)
+
+**Goal:** A developer can read one doc and write an Aegis-compatible agent. A thin Python SDK eliminates boilerplate.
+
+This is a **documentation + ergonomics milestone**, not an infrastructure milestone. It stabilizes conventions before Firecracker (M4) introduces a second backend where any undocumented assumption becomes a portability bug.
+
+#### Agent Conventions Doc (`docs/AGENT_CONVENTIONS.md`)
+
+Canonical reference for "how to write an agent that runs on Aegis." Covers the guest environment contract:
+
+| Topic | What to document |
+|---|---|
+| **Not Docker** | Aegis ignores `ENTRYPOINT` and `CMD` from OCI images. The image provides the filesystem; Aegis controls what runs. Developers must not assume container semantics. |
+| Filesystem layout | `/` read-only (release rootfs), `/workspace` persistent (writable), `/tmp` + `/run` + `/var` tmpfs (writable, ephemeral) |
+| PID 1 | Always `aegis-harness` — agent code runs as a child process, never as init. The harness receives commands from the host via ControlChannel RPC and spawns the agent process. |
+| Process model | One agent process per instance. No automatic restarts — if the process exits, the instance transitions to STOPPED. No supervisor, no process manager. If you need restart-on-crash, handle it in your agent code or re-serve from the CLI. |
+| Secrets | Injected as environment variables at process start. Never on disk. Read via `os.environ` / `process.env` |
+| Logging | Structured JSON to stdout/stderr. Harness streams lines as JSON-RPC `log` notifications. One line = one log entry. |
+| Lifecycle signals | Process receives SIGTERM on shutdown. Clean up within 5s or get SIGKILL. |
+| Workspace conventions | `/workspace/data/` for persistent data, `/workspace/output/` for artifacts, `/workspace/.cache/` for caches |
+| Network | Egress allowed by default (internet, DNS). Ingress only through Aegis router on exposed ports. |
+| ControlChannel | JSON-RPC 2.0 between host and harness. Agents don't interact with it directly — harness handles it. |
+
+#### CLI Reference Doc (`docs/CLI.md`)
+
+Complete `aegis` CLI reference:
+
+| Section | Commands |
+|---|---|
+| Platform | `aegis up`, `aegis down`, `aegis status`, `aegis doctor` |
+| Tasks | `aegis run [--image IMAGE] -- COMMAND...` |
+| Serve | `aegis run --expose PORT -- COMMAND...` |
+| Apps | `aegis app create/publish/serve/list/info/delete` |
+| Kits (M3) | `aegis kit install/list/info` |
+
+#### `aegis-sdk` (Python, minimal)
+
+A thin in-VM helper that stabilizes conventions. NOT a platform client, NOT an orchestration framework. Just ergonomic glue.
+
+```
+aegis-sdk/
+├── aegis/__init__.py       # Re-exports
+├── aegis/workspace.py      # workspace_path(), ensure_dirs()
+├── aegis/secrets.py        # get_secret(name), require_secret(name)
+├── aegis/log.py            # log.info(), log.error() — structured JSON to stdout
+└── setup.py / pyproject.toml
+```
+
+**What it contains:**
+
+| Helper | What it does |
+|---|---|
+| `aegis.workspace_path()` | Returns `/workspace` (or `AEGIS_WORKSPACE_PATH` override for local dev) |
+| `aegis.get_secret(name)` | `os.environ.get(name)` with clear error if missing |
+| `aegis.require_secret(name)` | `os.environ[name]` or raise with "secret not injected" message |
+| `aegis.log.info(msg, **kw)` | `{"level":"info","msg":msg,...}` JSON to stdout |
+| `aegis.log.error(msg, **kw)` | Same, to stderr |
+
+**What it does NOT contain:**
+
+- No lifecycle orchestration
+- No ControlChannel RPC client
+- No multi-agent manager
+- No network/routing logic
+- No heavy abstractions
+
+The SDK is `pip install aegis-sdk` inside any agent image. It works identically outside Aegis (local dev) — workspace defaults to `./workspace`, secrets come from env.
+
+#### Deliverables
+
+| Deliverable | Format | Location |
+|---|---|---|
+| Agent Conventions | Markdown | `docs/AGENT_CONVENTIONS.md` |
+| CLI Reference | Markdown | `docs/CLI.md` |
+| aegis-sdk | Python package | `sdk/python/` (+ publish to PyPI) |
+| Base images | OCI images | `images/agent-base-python/Dockerfile`, `images/agent-base-full/Dockerfile` |
+| Example agents | Working code | `examples/simple-task-python/`, `examples/simple-http-python/`, `examples/simple-node-server/` |
+
+#### Examples
+
+Minimal working agents that demonstrate each mode. A runnable example does more than 10 pages of docs.
+
+| Example | What it demonstrates | How to run |
+|---|---|---|
+| `simple-task-python/` | Read env, write to /workspace, print structured logs, exit | `aegis run --image agent-base:python -- python agent.py` |
+| `simple-http-python/` | Flask/http.server on port 80, reads /workspace, uses secrets | `aegis app create --name demo --image agent-base:python --expose 80 -- python server.py` |
+| `simple-node-server/` | Express server, WebSocket, structured logging | `aegis app create --name node-demo --image agent-base:full --expose 80 -- node server.js` |
+
+Each example includes a `README.md` with the exact `aegis` commands to run it and a brief explanation of which conventions it uses.
+
 ### M4: Firecracker on Linux (2-3 weeks)
 
 **Goal:** `aegis up` works on Linux ARM64. Conformance tests pass on both backends.
