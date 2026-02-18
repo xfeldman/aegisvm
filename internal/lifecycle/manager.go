@@ -2,13 +2,14 @@
 //
 // State transitions:
 //
-//	STOPPED → STARTING → RUNNING → PAUSED → TERMINATED
-//	                        ↑         │
-//	                        └─────────┘ (wake on request)
+//	STOPPED → STARTING → RUNNING ⇄ PAUSED → STOPPED
 //
 // RUNNING → PAUSED after idle timeout (SIGSTOP).
 // PAUSED → RUNNING on next request (SIGCONT).
-// PAUSED → TERMINATED after extended idle (StopVM).
+// PAUSED → STOPPED after extended idle (StopVM, resources freed, can reboot on next request).
+//
+// STOPPED is the only non-running terminal state. Explicit user stop
+// (StopInstance) removes the instance from the map entirely.
 package lifecycle
 
 import (
@@ -25,11 +26,10 @@ import (
 
 // Instance states
 const (
-	StateStopped    = "stopped"
-	StateStarting   = "starting"
-	StateRunning    = "running"
-	StatePaused     = "paused"
-	StateTerminated = "terminated"
+	StateStopped  = "stopped"
+	StateStarting = "starting"
+	StateRunning  = "running"
+	StatePaused   = "paused"
 )
 
 // Instance represents a managed serve-mode instance.
@@ -104,8 +104,17 @@ func (m *Manager) CreateInstance(id string, command []string, exposePorts []vmm.
 	return inst
 }
 
-// EnsureInstance ensures an instance is running.
-// If stopped → boot. If paused → resume. If running → noop.
+// EnsureInstance ensures an instance is running. This is the single entry point
+// for the router — it never needs to know the current state.
+//
+//   - stopped → boot (cold start, ~1-2s)
+//   - paused → SIGCONT resume (<100ms)
+//   - starting → block until running or failed (with ctx timeout)
+//   - running → noop
+//
+// The router calls EnsureInstance on every request. If the instance is booting,
+// EnsureInstance blocks. The router's request context has a 30s timeout, so if
+// boot takes too long the request fails with 503 and the loading page is shown.
 func (m *Manager) EnsureInstance(ctx context.Context, id string) error {
 	m.mu.Lock()
 	inst, ok := m.instances[id]
@@ -126,10 +135,7 @@ func (m *Manager) EnsureInstance(ctx context.Context, id string) error {
 	case StateStopped:
 		return m.bootInstance(ctx, inst)
 	case StateStarting:
-		// Already booting — wait for it
 		return m.waitForRunning(ctx, inst)
-	case StateTerminated:
-		return fmt.Errorf("instance %s is terminated", id)
 	default:
 		return fmt.Errorf("instance %s in unexpected state: %s", id, state)
 	}
@@ -317,8 +323,8 @@ func (m *Manager) waitForRunning(ctx context.Context, inst *Instance) error {
 			switch state {
 			case StateRunning:
 				return nil
-			case StateStopped, StateTerminated:
-				return fmt.Errorf("instance %s failed to start (state: %s)", inst.ID, state)
+			case StateStopped:
+				return fmt.Errorf("instance %s failed to start", inst.ID)
 			}
 		}
 	}
@@ -415,11 +421,13 @@ func (m *Manager) terminateInstance(inst *Instance) {
 	}
 	handle := inst.Handle
 	ch := inst.Channel
-	inst.State = StateTerminated
+	inst.State = StateStopped
+	inst.Channel = nil
+	inst.Endpoints = nil
 	inst.mu.Unlock()
 
-	log.Printf("instance %s: terminating (extended idle)", inst.ID)
-	m.notifyStateChange(inst.ID, StateTerminated)
+	log.Printf("instance %s: stopped (extended idle)", inst.ID)
+	m.notifyStateChange(inst.ID, StateStopped)
 
 	if ch != nil {
 		ch.Close()
@@ -454,17 +462,12 @@ func (m *Manager) GetInstance(id string) *Instance {
 	return m.instances[id]
 }
 
-// GetDefaultInstance returns the first non-terminated instance (for M1 single-instance routing).
+// GetDefaultInstance returns the first instance (for M1 single-instance routing).
 func (m *Manager) GetDefaultInstance() *Instance {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, inst := range m.instances {
-		inst.mu.Lock()
-		state := inst.State
-		inst.mu.Unlock()
-		if state != StateTerminated {
-			return inst
-		}
+		return inst
 	}
 	return nil
 }
@@ -489,9 +492,9 @@ func (m *Manager) StopInstance(id string) error {
 	if inst.terminateTimer != nil {
 		inst.terminateTimer.Stop()
 	}
-	inst.State = StateTerminated
+	inst.State = StateStopped
 	inst.mu.Unlock()
-	m.notifyStateChange(id, StateTerminated)
+	m.notifyStateChange(id, StateStopped)
 
 	if state == StatePaused {
 		// Resume before stopping so the process can be killed cleanly

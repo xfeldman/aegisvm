@@ -472,7 +472,7 @@ No OCI, no SQLite, no networking, no router, no Firecracker.
 | Component | What to build |
 |---|---|
 | `internal/router` | HTTP/TCP/WS reverse proxy with wake-on-connect and per-protocol wake behavior |
-| `internal/lifecycle/manager.go` | RUNNING → PAUSED → TERMINATED state machine, idle timers |
+| `internal/lifecycle/manager.go` | STOPPED → RUNNING ⇄ PAUSED → STOPPED state machine, idle timers |
 | `internal/vmm/libkrun.go` | PauseVM, ResumeVM |
 | `internal/network/libkrun_net.go` | libkrun networking for VM egress |
 | `internal/registry/db.go` | SQLite schema, instance state persistence |
@@ -905,12 +905,12 @@ The harness now tracks server processes via a `serverTracker` and kills them all
 The lifecycle manager owns all serve-mode instances and drives transitions:
 
 ```
-STOPPED → STARTING → RUNNING ⇄ PAUSED → TERMINATED
+STOPPED → STARTING → RUNNING ⇄ PAUSED → STOPPED
 ```
 
 Key design choices:
 
-**1. Idempotent `EnsureInstance(id)`** — the single entry point for the router. If stopped → boot. If paused → SIGCONT. If running → noop. If starting → wait. The router never needs to know the current state; it just calls `EnsureInstance` and gets back either success (instance is running) or an error.
+**1. Idempotent `EnsureInstance(id)`** — the single entry point for the router. If stopped → boot. If paused → SIGCONT. If running → noop. If starting → block until running (with ctx timeout). The router never needs to know the current state; it just calls `EnsureInstance` and gets back either success (instance is running) or an error. The router's request context carries a 30s timeout, so if boot takes too long the call fails and the router serves a loading page (HTML with meta-refresh) or 503+Retry-After.
 
 **2. Connection-counted idle** — the router calls `ResetActivity(id)` on each new connection and `OnConnectionClose(id)` when it ends. The idle timer only starts when active connections drop to zero. This prevents the VM from pausing while requests are in flight.
 
@@ -919,9 +919,9 @@ Key design choices:
 | Timer | Default | Action |
 |---|---|---|
 | `PauseAfterIdle` | 60s | SIGSTOP the worker process |
-| `TerminateAfterIdle` | 20min | StopVM (kill process, free resources) |
+| `TerminateAfterIdle` | 20min | StopVM (kill process, free resources), state → STOPPED |
 
-The pause timer starts when the last connection closes. If a new request arrives while paused, SIGCONT resumes in <100ms and the terminate timer is cancelled. If no request arrives for 20 minutes, the VM is terminated fully.
+The pause timer starts when the last connection closes. If a new request arrives while paused, SIGCONT resumes in <100ms and the terminate timer is cancelled. If no request arrives for 20 minutes, the VM is stopped and resources freed — but the instance stays in the map as STOPPED. The next request reboots it from scratch (true scale-to-zero). Explicit user stop (`StopInstance` / `DELETE /v1/instances/{id}`) removes the instance entirely.
 
 **4. State change callbacks** — the manager fires `onStateChange(id, state)` on every transition. aegisd hooks this to persist state to the SQLite registry.
 
@@ -935,7 +935,7 @@ The pause timer starts when the last connection closes. If a new request arrives
 
 - **No external dependencies** — WebSocket upgrade handled via `net.Conn` hijack + bidirectional `io.Copy`, not `nhooyr.io/websocket`. Raw TCP proxying is sufficient for WebSocket since we're just forwarding bytes.
 - **No per-protocol wake behavior matrix** — all protocols get the same treatment: ensure instance is running, then proxy. If the instance is booting, HTML clients get a loading page with `<meta http-equiv="refresh" content="3">`, non-HTML clients get `503 + Retry-After: 3`.
-- **Routing lookup is trivial** — `GetDefaultInstance()` returns the first non-terminated instance. Path-based resolution comes in M2.
+- **Routing lookup is trivial** — `GetDefaultInstance()` returns the first instance in the map. Path-based resolution comes in M2.
 
 The router embeds in aegisd as designed (§1.8) — it's a goroutine with an `http.Server`, shares the lifecycle manager in-process.
 
