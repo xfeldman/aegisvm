@@ -75,7 +75,7 @@ func TestCopyOverlayCreateAndRemove(t *testing.T) {
 	}
 }
 
-func TestCleanStaleTasks(t *testing.T) {
+func TestCleanStale(t *testing.T) {
 	baseDir := t.TempDir()
 	ov := NewCopyOverlay(baseDir)
 
@@ -97,8 +97,13 @@ func TestCleanStaleTasks(t *testing.T) {
 	oldTime2 := time.Now().Add(-5 * time.Hour)
 	os.Chtimes(releaseDir, oldTime2, oldTime2)
 
+	// Create an incomplete staging dir (.tmp — always removed)
+	stagingDir := filepath.Join(baseDir, "rel-456.tmp")
+	os.MkdirAll(stagingDir, 0755)
+	os.WriteFile(filepath.Join(stagingDir, "file"), []byte("x"), 0644)
+
 	// Run GC with 1 hour max age
-	ov.CleanStaleTasks(1 * time.Hour)
+	ov.CleanStale(1 * time.Hour)
 
 	// Stale task dir should be removed
 	if _, err := os.Stat(staleDir); !os.IsNotExist(err) {
@@ -113,6 +118,44 @@ func TestCleanStaleTasks(t *testing.T) {
 	// Release dir should still exist (not a task-*)
 	if _, err := os.Stat(releaseDir); err != nil {
 		t.Error("release dir should not be cleaned by task GC")
+	}
+
+	// Staging dir should always be removed regardless of age
+	if _, err := os.Stat(stagingDir); !os.IsNotExist(err) {
+		t.Error("staging .tmp dir should have been removed")
+	}
+}
+
+func TestCreateUsesAtomicRename(t *testing.T) {
+	sourceDir := t.TempDir()
+	baseDir := t.TempDir()
+	os.WriteFile(filepath.Join(sourceDir, "data.txt"), []byte("content"), 0644)
+
+	ov := NewCopyOverlay(baseDir)
+
+	dest, err := ov.Create(context.Background(), sourceDir, "rel-test")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Final dir should exist
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatalf("final dir missing: %v", err)
+	}
+
+	// Staging dir should NOT exist (renamed away)
+	staging := dest + ".tmp"
+	if _, err := os.Stat(staging); !os.IsNotExist(err) {
+		t.Error("staging .tmp dir should not exist after successful create")
+	}
+
+	// Content should be correct
+	data, err := os.ReadFile(filepath.Join(dest, "data.txt"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(data) != "content" {
+		t.Errorf("data = %q, want %q", data, "content")
 	}
 }
 

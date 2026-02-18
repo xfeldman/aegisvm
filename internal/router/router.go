@@ -77,10 +77,13 @@ func (r *Router) Addr() string {
 }
 
 func (r *Router) handleRequest(w http.ResponseWriter, req *http.Request) {
-	// M2: try app-based routing via X-Aegis-App header or Host
+	// M2: try app-based routing via path prefix or X-Aegis-App header
 	inst := r.resolveInstance(req)
 	if inst == nil {
 		// Fall back to default instance (M1 backward compat)
+		if r.lm.InstanceCount() > 1 {
+			log.Printf("router: ambiguous request to %s with %d active instances — using default fallback. Use /app/{name}/... or X-Aegis-App header for explicit routing.", req.URL.Path, r.lm.InstanceCount())
+		}
 		inst = r.lm.GetDefaultInstance()
 	}
 	if inst == nil {

@@ -63,6 +63,16 @@ func Pull(ctx context.Context, imageRef string) (*PullResult, error) {
 		if err != nil {
 			return nil, fmt.Errorf("get image: %w", err)
 		}
+		// Single-manifest image — verify it's actually linux/arm64.
+		// Without this check, a linux/amd64 image unpacks fine but
+		// fails at VM boot with confusing exec format errors.
+		cfg, err := img.ConfigFile()
+		if err != nil {
+			return nil, fmt.Errorf("get image config: %w", err)
+		}
+		if cfg.OS != "linux" || cfg.Architecture != "arm64" {
+			return nil, fmt.Errorf("image %s is %s/%s, aegis requires linux/arm64", imageRef, cfg.OS, cfg.Architecture)
+		}
 	}
 
 	digest, err := img.Digest()

@@ -26,24 +26,42 @@ func mountWorkspace() {
 	log.Printf("workspace mounted at %s", target)
 }
 
-// mountEssential mounts /proc and /tmp if they are not already mounted.
+// mountEssential sets up the guest filesystem:
+//  1. Mount /proc, writable tmpfs on /tmp and /run
+//  2. Remount / read-only to preserve release rootfs immutability
+//
+// libkrun's krun_set_root() exposes the host directory via virtiofs read-write.
+// Without the read-only remount, any guest write to /usr, /etc, etc. would
+// mutate the release directory on the host, breaking immutability.
 func mountEssential() {
-	mounts := []struct {
+	// Phase 1: Mount writable filesystems first (before making / read-only)
+	writableMounts := []struct {
 		source string
 		target string
 		fstype string
-		flags  uintptr
 	}{
-		{"proc", "/proc", "proc", 0},
-		{"tmpfs", "/tmp", "tmpfs", 0},
-		{"tmpfs", "/run", "tmpfs", 0},
+		{"proc", "/proc", "proc"},
+		{"tmpfs", "/tmp", "tmpfs"},
+		{"tmpfs", "/run", "tmpfs"},
+		{"tmpfs", "/var", "tmpfs"},
 	}
 
-	for _, m := range mounts {
+	for _, m := range writableMounts {
 		_ = os.MkdirAll(m.target, 0755)
-		err := syscall.Mount(m.source, m.target, m.fstype, m.flags, "")
+		err := syscall.Mount(m.source, m.target, m.fstype, 0, "")
 		if err != nil && err != syscall.EBUSY {
 			log.Printf("mount %s on %s: %v (non-fatal)", m.source, m.target, err)
 		}
+	}
+
+	// Phase 2: Remount / read-only to protect the release rootfs.
+	// MS_REMOUNT | MS_RDONLY changes an existing mount to read-only.
+	// This only affects the root virtiofs — /tmp, /run, /var, /workspace
+	// are separate mounts and remain writable.
+	err := syscall.Mount("", "/", "", syscall.MS_REMOUNT|syscall.MS_RDONLY, "")
+	if err != nil {
+		log.Printf("remount / read-only: %v (non-fatal, rootfs writes will not be blocked)", err)
+	} else {
+		log.Println("rootfs remounted read-only")
 	}
 }

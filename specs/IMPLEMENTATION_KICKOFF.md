@@ -1077,6 +1077,8 @@ Harness injection happens on the **release copy**, not the cache. The cache cont
 
 **PID 1 guarantee:** `krun_set_exec()` always runs `/usr/bin/aegis-harness` as guest PID 1, regardless of the OCI image's `ENTRYPOINT` or `CMD`. The image's entrypoint is ignored — the harness starts user commands via RPC (`runTask`/`startServer`). This is by design: the harness must be PID 1 for signal handling, mount setup, and host communication.
 
+**Platform invariant:** `Pull()` enforces linux/arm64. For multi-platform index manifests, it selects the linux/arm64 variant and fails with "no linux/arm64 variant found" if absent. For single-manifest images, it validates the config's `OS` and `Architecture` fields after pull — a `linux/amd64` image will fail with an explicit error rather than unpacking successfully and crashing at VM boot with an opaque exec format error.
+
 ext4 conversion (`mkfs.ext4 -d`) is deferred to M4 when Firecracker needs block device images. The existing `BackendCaps.RootFSType` abstraction handles this — the image pipeline will produce the right artifact based on the active backend's declared type.
 
 ### 9.2 Overlay — tar Pipe, Not cp
@@ -1100,6 +1102,8 @@ type Overlay interface {
 ```
 
 `CopyOverlay` stores copies under `~/.aegis/data/releases/{releaseID}/`. The `dm.go` (device-mapper) implementation is deferred to M4.
+
+**Atomic create:** `Create()` writes into a `.tmp` staging directory, then does an atomic `os.Rename()` to the final path. A crash during the tar copy leaves only the staging dir, which is cleaned up by `CleanStale()` on daemon restart. The DB insert happens only after a successful `Create()`, so a crash can never leave a registry entry pointing to a half-baked rootfs.
 
 ### 9.3 Registry Schema — apps + releases Tables
 
@@ -1267,9 +1271,19 @@ WorkspacesDir  string  // ~/.aegis/data/workspaces  — app workspace volumes
 
 All three directories are created by `cfg.EnsureDirs()` at daemon startup.
 
-### 9.11 Harness — Platform-Specific Mount Code
+### 9.11 Harness — Rootfs Immutability + Platform-Specific Mounts
 
-The mount code (`mountEssential`, `mountWorkspace`) uses `syscall.Mount` which is Linux-only. To keep `go build ./internal/...` working on macOS (for development), the mount code is split into build-tagged files:
+**Rootfs immutability:** libkrun's `krun_set_root()` exposes the host release directory via virtiofs **read-write**. Without protection, any guest write to `/usr/`, `/etc/`, etc. mutates the release directory on the host, breaking immutability.
+
+The harness enforces immutability via `mountEssential()`:
+
+1. Mount writable tmpfs on `/tmp`, `/run`, `/var` (these need writes)
+2. Mount `/proc`
+3. **Remount `/` read-only** (`MS_REMOUNT | MS_RDONLY`)
+
+The read-only remount only affects the root virtiofs — `/tmp`, `/run`, `/var`, and `/workspace` are separate mounts and remain writable. Guest processes that try to write outside these directories get `EROFS` (Read-only file system).
+
+The mount code uses `syscall.Mount` which is Linux-only. To keep `go build ./internal/...` working on macOS (for development), the code is split into build-tagged files:
 
 - `mount_linux.go` — real implementations using `syscall.Mount`
 - `mount_other.go` — no-op stubs (`//go:build !linux`)

@@ -524,6 +524,13 @@ func (m *Manager) GetDefaultInstance() *Instance {
 	return nil
 }
 
+// InstanceCount returns the number of active instances.
+func (m *Manager) InstanceCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.instances)
+}
+
 // StopInstance stops an instance immediately.
 func (m *Manager) StopInstance(id string) error {
 	m.mu.Lock()
