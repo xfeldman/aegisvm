@@ -75,6 +75,23 @@ func (d *DB) migrate() error {
 			label        TEXT,
 			created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 		)`,
+		`CREATE TABLE IF NOT EXISTS secrets (
+			id         TEXT PRIMARY KEY,
+			app_id     TEXT NOT NULL DEFAULT '',
+			name       TEXT NOT NULL,
+			value      BLOB NOT NULL,
+			scope      TEXT NOT NULL DEFAULT 'per_app',
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			UNIQUE(app_id, name)
+		)`,
+		`CREATE TABLE IF NOT EXISTS kits (
+			name         TEXT PRIMARY KEY,
+			version      TEXT NOT NULL,
+			description  TEXT NOT NULL DEFAULT '',
+			config       TEXT NOT NULL,
+			image_ref    TEXT NOT NULL,
+			installed_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := d.db.Exec(stmt); err != nil {

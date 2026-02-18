@@ -16,34 +16,37 @@ import (
 	"github.com/xfeldman/aegis/internal/lifecycle"
 	"github.com/xfeldman/aegis/internal/overlay"
 	"github.com/xfeldman/aegis/internal/registry"
+	"github.com/xfeldman/aegis/internal/secrets"
 	"github.com/xfeldman/aegis/internal/vmm"
 )
 
 // Server is the aegisd HTTP API server.
 type Server struct {
-	cfg        *config.Config
-	vmm        vmm.VMM
-	tasks      *TaskStore
-	lifecycle  *lifecycle.Manager
-	registry   *registry.DB
-	imageCache *image.Cache
-	overlay    overlay.Overlay
-	mux        *http.ServeMux
-	server     *http.Server
-	ln         net.Listener
+	cfg         *config.Config
+	vmm         vmm.VMM
+	tasks       *TaskStore
+	lifecycle   *lifecycle.Manager
+	registry    *registry.DB
+	imageCache  *image.Cache
+	overlay     overlay.Overlay
+	secretStore *secrets.Store
+	mux         *http.ServeMux
+	server      *http.Server
+	ln          net.Listener
 }
 
 // NewServer creates a new API server.
-func NewServer(cfg *config.Config, v vmm.VMM, lm *lifecycle.Manager, reg *registry.DB, imgCache *image.Cache, ov overlay.Overlay) *Server {
+func NewServer(cfg *config.Config, v vmm.VMM, lm *lifecycle.Manager, reg *registry.DB, imgCache *image.Cache, ov overlay.Overlay, ss *secrets.Store) *Server {
 	s := &Server{
-		cfg:        cfg,
-		vmm:        v,
-		tasks:      NewTaskStore(v, cfg, imgCache, ov),
-		lifecycle:  lm,
-		registry:   reg,
-		imageCache: imgCache,
-		overlay:    ov,
-		mux:        http.NewServeMux(),
+		cfg:         cfg,
+		vmm:         v,
+		tasks:       NewTaskStore(v, cfg, imgCache, ov),
+		lifecycle:   lm,
+		registry:    reg,
+		imageCache:  imgCache,
+		overlay:     ov,
+		secretStore: ss,
+		mux:         http.NewServeMux(),
 	}
 	s.registerRoutes()
 	s.server = &http.Server{Handler: s.mux}
@@ -67,6 +70,19 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v1/apps/{id}/publish", s.handlePublishApp)
 	s.mux.HandleFunc("GET /v1/apps/{id}/releases", s.handleListReleases)
 	s.mux.HandleFunc("POST /v1/apps/{id}/serve", s.handleServeApp)
+
+	// Secret routes (M3)
+	s.mux.HandleFunc("PUT /v1/apps/{id}/secrets/{name}", s.handleSetSecret)
+	s.mux.HandleFunc("GET /v1/apps/{id}/secrets", s.handleListSecrets)
+	s.mux.HandleFunc("DELETE /v1/apps/{id}/secrets/{name}", s.handleDeleteSecret)
+	s.mux.HandleFunc("PUT /v1/secrets/{name}", s.handleSetWorkspaceSecret)
+	s.mux.HandleFunc("GET /v1/secrets", s.handleListWorkspaceSecrets)
+
+	// Kit routes (M3)
+	s.mux.HandleFunc("POST /v1/kits", s.handleRegisterKit)
+	s.mux.HandleFunc("GET /v1/kits", s.handleListKits)
+	s.mux.HandleFunc("GET /v1/kits/{name}", s.handleGetKit)
+	s.mux.HandleFunc("DELETE /v1/kits/{name}", s.handleDeleteKit)
 }
 
 // Start begins listening on the unix socket.
@@ -102,16 +118,29 @@ func (s *Server) Stop(ctx context.Context) error {
 // Status response
 
 type statusResponse struct {
-	Status   string `json:"status"`
-	Backend  string `json:"backend"`
-	Platform string `json:"platform"`
+	Status       string                 `json:"status"`
+	Backend      string                 `json:"backend"`
+	Capabilities map[string]interface{} `json:"capabilities"`
+	KitCount     int                    `json:"kit_count"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	caps := s.vmm.Capabilities()
+
+	kitCount := 0
+	if kits, err := s.registry.ListKits(); err == nil {
+		kitCount = len(kits)
+	}
+
 	writeJSON(w, http.StatusOK, statusResponse{
 		Status:  "running",
 		Backend: caps.Name,
+		Capabilities: map[string]interface{}{
+			"pause_resume":          caps.Pause,
+			"memory_snapshots":      caps.SnapshotRestore,
+			"boot_from_disk_layers": true,
+		},
+		KitCount: kitCount,
 	})
 }
 

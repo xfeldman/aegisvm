@@ -165,6 +165,64 @@ func apiDelete(t *testing.T, path string) {
 	resp.Body.Close()
 }
 
+func apiPut(t *testing.T, path string, body interface{}) map[string]interface{} {
+	t.Helper()
+	bodyJSON, _ := json.Marshal(body)
+	client := daemonClient()
+	req, _ := http.NewRequest("PUT", "http://aegis"+path, bytes.NewReader(bodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("PUT %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	var result map[string]interface{}
+	json.Unmarshal(data, &result)
+	if resp.StatusCode >= 400 {
+		t.Fatalf("PUT %s returned %d: %s", path, resp.StatusCode, data)
+	}
+	return result
+}
+
+func apiDeleteAllowFail(t *testing.T, path string) {
+	t.Helper()
+	client := daemonClient()
+	req, _ := http.NewRequest("DELETE", "http://aegis"+path, nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	resp.Body.Close()
+}
+
+func waitForTaskOutput(t *testing.T, client *http.Client, taskID string, timeout time.Duration) string {
+	t.Helper()
+
+	// Follow logs
+	logsResp, err := client.Get(fmt.Sprintf("http://aegis/v1/tasks/%s/logs?follow=true", taskID))
+	if err != nil {
+		t.Fatalf("follow logs: %v", err)
+	}
+	defer logsResp.Body.Close()
+
+	var lines []string
+	decoder := json.NewDecoder(logsResp.Body)
+	for decoder.More() {
+		var logLine map[string]interface{}
+		if err := decoder.Decode(&logLine); err != nil {
+			break
+		}
+		if line, ok := logLine["line"].(string); ok {
+			lines = append(lines, line)
+		}
+	}
+
+	// Wait briefly and check final status
+	time.Sleep(200 * time.Millisecond)
+	return strings.Join(lines, "\n")
+}
+
 func waitForHTTP(url string, timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	client := &http.Client{Timeout: 5 * time.Second}

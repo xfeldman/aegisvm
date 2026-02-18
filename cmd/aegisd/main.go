@@ -20,6 +20,7 @@ import (
 	"github.com/xfeldman/aegis/internal/overlay"
 	"github.com/xfeldman/aegis/internal/registry"
 	"github.com/xfeldman/aegis/internal/router"
+	"github.com/xfeldman/aegis/internal/secrets"
 	"github.com/xfeldman/aegis/internal/vmm"
 )
 
@@ -78,6 +79,13 @@ func main() {
 		}
 	})
 
+	// Initialize secret store
+	ss, err := secrets.NewStore(cfg.MasterKeyPath)
+	if err != nil {
+		log.Fatalf("init secret store: %v", err)
+	}
+	log.Printf("secret store: %s", cfg.MasterKeyPath)
+
 	// Start router with app resolver
 	rtr := router.New(lm, cfg.RouterAddr, &registryAppResolver{db: reg})
 	if err := rtr.Start(); err != nil {
@@ -85,7 +93,7 @@ func main() {
 	}
 
 	// Start API server
-	server := api.NewServer(cfg, backend, lm, reg, imgCache, ov)
+	server := api.NewServer(cfg, backend, lm, reg, imgCache, ov, ss)
 	if err := server.Start(); err != nil {
 		log.Fatalf("start API server: %v", err)
 	}

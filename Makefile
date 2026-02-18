@@ -30,7 +30,7 @@ ifeq ($(HOST_OS),darwin)
 	CGO_LDFLAGS := -L/opt/homebrew/lib
 endif
 
-.PHONY: all aegisd aegis harness vmm-worker base-rootfs clean test test-unit test-m2 integration
+.PHONY: all aegisd aegis harness vmm-worker base-rootfs clean test test-unit test-m2 test-m3 integration
 
 all: aegisd aegis harness vmm-worker
 
@@ -81,6 +81,16 @@ ifdef SHORT
 	$(GO) test -tags integration -v -count=1 -short -timeout 10m -run 'TestRunWithImage|TestApp|TestM1Backward' ./test/integration/
 else
 	$(GO) test -tags integration -v -count=1 -timeout 10m -run 'TestRunWithImage|TestApp|TestM1Backward' ./test/integration/
+endif
+
+# Run M3 integration + conformance tests
+test-m3: all
+ifdef SHORT
+	$(GO) test -tags integration -v -count=1 -short -timeout 15m \
+		-run 'TestSecret|TestKit|TestDoctor|TestConformance' ./test/integration/
+else
+	$(GO) test -tags integration -v -count=1 -timeout 15m \
+		-run 'TestSecret|TestKit|TestDoctor|TestConformance' ./test/integration/
 endif
 
 # Run integration tests (requires built binaries + base rootfs installed)

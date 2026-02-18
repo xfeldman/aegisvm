@@ -41,6 +41,9 @@ type Config struct {
 	// WorkspacesDir is the directory for app workspace volumes.
 	WorkspacesDir string
 
+	// MasterKeyPath is the path to the AES-256 master key for secret encryption.
+	MasterKeyPath string
+
 	// PauseAfterIdle is the duration after which an idle instance is paused (SIGSTOP).
 	PauseAfterIdle time.Duration
 
@@ -66,6 +69,7 @@ func DefaultConfig() *Config {
 		ImageCacheDir:      filepath.Join(aegisDir, "data", "images"),
 		ReleasesDir:        filepath.Join(aegisDir, "data", "releases"),
 		WorkspacesDir:      filepath.Join(aegisDir, "data", "workspaces"),
+		MasterKeyPath:      filepath.Join(aegisDir, "master.key"),
 		PauseAfterIdle:     60 * time.Second,
 		TerminateAfterIdle: 20 * time.Minute,
 	}

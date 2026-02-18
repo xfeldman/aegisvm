@@ -290,17 +290,31 @@ func (s *Server) handleServeApp(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Resolve secrets for this app
+	secretEnv, err := s.resolveSecrets(app.ID)
+	if err != nil {
+		log.Printf("resolve secrets for app %s: %v", app.Name, err)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("resolve secrets: %v", err))
+		return
+	}
+
 	// Create workspace directory
 	workspacePath := filepath.Join(s.cfg.WorkspacesDir, app.ID)
 	os.MkdirAll(workspacePath, 0755)
 
-	// Create instance with release rootfs + workspace
-	instID := fmt.Sprintf("inst-%d", time.Now().UnixNano())
-	s.lifecycle.CreateInstance(instID, app.Command, exposePorts,
+	// Build instance options
+	opts := []lifecycle.InstanceOption{
 		lifecycle.WithApp(app.ID, release.ID),
 		lifecycle.WithRootfs(release.RootfsPath),
 		lifecycle.WithWorkspace(workspacePath),
-	)
+	}
+	if len(secretEnv) > 0 {
+		opts = append(opts, lifecycle.WithEnv(secretEnv))
+	}
+
+	// Create instance with release rootfs + workspace + secrets
+	instID := fmt.Sprintf("inst-%d", time.Now().UnixNano())
+	s.lifecycle.CreateInstance(instID, app.Command, exposePorts, opts...)
 
 	// Persist to registry
 	if s.registry != nil {

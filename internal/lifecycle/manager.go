@@ -50,6 +50,9 @@ type Instance struct {
 	RootfsPath    string // if set, used instead of cfg.BaseRootfsPath
 	WorkspacePath string // if set, passed to VMConfig.WorkspacePath
 
+	// Env holds environment variables to inject (including decrypted secrets).
+	Env map[string]string
+
 	// Connection tracking
 	activeConns int
 
@@ -116,6 +119,13 @@ func WithRootfs(path string) InstanceOption {
 func WithWorkspace(path string) InstanceOption {
 	return func(inst *Instance) {
 		inst.WorkspacePath = path
+	}
+}
+
+// WithEnv sets environment variables to inject into the VM.
+func WithEnv(env map[string]string) InstanceOption {
+	return func(inst *Instance) {
+		inst.Env = env
 	}
 }
 
@@ -229,6 +239,7 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		"params": map[string]interface{}{
 			"command":        inst.Command,
 			"readiness_port": inst.ExposePorts[0].GuestPort,
+			"env":            inst.Env,
 		},
 		"id": 1,
 	})

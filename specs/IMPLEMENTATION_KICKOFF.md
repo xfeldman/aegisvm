@@ -1461,3 +1461,359 @@ Not needed for M2 (deferred):
   mkfs.ext4 / e2fsprogs (only for Firecracker ext4 images, M4)
   device-mapper / dmsetup (Linux COW overlays, M4)
 ```
+
+---
+
+## 10. M3 Implementation Notes
+
+**Documented after completing M3. These are design choices and corrections to §1.7, §1.10, and the M3 milestone table, based on building the secret, kit, and conformance systems on top of the M2 codebase.**
+
+### 10.1 Secret Injection — Via Existing `env` RPC Field, Not `injectSecrets`
+
+**Original assumption (§1.7):** Harness stores secrets in an in-memory map, received via a dedicated `injectSecrets` RPC. Harness applies them at `execve` time.
+
+**Reality for M3:** No harness changes were needed. Secrets are decrypted on the host and merged into the `env` map of the existing `runTask`/`startServer` RPC params. The harness already passes `env` to child processes via `execve` — secrets arrive as normal environment variables.
+
+This works because:
+
+- **Terminate → restore** = fresh boot. A new `startServer` RPC is sent with the full env (including secrets).
+- **Pause → resume** = memory retained. The child process keeps its environment in memory. No re-injection needed.
+
+The dedicated `injectSecrets` RPC from §1.7 is deferred to M4+ for the snapshot restore case (where a running harness needs new secrets injected into an already-running process tree without restarting it). For M3's cold-boot-only model, merging into `env` is correct and simpler.
+
+**Bug fix:** The `startServer` RPC in `lifecycle/manager.go` was not passing `env` at all — the `"env"` key was missing from the RPC params. This meant secrets (and any environment variables) were silently dropped in serve mode. Fixed by adding `"env": inst.Env` to the `startServer` RPC params.
+
+### 10.2 Secret Encryption — AES-256-GCM, Auto-Generated Master Key
+
+**Matches §1.10.** Implementation is straightforward:
+
+```go
+type Store struct {
+    masterKey []byte  // 32 bytes AES-256
+    keyPath   string
+}
+
+func NewStore(keyPath string) (*Store, error)  // load or auto-generate
+func (s *Store) Encrypt(plaintext []byte) ([]byte, error)   // nonce || ciphertext
+func (s *Store) Decrypt(ciphertext []byte) ([]byte, error)
+func (s *Store) EncryptString(value string) ([]byte, error)
+func (s *Store) DecryptString(ciphertext []byte) (string, error)
+```
+
+Key details:
+
+- **Master key location:** `~/.aegis/master.key` (configurable via `config.MasterKeyPath`)
+- **Auto-generation:** If the key file doesn't exist, 32 random bytes are generated via `crypto/rand` and written with `0600` permissions. The parent directory is created with `0700`.
+- **Format:** Each encrypted value is `nonce || ciphertext` (12-byte nonce prepended to the GCM ciphertext). No separate nonce storage needed.
+- **No new dependencies:** stdlib `crypto/aes`, `crypto/cipher`, `crypto/rand`.
+
+### 10.3 Registry Schema — secrets + kits Tables
+
+**Implements the tables from §1.9.** Two new tables added to `registry/db.go` `migrate()`:
+
+```sql
+CREATE TABLE IF NOT EXISTS secrets (
+    id         TEXT PRIMARY KEY,
+    app_id     TEXT NOT NULL DEFAULT '',
+    name       TEXT NOT NULL,
+    value      BLOB NOT NULL,
+    scope      TEXT NOT NULL DEFAULT 'per_app',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(app_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS kits (
+    name         TEXT PRIMARY KEY,
+    version      TEXT NOT NULL,
+    description  TEXT NOT NULL DEFAULT '',
+    config       TEXT NOT NULL,
+    image_ref    TEXT NOT NULL,
+    installed_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+Key design choices:
+
+- **`secrets.value` is BLOB** — stores the raw encrypted bytes (nonce || ciphertext). Never exposed in JSON responses (tagged `json:"-"` in the Go struct).
+- **`secrets.scope`** — `"per_app"` (scoped to one app) or `"per_workspace"` (shared across all apps). Workspace secrets have `app_id = ""`.
+- **`UNIQUE(app_id, name)`** — upsert semantics. Setting a secret with the same app+name replaces the previous value.
+- **`kits.config`** is stored as JSON TEXT — a typed `KitConfig` struct with nested `Secrets`, `Routing`, `Networking`, `Policies`, `Resources` sub-structs.
+- **Cascade delete:** `DeleteApp()` now deletes from `secrets` before `releases` and `apps` in a single transaction.
+
+### 10.4 Secret Resolution — Workspace + App Merge
+
+Secrets are resolved at instance boot / task creation time by `Server.resolveSecrets(appID)`:
+
+```
+1. Load workspace secrets (scope = "per_workspace")  → base env
+2. Load app secrets (scope = "per_app", app_id = X)  → overlay on top
+3. App-scoped secrets win on name collision
+4. Return merged map[string]string
+```
+
+This merged env is:
+
+- **Serve mode:** Passed to `lifecycle.WithEnv(env)` → stored in `Instance.Env` → included in `startServer` RPC.
+- **Task mode:** Merged into `CreateTaskRequest.Env` (explicit env in the request takes precedence over secrets).
+
+### 10.5 Secret API — Names Only, Never Values
+
+Five new routes:
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `PUT /v1/apps/{id}/secrets/{name}` | Set app secret | `{"value": "..."}` |
+| `GET /v1/apps/{id}/secrets` | List app secrets | Names + metadata only |
+| `DELETE /v1/apps/{id}/secrets/{name}` | Delete app secret | |
+| `PUT /v1/secrets/{name}` | Set workspace secret | `{"value": "..."}` |
+| `GET /v1/secrets` | List workspace secrets | Names + metadata only |
+
+The list endpoints return `secretResponse{Name, Scope, CreatedAt}` — the encrypted value is tagged `json:"-"` and never serialized. This is validated by `TestSecretNotLeakedInResponse` in the conformance suite.
+
+### 10.6 Kit System — Registry + Manifest + No-Op Hooks
+
+**Original assumption (M3 table):** Kit manifest parsing, registration, kit hooks (`render_env`, `validate_config`, `on_publish`).
+
+**M3 reality:** Kit registration and manifest parsing are implemented. Hooks are defined as an interface with a `DefaultHooks` pass-through — real kit hooks come when Famiglia/OpenClaw are built.
+
+**Kit manifest format (YAML on disk, JSON in API):**
+
+```yaml
+name: famiglia
+version: "0.1.0"
+description: "Famiglia AI agent kit"
+image: ghcr.io/famiglia/agent:latest
+config:
+  secrets:
+    required:
+      - name: ANTHROPIC_API_KEY
+        description: "Anthropic API key"
+  routing:
+    default_port: 8080
+    healthcheck: /health
+  resources:
+    memory_mb: 1024
+    vcpus: 2
+```
+
+`kit.ParseFile(path)` reads YAML, validates required fields (name, version, image), and returns a `*Manifest`. `manifest.ToKit()` converts to a `*registry.Kit` for storage.
+
+**Hooks interface:**
+
+```go
+type Hooks interface {
+    RenderEnv(app *registry.App, secrets map[string]string) (map[string]string, error)
+    ValidateConfig(appConfig map[string]string) error
+    OnPublish(app *registry.App, release *registry.Release) error
+}
+
+type DefaultHooks struct{}  // all methods are pass-through/no-op
+```
+
+Real kit implementations will satisfy this interface. `DefaultHooks` is the M3 placeholder.
+
+**Kit API routes:**
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST /v1/kits` | Register kit | `{name, version, image_ref, config}` |
+| `GET /v1/kits` | List kits | |
+| `GET /v1/kits/{name}` | Get kit | |
+| `DELETE /v1/kits/{name}` | Uninstall kit | |
+
+**New dependency:** `gopkg.in/yaml.v3` (pure Go, no cgo) — for kit manifest YAML parsing.
+
+### 10.7 CLI Commands — `secret` + `kit`
+
+Two new top-level command groups:
+
+```bash
+# Secrets
+aegis secret set myapp API_KEY sk-test123
+aegis secret list myapp
+aegis secret delete myapp API_KEY
+aegis secret set-workspace GLOBAL_KEY value123
+aegis secret list-workspace
+
+# Kits
+aegis kit install manifest.yaml     # reads YAML, POSTs JSON
+aegis kit list                      # table: NAME, VERSION, IMAGE
+aegis kit info famiglia             # detailed view
+aegis kit uninstall famiglia
+```
+
+The `kit install` command parses top-level YAML fields from the manifest file on the client side (simple line-based parser for the CLI binary, avoiding a yaml.v3 dependency in the CLI). The parsed fields are sent as JSON to `POST /v1/kits`.
+
+### 10.8 Enhanced `aegis doctor` — Capability Matrix
+
+When the daemon is running, `aegis doctor` now queries `GET /v1/status` and displays:
+
+```
+Aegis Doctor
+============
+
+Go:       installed
+libkrun:  found at /opt/homebrew/lib/libkrun.dylib
+e2fsprogs: found
+
+aegisd:   running
+
+Backend:     libkrun
+Capabilities:
+  Pause/Resume:          yes
+  Memory Snapshots:      no
+  Boot from disk layers: yes
+Installed kits: 0
+```
+
+The status response was enhanced to include:
+
+```json
+{
+  "status": "running",
+  "backend": "libkrun",
+  "capabilities": {
+    "pause_resume": true,
+    "memory_snapshots": false,
+    "boot_from_disk_layers": true
+  },
+  "kit_count": 0
+}
+```
+
+### 10.9 Conformance Suite — Contract Before Firecracker
+
+**Original assumption (M3 table):** `test/conformance/` directory, `aegis test conformance` CLI wrapper.
+
+**Reality:** Conformance tests live in `test/integration/` alongside M0-M2 tests, using the same `TestMain` pattern and build tag (`integration`). No separate CLI wrapper — `make test-m3` runs them. This keeps the test infrastructure simple and avoids duplication.
+
+**M3-specific tests** (`test/integration/m3_test.go`):
+
+| Test | What it verifies |
+|------|------------------|
+| `TestSecretInjectionTask` | Set secret → run task with `app_id` → verify env var in output |
+| `TestSecretNotLeakedInResponse` | `GET /secrets` returns names only, no encrypted values |
+| `TestWorkspaceSecrets` | Workspace secret visible in list endpoint |
+| `TestKitInstallListInfo` | Full kit CRUD lifecycle via API |
+| `TestDoctorCapabilities` | `aegis doctor` shows Backend, Pause/Resume, Installed kits |
+
+**Conformance tests** (`test/integration/conformance_test.go`):
+
+| Test | What it verifies |
+|------|------------------|
+| `TestConformanceTaskRun` | Run task, capture stdout, verify output |
+| `TestConformanceServeRequest` | Expose port, HTTP request, verify response |
+| `TestConformancePauseOnIdle` | Wait for idle timeout, verify pause, request wakes (skipped in SHORT mode) |
+| `TestConformanceSecretInjection` | Set secret, run task with `app_id`, verify env var |
+| `TestConformanceSecretNotOnDisk` | `grep` for secret value inside VM — verify not found |
+| `TestConformanceEgressWorks` | `wget` external URL from inside VM |
+| `TestConformanceMemorySnapshot` | `t.Skip("libkrun: no snapshot support")` |
+| `TestConformanceCachedResume` | `t.Skip("libkrun: no snapshot support")` |
+
+The conformance tests are written **before** Firecracker (M4) arrives. They define the behavioral contract — when `FirecrackerVMM` is implemented, these same tests must pass without modification. The two snapshot tests are capability-gated: they skip on libkrun and will be unskipped when Firecracker adds snapshot support.
+
+**Makefile:**
+
+```makefile
+test-m3: all
+    $(GO) test -tags integration -v -count=1 -timeout 15m \
+        -run 'TestSecret|TestKit|TestDoctor|TestConformance' ./test/integration/
+```
+
+### 10.10 Task AppID Resolution
+
+`CreateTaskRequest` gained an `AppID` field:
+
+```go
+type CreateTaskRequest struct {
+    Command []string          `json:"command"`
+    Env     map[string]string `json:"env,omitempty"`
+    Image   string            `json:"image,omitempty"`
+    AppID   string            `json:"app_id,omitempty"`
+}
+```
+
+When `AppID` is set, `handleCreateTask` resolves the app (by ID or name via `resolveApp`), decrypts its secrets, and merges them into `req.Env`. Explicit env values in the request take precedence over secrets (no overwrite if key already exists).
+
+This enables secret-injected tasks without modifying the harness: `aegis run` sends `app_id` in the task request, and the daemon handles decryption and env merging before the RPC is sent.
+
+### 10.11 aegisd Init Sequence (M3)
+
+```go
+cfg := config.DefaultConfig()
+backend := vmm.NewLibkrunVMM(cfg)
+reg := registry.Open(cfg.DBPath)                        // + secrets, kits tables
+imgCache := image.NewCache(cfg.ImageCacheDir)
+ov := overlay.NewCopyOverlay(cfg.ReleasesDir)
+ss := secrets.NewStore(cfg.MasterKeyPath)                // new: AES-256-GCM
+lm := lifecycle.NewManager(backend, cfg)
+rtr := router.New(lm, cfg.RouterAddr, &appResolver{reg})
+server := api.NewServer(cfg, backend, lm, reg, imgCache, ov, ss) // new: secret store
+
+rtr.Start()
+server.Start()
+// ... wait for signal ...
+lm.Shutdown()
+rtr.Stop()
+server.Stop()
+reg.Close()
+```
+
+### 10.12 Project Structure (Actual, M3)
+
+Three new packages, no new binaries:
+
+```
+aegis/
+├── cmd/
+│   ├── aegisd/main.go              # + secret store init, pass to NewServer
+│   ├── aegis/main.go               # + secret, kit command groups; enhanced doctor
+│   ├── aegis-harness/main.go       # unchanged
+│   └── aegis-vmm-worker/main.go    # unchanged
+├── internal/
+│   ├── vmm/                        # unchanged
+│   ├── harness/                    # unchanged (secrets via existing env field)
+│   ├── api/
+│   │   ├── server.go               # + secretStore field, secret/kit routes, enhanced status
+│   │   ├── tasks.go                # + AppID field, secret resolution
+│   │   ├── apps.go                 # + secret resolution in handleServeApp
+│   │   ├── secrets.go              # NEW: secret CRUD handlers + resolveSecrets
+│   │   └── kits.go                 # NEW: kit CRUD handlers
+│   ├── config/config.go            # + MasterKeyPath
+│   ├── lifecycle/manager.go        # + Env field, WithEnv option, env in startServer RPC
+│   ├── router/                     # unchanged
+│   ├── registry/
+│   │   ├── db.go                   # + secrets, kits tables in migration
+│   │   ├── apps.go                 # + cascade delete secrets in DeleteApp
+│   │   ├── secrets.go              # NEW: Secret CRUD
+│   │   └── kits.go                 # NEW: Kit CRUD + KitConfig types
+│   ├── secrets/                    # NEW: encryption package
+│   │   ├── store.go                #   AES-256-GCM encrypt/decrypt, master key management
+│   │   └── store_test.go           #   8 tests
+│   ├── kit/                        # NEW: kit manifest + hooks
+│   │   ├── manifest.go             #   YAML parser, Manifest → Kit conversion
+│   │   ├── manifest_test.go        #   4 tests
+│   │   └── hooks.go                #   Hooks interface + DefaultHooks no-op
+│   ├── image/                      # unchanged
+│   └── overlay/                    # unchanged
+├── test/integration/
+│   ├── helpers_test.go             # + apiPut, apiDeleteAllowFail, waitForTaskOutput
+│   ├── m0_test.go                  # unchanged
+│   ├── m1_test.go                  # unchanged
+│   ├── m2_test.go                  # unchanged
+│   ├── m3_test.go                  # NEW: secret + kit + doctor tests
+│   └── conformance_test.go         # NEW: backend conformance suite
+├── go.mod                          # + gopkg.in/yaml.v3
+└── ...
+```
+
+### 10.13 M3 Dependencies (Actual)
+
+```
+macOS (confirmed working):
+  All M0 + M1 + M2 dependencies
+  + gopkg.in/yaml.v3 (pure Go, no cgo — kit manifest parsing)
+
+No new system dependencies.
+stdlib crypto/aes, crypto/cipher, crypto/rand for secret encryption.
+```

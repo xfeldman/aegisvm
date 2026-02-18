@@ -86,6 +86,9 @@ func (d *DB) DeleteApp(id string) error {
 	}
 	defer tx.Rollback()
 
+	if _, err := tx.Exec(`DELETE FROM secrets WHERE app_id = ?`, id); err != nil {
+		return fmt.Errorf("delete secrets: %w", err)
+	}
 	if _, err := tx.Exec(`DELETE FROM releases WHERE app_id = ?`, id); err != nil {
 		return fmt.Errorf("delete releases: %w", err)
 	}

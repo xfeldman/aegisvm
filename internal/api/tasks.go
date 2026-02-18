@@ -28,6 +28,7 @@ type CreateTaskRequest struct {
 	Command []string          `json:"command"`
 	Env     map[string]string `json:"env,omitempty"`
 	Image   string            `json:"image,omitempty"`
+	AppID   string            `json:"app_id,omitempty"`
 }
 
 type Task struct {
@@ -342,6 +343,29 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "command is required")
 		return
 	}
+
+	// If an app is referenced, resolve its secrets and merge into env
+	if req.AppID != "" && s.secretStore != nil {
+		app, _ := s.resolveApp(req.AppID)
+		appID := req.AppID
+		if app != nil {
+			appID = app.ID
+		}
+		secretEnv, err := s.resolveSecrets(appID)
+		if err != nil {
+			log.Printf("resolve secrets for task: %v", err)
+		} else if len(secretEnv) > 0 {
+			if req.Env == nil {
+				req.Env = make(map[string]string)
+			}
+			for k, v := range secretEnv {
+				if _, exists := req.Env[k]; !exists {
+					req.Env[k] = v
+				}
+			}
+		}
+	}
+
 	task := s.tasks.createTask(req.Command)
 	log.Printf("task %s created: %v", task.ID, req.Command)
 	go s.tasks.runTask(task.ID, req)
