@@ -655,6 +655,47 @@ aegisd                                    Guest VM
 
 The JSON-RPC protocol is unchanged from the spec. Only the transport and connection direction differ.
 
+This is clean, backend-specific but abstractable, and not leaky to core. Firecracker can use AF_VSOCK directly when it arrives in M4 — same protocol, different transport.
+
+### 7.2.1 ControlChannel Abstraction
+
+To prevent transport logic from leaking into core, the VMM interface defines a `ControlChannel`:
+
+```go
+type ControlChannel interface {
+    Send(msg []byte) error
+    Recv() ([]byte, error)
+    Close() error
+}
+```
+
+`StartVM` returns a ready-to-use `ControlChannel`. Core code (task runner, future lifecycle manager) calls `Send`/`Recv`/`Close` — it never sees TCP, vsock, or unix sockets.
+
+- **libkrun backend** returns a TCP-backed channel (via `NetControlChannel` wrapping `net.Conn`)
+- **Firecracker backend** (M4) will return a vsock-backed channel (same wrapper, different `net.Conn`)
+- Any future backend provides its own implementation
+
+The concrete implementation (`NetControlChannel`) wraps any `net.Conn` with newline-delimited framing, so it works for both TCP and vsock connections.
+
+### 7.2.2 RootFS Abstraction
+
+Similarly, rootfs format is backend-specific and must not leak into core:
+
+```go
+type RootFSType int
+const (
+    RootFSDirectory  RootFSType = iota  // libkrun: host directory via krun_set_root
+    RootFSBlockImage                     // Firecracker: raw ext4 block device
+)
+
+type RootFS struct {
+    Type RootFSType
+    Path string
+}
+```
+
+`VMConfig.Rootfs` uses this type. `BackendCaps.RootFSType` declares what the backend expects. The image pipeline (M2+) produces the right artifact based on the active backend's declared type. Core never assumes ext4 or directory — it asks the backend what it needs.
+
 ### 7.3 Kernel Cmdline 2048-Byte Limit
 
 **Not in original spec.**

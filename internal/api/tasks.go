@@ -1,12 +1,10 @@
 package api
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -15,7 +13,6 @@ import (
 	"github.com/xfeldman/aegis/internal/vmm"
 )
 
-// Task states
 const (
 	TaskQueued    = "QUEUED"
 	TaskRunning   = "RUNNING"
@@ -24,13 +21,11 @@ const (
 	TaskTimedOut  = "TIMED_OUT"
 )
 
-// CreateTaskRequest is the request body for POST /v1/tasks.
 type CreateTaskRequest struct {
 	Command []string          `json:"command"`
 	Env     map[string]string `json:"env,omitempty"`
 }
 
-// Task represents a task in the system.
 type Task struct {
 	ID        string     `json:"id"`
 	State     string     `json:"state"`
@@ -42,14 +37,12 @@ type Task struct {
 	Error     string     `json:"error,omitempty"`
 }
 
-// LogLine is a single log line from task execution.
 type LogLine struct {
 	Stream    string    `json:"stream"`
 	Line      string    `json:"line"`
 	Timestamp time.Time `json:"timestamp"`
 }
 
-// TaskStore manages tasks in memory (M0 — no SQLite).
 type TaskStore struct {
 	mu    sync.Mutex
 	tasks map[string]*taskEntry
@@ -78,14 +71,12 @@ func (ts *TaskStore) createTask(cmd []string) *Task {
 
 	ts.seq++
 	id := fmt.Sprintf("task-%d", ts.seq)
-
 	t := &Task{
 		ID:        id,
 		State:     TaskQueued,
 		Command:   cmd,
 		CreatedAt: time.Now(),
 	}
-
 	ts.tasks[id] = &taskEntry{task: *t}
 	return t
 }
@@ -93,7 +84,6 @@ func (ts *TaskStore) createTask(cmd []string) *Task {
 func (ts *TaskStore) getTask(id string) (*Task, bool) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-
 	entry, ok := ts.tasks[id]
 	if !ok {
 		return nil, false
@@ -105,7 +95,6 @@ func (ts *TaskStore) getTask(id string) (*Task, bool) {
 func (ts *TaskStore) updateState(id, state string) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-
 	entry, ok := ts.tasks[id]
 	if !ok {
 		return
@@ -123,7 +112,6 @@ func (ts *TaskStore) updateState(id, state string) {
 func (ts *TaskStore) setResult(id string, exitCode int, errMsg string) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-
 	entry, ok := ts.tasks[id]
 	if !ok {
 		return
@@ -135,18 +123,12 @@ func (ts *TaskStore) setResult(id string, exitCode int, errMsg string) {
 func (ts *TaskStore) appendLog(id string, stream, line string) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-
 	entry, ok := ts.tasks[id]
 	if !ok {
 		return
 	}
-	ll := LogLine{
-		Stream:    stream,
-		Line:      line,
-		Timestamp: time.Now(),
-	}
+	ll := LogLine{Stream: stream, Line: line, Timestamp: time.Now()}
 	entry.logs = append(entry.logs, ll)
-
 	for _, ch := range entry.subs {
 		select {
 		case ch <- ll:
@@ -158,18 +140,14 @@ func (ts *TaskStore) appendLog(id string, stream, line string) {
 func (ts *TaskStore) subscribeLogs(id string) (chan LogLine, []LogLine, func()) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-
 	entry, ok := ts.tasks[id]
 	if !ok {
 		return nil, nil, func() {}
 	}
-
 	ch := make(chan LogLine, 100)
 	entry.subs = append(entry.subs, ch)
-
 	existing := make([]LogLine, len(entry.logs))
 	copy(existing, entry.logs)
-
 	unsub := func() {
 		ts.mu.Lock()
 		defer ts.mu.Unlock()
@@ -181,37 +159,27 @@ func (ts *TaskStore) subscribeLogs(id string) (chan LogLine, []LogLine, func()) 
 		}
 		close(ch)
 	}
-
 	return ch, existing, unsub
 }
 
 // runTask executes a task end-to-end:
-// 1. Start a TCP listener on the host (random port)
-// 2. Boot a VM, passing the listener address as AEGIS_HOST_ADDR
-// 3. The harness inside the VM connects back to us via TSI
-// 4. Send runTask RPC over the connection
-// 5. Stream logs, collect result
-// 6. Shutdown and stop VM
+// 1. Create VM with RootFS config
+// 2. StartVM — backend handles transport setup, returns ControlChannel
+// 3. Send runTask RPC over the channel
+// 4. Stream logs, collect result
+// 5. Shutdown and stop VM
+//
+// Core never touches TCP, vsock, or unix sockets — only ControlChannel.Send/Recv.
 func (ts *TaskStore) runTask(taskID string, req CreateTaskRequest) {
 	ts.updateState(taskID, TaskRunning)
 
-	// 1. Start a TCP listener on a random port for the harness to connect to
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		ts.setResult(taskID, -1, fmt.Sprintf("listen: %v", err))
-		ts.updateState(taskID, TaskFailed)
-		return
-	}
-	defer ln.Close()
-
-	hostAddr := ln.Addr().String()
-	log.Printf("task %s: listening for harness connection on %s", taskID, hostAddr)
-
-	// 2. Create and start VM
 	vmCfg := vmm.VMConfig{
-		RootfsPath: ts.cfg.BaseRootfsPath,
-		MemoryMB:   ts.cfg.DefaultMemoryMB,
-		VCPUs:      ts.cfg.DefaultVCPUs,
+		Rootfs: vmm.RootFS{
+			Type: ts.vmm.Capabilities().RootFSType,
+			Path: ts.cfg.BaseRootfsPath,
+		},
+		MemoryMB: ts.cfg.DefaultMemoryMB,
+		VCPUs:    ts.cfg.DefaultVCPUs,
 	}
 
 	handle, err := ts.vmm.CreateVM(vmCfg)
@@ -222,38 +190,17 @@ func (ts *TaskStore) runTask(taskID string, req CreateTaskRequest) {
 	}
 	defer ts.vmm.StopVM(handle)
 
-	// Set the host address for the harness to connect to
-	libkrunVMM, ok := ts.vmm.(*vmm.LibkrunVMM)
-	if !ok {
-		ts.setResult(taskID, -1, "unsupported VMM backend")
-		ts.updateState(taskID, TaskFailed)
-		return
-	}
-	if err := libkrunVMM.SetHostAddr(handle, hostAddr); err != nil {
-		ts.setResult(taskID, -1, fmt.Sprintf("set host addr: %v", err))
-		ts.updateState(taskID, TaskFailed)
-		return
-	}
-
-	if err := ts.vmm.StartVM(handle); err != nil {
+	ch, err := ts.vmm.StartVM(handle)
+	if err != nil {
 		ts.setResult(taskID, -1, fmt.Sprintf("start VM: %v", err))
 		ts.updateState(taskID, TaskFailed)
 		return
 	}
+	defer ch.Close()
+	log.Printf("task %s: harness connected", taskID)
 
-	// 3. Wait for the harness to connect (with timeout)
-	ln.(*net.TCPListener).SetDeadline(time.Now().Add(30 * time.Second))
-	conn, err := ln.Accept()
-	if err != nil {
-		ts.setResult(taskID, -1, fmt.Sprintf("harness did not connect: %v", err))
-		ts.updateState(taskID, TaskFailed)
-		return
-	}
-	defer conn.Close()
-	log.Printf("task %s: harness connected from %s", taskID, conn.RemoteAddr())
-
-	// 4. Send runTask RPC
-	rpcReq := map[string]interface{}{
+	// Send runTask RPC
+	rpcReq, _ := json.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  "runTask",
 		"params": map[string]interface{}{
@@ -261,22 +208,23 @@ func (ts *TaskStore) runTask(taskID string, req CreateTaskRequest) {
 			"env":     req.Env,
 		},
 		"id": 1,
-	}
-
-	encoder := json.NewEncoder(conn)
-	if err := encoder.Encode(rpcReq); err != nil {
+	})
+	if err := ch.Send(rpcReq); err != nil {
 		ts.setResult(taskID, -1, fmt.Sprintf("send runTask: %v", err))
 		ts.updateState(taskID, TaskFailed)
 		return
 	}
 
-	// 5. Read responses (log notifications and final result)
-	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	// Read responses (log notifications and final result)
+	for {
+		msg, err := ch.Recv()
+		if err != nil {
+			log.Printf("task %s: recv error: %v", taskID, err)
+			break
+		}
 
-	for scanner.Scan() {
 		var generic map[string]interface{}
-		if err := json.Unmarshal(scanner.Bytes(), &generic); err != nil {
+		if err := json.Unmarshal(msg, &generic); err != nil {
 			continue
 		}
 
@@ -310,18 +258,14 @@ func (ts *TaskStore) runTask(taskID string, req CreateTaskRequest) {
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		log.Printf("task %s: read error: %v", taskID, err)
-	}
-
-	// 6. Send shutdown
-	shutdownReq := map[string]interface{}{
+	// Send shutdown
+	shutdownReq, _ := json.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  "shutdown",
 		"params":  nil,
 		"id":      2,
-	}
-	encoder.Encode(shutdownReq)
+	})
+	ch.Send(shutdownReq)
 }
 
 // HTTP handlers
@@ -332,29 +276,23 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
 		return
 	}
-
 	if len(req.Command) == 0 {
 		writeError(w, http.StatusBadRequest, "command is required")
 		return
 	}
-
 	task := s.tasks.createTask(req.Command)
 	log.Printf("task %s created: %v", task.ID, req.Command)
-
 	go s.tasks.runTask(task.ID, req)
-
 	writeJSON(w, http.StatusCreated, task)
 }
 
 func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	id := pathParam(r, "id")
-
 	task, ok := s.tasks.getTask(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
-
 	writeJSON(w, http.StatusOK, task)
 }
 
@@ -378,12 +316,12 @@ func (s *Server) handleGetTaskLogs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer unsub()
-
 		for _, ll := range existing {
 			streamJSON(w, ll)
 		}
-
 		ctx := r.Context()
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
@@ -393,11 +331,13 @@ func (s *Server) handleGetTaskLogs(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				streamJSON(w, ll)
-
-				t, _ := s.tasks.getTask(id)
-				if t != nil && t.State != TaskQueued && t.State != TaskRunning {
-					return
-				}
+			case <-ticker.C:
+				// Periodically check if task is done (in case last log
+				// arrived before state transitioned to terminal)
+			}
+			t, _ := s.tasks.getTask(id)
+			if t != nil && t.State != TaskQueued && t.State != TaskRunning {
+				return
 			}
 		}
 	} else {

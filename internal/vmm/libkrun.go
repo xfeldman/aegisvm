@@ -3,6 +3,7 @@ package vmm
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,15 +20,14 @@ type WorkerConfig struct {
 	MemoryMB   int    `json:"memory_mb"`
 	VCPUs      int    `json:"vcpus"`
 	ExecPath   string `json:"exec_path"`
-	HostAddr   string `json:"host_addr"` // host:port for harness to connect back to
+	HostAddr   string `json:"host_addr"`
 }
 
 type vmInstance struct {
-	id       string
-	config   VMConfig
-	cmd      *exec.Cmd
-	hostAddr string // host:port the harness will connect to
-	done     chan struct{}
+	id     string
+	config VMConfig
+	cmd    *exec.Cmd
+	done   chan struct{}
 }
 
 // LibkrunVMM implements the VMM interface using libkrun on macOS.
@@ -36,11 +36,9 @@ type vmInstance struct {
 type LibkrunVMM struct {
 	mu        sync.Mutex
 	instances map[string]*vmInstance
-	dataDir   string
 	workerBin string
 }
 
-// NewLibkrunVMM creates a new libkrun VMM backend.
 func NewLibkrunVMM(cfg *config.Config) (*LibkrunVMM, error) {
 	workerBin := filepath.Join(cfg.BinDir, "aegis-vmm-worker")
 	if _, err := os.Stat(workerBin); err != nil {
@@ -49,14 +47,16 @@ func NewLibkrunVMM(cfg *config.Config) (*LibkrunVMM, error) {
 
 	return &LibkrunVMM{
 		instances: make(map[string]*vmInstance),
-		dataDir:   cfg.DataDir,
 		workerBin: workerBin,
 	}, nil
 }
 
 func (l *LibkrunVMM) CreateVM(cfg VMConfig) (Handle, error) {
+	if cfg.Rootfs.Type != RootFSDirectory {
+		return Handle{}, fmt.Errorf("libkrun backend requires RootFSDirectory, got %s", cfg.Rootfs.Type)
+	}
+
 	id := fmt.Sprintf("vm-%d", time.Now().UnixNano())
-	h := Handle{ID: id}
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -67,42 +67,49 @@ func (l *LibkrunVMM) CreateVM(cfg VMConfig) (Handle, error) {
 		done:   make(chan struct{}),
 	}
 
-	return h, nil
+	return Handle{ID: id}, nil
 }
 
-// StartVM starts the VM. hostAddr is the host TCP address the harness should
-// connect back to (e.g., "127.0.0.1:59123"). This must be set before calling StartVM
-// via SetHostAddr.
-func (l *LibkrunVMM) StartVM(h Handle) error {
+// StartVM boots the VM and returns a ControlChannel for harness communication.
+// Internally: starts a TCP listener on localhost, spawns the vmm-worker
+// (which boots the VM via libkrun), and waits for the harness to connect
+// back via TSI. Returns a ready-to-use ControlChannel.
+func (l *LibkrunVMM) StartVM(h Handle) (ControlChannel, error) {
 	l.mu.Lock()
 	inst, ok := l.instances[h.ID]
 	if !ok {
 		l.mu.Unlock()
-		return fmt.Errorf("vm %s not found", h.ID)
+		return nil, fmt.Errorf("vm %s not found", h.ID)
 	}
-	hostAddr := inst.hostAddr
+	cfg := inst.config
 	l.mu.Unlock()
 
-	if hostAddr == "" {
-		return fmt.Errorf("vm %s: hostAddr not set (call SetHostAddr before StartVM)", h.ID)
+	// 1. Start TCP listener for harness callback
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, fmt.Errorf("listen for harness: %w", err)
 	}
 
+	hostAddr := ln.Addr().String()
+
+	// 2. Spawn vmm-worker
 	wc := WorkerConfig{
-		RootfsPath: inst.config.RootfsPath,
-		MemoryMB:   inst.config.MemoryMB,
-		VCPUs:      inst.config.VCPUs,
+		RootfsPath: cfg.Rootfs.Path,
+		MemoryMB:   cfg.MemoryMB,
+		VCPUs:      cfg.VCPUs,
 		ExecPath:   "/usr/bin/aegis-harness",
 		HostAddr:   hostAddr,
 	}
 
 	wcJSON, err := json.Marshal(wc)
 	if err != nil {
-		return fmt.Errorf("marshal worker config: %w", err)
+		ln.Close()
+		return nil, fmt.Errorf("marshal worker config: %w", err)
 	}
 
 	cmd := exec.Command(l.workerBin)
 	cmd.Stdin = nil
-	cmd.Stdout = os.Stdout // TODO: capture to log
+	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = append(os.Environ(),
 		"AEGIS_VMM_CONFIG="+string(wcJSON),
@@ -111,57 +118,32 @@ func (l *LibkrunVMM) StartVM(h Handle) error {
 	)
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start vmm-worker: %w", err)
+		ln.Close()
+		return nil, fmt.Errorf("start vmm-worker: %w", err)
 	}
 
 	l.mu.Lock()
 	inst.cmd = cmd
 	l.mu.Unlock()
 
-	// Monitor worker process exit in background
 	go func() {
 		_ = cmd.Wait()
 		close(inst.done)
 	}()
 
-	return nil
-}
-
-// SetHostAddr sets the host TCP address the harness should connect back to.
-// Must be called before StartVM.
-func (l *LibkrunVMM) SetHostAddr(h Handle, addr string) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	inst, ok := l.instances[h.ID]
-	if !ok {
-		return fmt.Errorf("vm %s not found", h.ID)
+	// 3. Wait for harness to connect back (with timeout)
+	ln.(*net.TCPListener).SetDeadline(time.Now().Add(30 * time.Second))
+	conn, err := ln.Accept()
+	ln.Close() // only need one connection
+	if err != nil {
+		return nil, fmt.Errorf("harness did not connect within 30s: %w", err)
 	}
-	inst.hostAddr = addr
-	return nil
+
+	return NewNetControlChannel(conn), nil
 }
 
-// Done returns a channel that is closed when the VM worker process exits.
-func (l *LibkrunVMM) Done(h Handle) <-chan struct{} {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	inst, ok := l.instances[h.ID]
-	if !ok {
-		ch := make(chan struct{})
-		close(ch)
-		return ch
-	}
-	return inst.done
-}
-
-func (l *LibkrunVMM) PauseVM(h Handle) error {
-	return ErrNotSupported
-}
-
-func (l *LibkrunVMM) ResumeVM(h Handle) error {
-	return ErrNotSupported
-}
+func (l *LibkrunVMM) PauseVM(h Handle) error  { return ErrNotSupported }
+func (l *LibkrunVMM) ResumeVM(h Handle) error { return ErrNotSupported }
 
 func (l *LibkrunVMM) StopVM(h Handle) error {
 	l.mu.Lock()
@@ -196,6 +178,7 @@ func (l *LibkrunVMM) Capabilities() BackendCaps {
 	return BackendCaps{
 		Pause:           false,
 		SnapshotRestore: false,
+		RootFSType:      RootFSDirectory,
 		Name:            "libkrun",
 	}
 }
