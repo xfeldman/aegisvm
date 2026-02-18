@@ -72,9 +72,13 @@ test:
 	$(GO) test ./...
 
 # Run integration tests (requires built binaries + base rootfs installed)
-# Use -short to skip the pause/resume test (70s+ wait)
+# Use SHORT=1 to skip the pause/resume test (70s+ wait)
 integration: all
+ifdef SHORT
+	$(GO) test -tags integration -v -count=1 -short -timeout 10m ./test/integration/
+else
 	$(GO) test -tags integration -v -count=1 -timeout 10m ./test/integration/
+endif
 
 # Clean build artifacts
 clean:

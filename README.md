@@ -98,6 +98,44 @@ make base-rootfs    # requires Docker
 
 **aegis** — CLI. Talks to aegisd over the unix socket.
 
+## Tests
+
+Unit tests (no VM, fast):
+
+```bash
+make test
+```
+
+Integration tests (boots real VMs, requires built binaries + base rootfs installed at `~/.aegis/base-rootfs`):
+
+```bash
+make integration          # full suite (~90s, includes pause/resume)
+make integration SHORT=1  # skip pause/resume test (~17s)
+```
+
+The integration suite manages the daemon lifecycle automatically — it starts aegisd before tests and stops it after. Tests cover:
+
+**M0 — Task mode:**
+- Echo command output
+- Non-zero exit code propagation
+- Stderr streaming
+- Multiline output (multiple log lines delivered correctly)
+- Python available in VM
+- Daemon status reporting
+
+**M1 — Serve mode:**
+- HTTP server in VM reachable via router on `:8099`
+- Multiple sequential requests succeed
+- Pause after 60s idle, resume on next request (SIGSTOP/SIGCONT)
+- Clean instance shutdown via API
+- Task mode still works after serve tests
+
+Tests are gated by `//go:build integration` so `go test ./...` skips them. Run explicitly via `make integration` or:
+
+```bash
+go test -tags integration -v -count=1 -timeout 10m ./test/integration/
+```
+
 ## Specs
 
 - [Platform spec](specs/AEGIS_PLATFORM_SPEC.md) — architecture, lifecycle, APIs, security model
@@ -107,13 +145,13 @@ make base-rootfs    # requires Docker
 
 ## Status
 
-**M0 complete.** `aegis run -- echo hello` works end-to-end on macOS ARM64 via libkrun.
+**M1 complete.** Serve mode with pause/resume and wake-on-connect works end-to-end.
 
 | Milestone | Status | Adds |
 |---|---|---|
 | **M0** | **Done** | Boot + run. libkrun backend, VMM interface, harness, CLI. |
-| M1 | Next | Serve mode, router with wake-on-connect, pause/resume, networking, SQLite. |
-| M2 | — | Releases, publishing, OCI images, overlays, workspace volumes. |
+| **M1** | **Done** | Serve mode, router with wake-on-connect, SIGSTOP/SIGCONT pause/resume, SQLite registry. |
+| M2 | Next | Releases, publishing, OCI images, overlays, workspace volumes. |
 | M3 | — | Kits, secrets, conformance test suite. |
 | M4 | — | Firecracker on Linux. Both backends pass conformance. |
 | M5 | — | Shared workspaces, network groups, warm pool, GC. |
