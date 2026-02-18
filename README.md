@@ -24,7 +24,14 @@ aegis run -- python analyze.py    # boot VM, run, collect output, done
 aegis run --expose 80:http --expose 5432:tcp -- python app.py
 ```
 
-A web UI, a database sandbox, an MCP tool server, and a gRPC endpoint all use the same mechanism. Connection arrives → VM wakes (~ms from pause, ~1s from terminated) → router proxies → idle timer starts on last disconnect → pause → terminate. Same router, same wake-on-connect, same scale-to-zero.
+A web UI, a database sandbox, an MCP tool server, and a gRPC endpoint all use the same mechanism. Connection arrives → VM wakes → router proxies → idle timer starts on last disconnect → pause → terminate. Same router, same wake-on-connect, same scale-to-zero.
+
+Measured on macOS ARM64 (M1, libkrun backend):
+
+| Path | Latency |
+|------|---------|
+| Cold boot (zero to HTTP 200) | ~500ms |
+| Resume from pause (SIGCONT to HTTP 200) | ~35ms |
 
 ## Core mechanisms
 
