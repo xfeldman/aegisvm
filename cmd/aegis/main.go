@@ -300,18 +300,32 @@ func cmdRunServe(client *http.Client, command []string, exposePorts []int) {
 	fmt.Printf("Instance: %s\n", instanceID)
 	fmt.Println("Press Ctrl+C to stop")
 
-	// Wait for interrupt
+	// Wait for interrupt or instance disappearing
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-	<-sigCh
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 
-	fmt.Println("\nStopping instance...")
-
-	// Delete instance
-	req, _ := http.NewRequest("DELETE", fmt.Sprintf("http://aegis/v1/instances/%s", instanceID), nil)
-	client.Do(req)
-
-	fmt.Println("Stopped")
+	for {
+		select {
+		case <-sigCh:
+			fmt.Println("\nStopping instance...")
+			req, _ := http.NewRequest("DELETE", fmt.Sprintf("http://aegis/v1/instances/%s", instanceID), nil)
+			client.Do(req)
+			fmt.Println("Stopped")
+			return
+		case <-ticker.C:
+			checkResp, err := client.Get(fmt.Sprintf("http://aegis/v1/instances/%s", instanceID))
+			if err != nil || checkResp.StatusCode == 404 {
+				if checkResp != nil {
+					checkResp.Body.Close()
+				}
+				fmt.Println("\nInstance no longer exists. Exiting.")
+				return
+			}
+			checkResp.Body.Close()
+		}
+	}
 }
 
 // cmdRunTask handles task mode (no --expose): create task, stream logs, exit.
@@ -717,20 +731,37 @@ func cmdAppServe(client *http.Client) {
 	}
 
 	routerAddr, _ := result["router_addr"].(string)
+	instID, _ := result["id"].(string)
 	fmt.Printf("Serving %s on http://%s\n", appName, routerAddr)
-	fmt.Printf("Instance: %s\n", result["id"])
+	fmt.Printf("Instance: %s\n", instID)
 	fmt.Println("Press Ctrl+C to stop")
 
-	// Wait for interrupt
+	// Wait for interrupt or instance disappearing
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-	<-sigCh
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 
-	fmt.Println("\nStopping...")
-	instID, _ := result["id"].(string)
-	req, _ := http.NewRequest("DELETE", fmt.Sprintf("http://aegis/v1/instances/%s", instID), nil)
-	client.Do(req)
-	fmt.Println("Stopped")
+	for {
+		select {
+		case <-sigCh:
+			fmt.Println("\nStopping...")
+			req, _ := http.NewRequest("DELETE", fmt.Sprintf("http://aegis/v1/instances/%s", instID), nil)
+			client.Do(req)
+			fmt.Println("Stopped")
+			return
+		case <-ticker.C:
+			resp, err := client.Get(fmt.Sprintf("http://aegis/v1/instances/%s", instID))
+			if err != nil || resp.StatusCode == 404 {
+				if resp != nil {
+					resp.Body.Close()
+				}
+				fmt.Println("\nInstance no longer exists. Exiting.")
+				return
+			}
+			resp.Body.Close()
+		}
+	}
 }
 
 // cmdAppList lists all apps.
