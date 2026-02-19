@@ -62,12 +62,9 @@ func (d *DB) migrate() error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS secrets (
 			id         TEXT PRIMARY KEY,
-			app_id     TEXT NOT NULL DEFAULT '',
-			name       TEXT NOT NULL,
+			name       TEXT NOT NULL UNIQUE,
 			value      BLOB NOT NULL,
-			scope      TEXT NOT NULL DEFAULT 'per_workspace',
-			created_at TEXT NOT NULL DEFAULT (datetime('now')),
-			UNIQUE(app_id, name)
+			created_at TEXT NOT NULL DEFAULT (datetime('now'))
 		)`,
 	}
 	for _, stmt := range stmts {
@@ -76,13 +73,26 @@ func (d *DB) migrate() error {
 		}
 	}
 
-	// Add columns if they don't exist (for migration from older schema)
-	migrateCols := []string{
+	// Migrate from older schema versions (ignore errors — columns may already exist)
+	migrations := []string{
 		`ALTER TABLE instances ADD COLUMN handle TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE instances ADD COLUMN image_ref TEXT NOT NULL DEFAULT ''`,
 	}
-	for _, stmt := range migrateCols {
-		d.db.Exec(stmt) // Ignore error — column may already exist
+	for _, stmt := range migrations {
+		d.db.Exec(stmt)
+	}
+
+	// Migrate old secrets schema (had app_id, scope columns) to new (name-only)
+	var hasAppID int
+	row := d.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('secrets') WHERE name='app_id'`)
+	if row.Scan(&hasAppID) == nil && hasAppID > 0 {
+		d.db.Exec(`DROP TABLE secrets`)
+		d.db.Exec(`CREATE TABLE IF NOT EXISTS secrets (
+			id         TEXT PRIMARY KEY,
+			name       TEXT NOT NULL UNIQUE,
+			value      BLOB NOT NULL,
+			created_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`)
 	}
 
 	return nil

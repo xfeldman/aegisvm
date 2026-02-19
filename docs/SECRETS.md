@@ -12,15 +12,32 @@ The master key lives at `~/.aegis/master.key` (32 random bytes, auto-generated o
 
 Secret values are never exposed in API responses. List endpoints return names only.
 
-## Scope
+## Model
 
-All secrets are **workspace-scoped** -- shared across all instances. Set via `aegis secret set KEY VALUE`. Stored with `scope = "per_workspace"`.
+Secrets are a flat key-value store. No scoping, no naming conventions, no rotation policy. Core provides dumb infrastructure plumbing: store, encrypt, inject. Kits may declare which secrets they require and validate their presence, but Aegis remains unaware of kit semantics.
 
 ## Injection
 
-Secrets are decrypted on the host at instance boot time. They are merged into the `env` field of the `run` RPC. The harness passes them to the child process via `execve`. The agent reads them via `os.environ` or `process.env`.
+Secrets are **not injected by default**. Each instance explicitly declares which
+secrets it receives:
 
-Per-instance env vars (from `--env` flag or the API) take precedence over secrets. If a key already exists in the explicit env, the secret does not overwrite it.
+```bash
+# Inject specific secrets
+aegis run --secret API_KEY --secret DB_URL -- python app.py
+
+# Inject all secrets
+aegis run --secret '*' -- python agent.py
+
+# No --secret flag = no secrets injected
+aegis run -- echo hello
+```
+
+API equivalent: `"secrets": ["API_KEY", "DB_URL"]` or `"secrets": ["*"]` or `"secrets": []` (default).
+
+At boot time, matching secrets are decrypted on the host and injected as env vars
+via the `run` RPC. The harness passes them to the child process via `execve`.
+
+Per-instance env vars (from `--env` flag) take precedence over secrets on name collision.
 
 ## What Aegis Guarantees
 
@@ -50,8 +67,9 @@ Per-instance env vars (from `--env` flag or the API) take precedence over secret
 
 | Command | Description |
 |---------|-------------|
-| `aegis secret set KEY VALUE` | Set workspace secret |
+| `aegis secret set KEY VALUE` | Set or update a secret |
 | `aegis secret list` | List secret names (no values) |
+| `aegis secret delete KEY` | Delete a secret |
 
 ## Snapshot Restore and Secrets (Future)
 

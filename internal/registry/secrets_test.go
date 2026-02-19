@@ -16,15 +16,13 @@ func openTestDB(t *testing.T) *DB {
 	return db
 }
 
-func TestWorkspaceSecretSaveAndList(t *testing.T) {
+func TestSecretSaveAndList(t *testing.T) {
 	db := openTestDB(t)
 
 	s := &Secret{
 		ID:             "sec-1",
-		AppID:          "",
 		Name:           "API_KEY",
 		EncryptedValue: []byte("encrypted-data"),
-		Scope:          "per_workspace",
 		CreatedAt:      time.Now().Truncate(time.Second),
 	}
 
@@ -32,7 +30,7 @@ func TestWorkspaceSecretSaveAndList(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := db.ListWorkspaceSecrets()
+	secrets, err := db.ListSecrets()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,27 +45,21 @@ func TestWorkspaceSecretSaveAndList(t *testing.T) {
 func TestSecretUpsert(t *testing.T) {
 	db := openTestDB(t)
 
-	s1 := &Secret{
+	db.SaveSecret(&Secret{
 		ID:             "sec-1",
-		AppID:          "",
 		Name:           "KEY",
 		EncryptedValue: []byte("v1"),
-		Scope:          "per_workspace",
 		CreatedAt:      time.Now(),
-	}
-	db.SaveSecret(s1)
+	})
 
-	s2 := &Secret{
+	db.SaveSecret(&Secret{
 		ID:             "sec-2",
-		AppID:          "",
 		Name:           "KEY",
 		EncryptedValue: []byte("v2"),
-		Scope:          "per_workspace",
 		CreatedAt:      time.Now(),
-	}
-	db.SaveSecret(s2)
+	})
 
-	secrets, _ := db.ListWorkspaceSecrets()
+	secrets, _ := db.ListSecrets()
 	if len(secrets) != 1 {
 		t.Fatalf("expected 1 secret after upsert, got %d", len(secrets))
 	}
@@ -76,24 +68,51 @@ func TestSecretUpsert(t *testing.T) {
 	}
 }
 
-func TestDeleteSecret(t *testing.T) {
+func TestDeleteSecretByName(t *testing.T) {
 	db := openTestDB(t)
 
 	db.SaveSecret(&Secret{
 		ID:             "sec-1",
-		AppID:          "",
 		Name:           "KEY",
 		EncryptedValue: []byte("val"),
-		Scope:          "per_workspace",
 		CreatedAt:      time.Now(),
 	})
 
-	if err := db.DeleteSecret("sec-1"); err != nil {
+	if err := db.DeleteSecretByName("KEY"); err != nil {
 		t.Fatal(err)
 	}
 
-	secrets, _ := db.ListWorkspaceSecrets()
+	secrets, _ := db.ListSecrets()
 	if len(secrets) != 0 {
 		t.Fatalf("expected 0 secrets after delete, got %d", len(secrets))
+	}
+
+	if err := db.DeleteSecretByName("NONEXISTENT"); err == nil {
+		t.Fatal("expected error for nonexistent secret")
+	}
+}
+
+func TestMultipleSecrets(t *testing.T) {
+	db := openTestDB(t)
+
+	for _, name := range []string{"C_KEY", "A_KEY", "B_KEY"} {
+		db.SaveSecret(&Secret{
+			ID:             "sec-" + name,
+			Name:           name,
+			EncryptedValue: []byte("val"),
+			CreatedAt:      time.Now(),
+		})
+	}
+
+	secrets, err := db.ListSecrets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secrets) != 3 {
+		t.Fatalf("expected 3 secrets, got %d", len(secrets))
+	}
+	// Should be ordered by name
+	if secrets[0].Name != "A_KEY" {
+		t.Fatalf("first secret: got %q, want A_KEY", secrets[0].Name)
 	}
 }

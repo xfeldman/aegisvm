@@ -83,18 +83,20 @@ Commands:
   instance   Manage instances (start, list, info, stop, delete, pause, resume)
   exec       Execute a command in a running instance
   logs       Stream instance logs
-  secret     Manage workspace secrets (set, list)
+  secret     Manage secrets (set, list, delete)
 
 Examples:
   aegis up
   aegis run -- echo "hello from aegis"
   aegis run --expose 80 -- python -m http.server 80
-  aegis run --name web --expose 80 -- python3 -m http.server 80
-  aegis instance start --name web --expose 80 -- python3 -m http.server 80
+  aegis run --name web --secret API_KEY --expose 80 -- python3 -m http.server 80
+  aegis run --secret '*' -- python agent.py
+  aegis instance start --name web --secret API_KEY --expose 80 -- python3 -m http.server 80
   aegis instance list
   aegis exec web -- echo hello
   aegis logs web --follow
   aegis secret set API_KEY sk-test123
+  aegis secret delete API_KEY
   aegis down`)
 }
 
@@ -210,8 +212,8 @@ func cmdDown() {
 	os.Exit(1)
 }
 
-// parseRunFlags parses common flags: --expose, --name, --env, --image, --workspace
-func parseRunFlags(args []string) (exposePorts []int, name, imageRef string, envVars map[string]string, workspace string, command []string) {
+// parseRunFlags parses common flags: --expose, --name, --env, --image, --workspace, --secret
+func parseRunFlags(args []string) (exposePorts []int, name, imageRef string, envVars map[string]string, secretKeys []string, workspace string, command []string) {
 	envVars = make(map[string]string)
 
 	for i := 0; i < len(args); i++ {
@@ -259,6 +261,13 @@ func parseRunFlags(args []string) (exposePorts []int, name, imageRef string, env
 			}
 			envVars[kv[:eq]] = kv[eq+1:]
 			i++
+		case "--secret":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--secret requires a key name (or '*' for all)")
+				os.Exit(1)
+			}
+			secretKeys = append(secretKeys, args[i+1])
+			i++
 		case "--workspace":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "--workspace requires a path")
@@ -275,10 +284,10 @@ func parseRunFlags(args []string) (exposePorts []int, name, imageRef string, env
 func cmdRun() {
 	args := os.Args[2:]
 
-	exposePorts, name, imageRef, envVars, workspace, command := parseRunFlags(args)
+	exposePorts, name, imageRef, envVars, secretKeys, workspace, command := parseRunFlags(args)
 
 	if len(command) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: aegis run [--expose PORT] [--name NAME] [--env K=V] [--image IMAGE] -- COMMAND [args...]")
+		fmt.Fprintln(os.Stderr, "usage: aegis run [--expose PORT] [--name NAME] [--env K=V] [--secret KEY] [--image IMAGE] -- COMMAND [args...]")
 		os.Exit(1)
 	}
 
@@ -308,6 +317,9 @@ func cmdRun() {
 	}
 	if len(envVars) > 0 {
 		reqBody["env"] = envVars
+	}
+	if len(secretKeys) > 0 {
+		reqBody["secrets"] = secretKeys
 	}
 	if workspace != "" {
 		reqBody["workspace"] = workspace
@@ -545,8 +557,8 @@ Commands:
   resume   Resume a paused instance (SIGCONT)
 
 Examples:
-  aegis instance start --name web --expose 80 -- python3 -m http.server 80
-  aegis instance start --image alpine:3.21 -- echo hello
+  aegis instance start --name web --secret API_KEY --expose 80 -- python3 -m http.server 80
+  aegis instance start --secret '*' --image alpine:3.21 -- python agent.py
   aegis instance list
   aegis instance info web
   aegis instance stop web
@@ -559,10 +571,10 @@ Examples:
 func cmdInstanceStart(client *http.Client) {
 	args := os.Args[3:]
 
-	exposePorts, name, imageRef, envVars, workspace, command := parseRunFlags(args)
+	exposePorts, name, imageRef, envVars, secretKeys, workspace, command := parseRunFlags(args)
 
 	if len(command) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: aegis instance start [--name NAME] [--expose PORT] [--env K=V] [--image IMAGE] -- COMMAND [args...]")
+		fmt.Fprintln(os.Stderr, "usage: aegis instance start [--name NAME] [--expose PORT] [--env K=V] [--secret KEY] [--image IMAGE] -- COMMAND [args...]")
 		os.Exit(1)
 	}
 
@@ -584,6 +596,9 @@ func cmdInstanceStart(client *http.Client) {
 	}
 	if len(envVars) > 0 {
 		reqBody["env"] = envVars
+	}
+	if len(secretKeys) > 0 {
+		reqBody["secrets"] = secretKeys
 	}
 	if workspace != "" {
 		reqBody["workspace"] = workspace
@@ -1062,6 +1077,8 @@ func cmdSecret() {
 		cmdSecretSet(client)
 	case "list":
 		cmdSecretList(client)
+	case "delete":
+		cmdSecretDelete(client)
 	case "help", "--help", "-h":
 		secretUsage()
 	default:
@@ -1075,12 +1092,14 @@ func secretUsage() {
 	fmt.Println(`Usage: aegis secret <command> [options]
 
 Commands:
-  set    Set a workspace secret
-  list   List workspace secrets
+  set      Set a secret
+  list     List secret names
+  delete   Delete a secret
 
 Examples:
   aegis secret set API_KEY sk-test123
-  aegis secret list`)
+  aegis secret list
+  aegis secret delete API_KEY`)
 }
 
 // cmdSecretSet sets a workspace secret.
@@ -1140,4 +1159,31 @@ func cmdSecretList(client *http.Client) {
 		name, _ := sec["name"].(string)
 		fmt.Printf("  %s\n", name)
 	}
+}
+
+func cmdSecretDelete(client *http.Client) {
+	if len(os.Args) < 4 {
+		fmt.Fprintln(os.Stderr, "usage: aegis secret delete KEY")
+		os.Exit(1)
+	}
+
+	key := os.Args[3]
+
+	req, _ := http.NewRequest("DELETE", fmt.Sprintf("http://aegis/v1/secrets/%s", key), nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "delete secret: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var result map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&result)
+		errMsg, _ := result["error"].(string)
+		fmt.Fprintf(os.Stderr, "delete secret failed: %s\n", errMsg)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Secret %s deleted\n", key)
 }

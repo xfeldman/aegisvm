@@ -132,28 +132,31 @@ aegis run [--expose PORT] [--name NAME] [--image IMAGE] [--env K=V] -- COMMAND [
 | `--expose PORT` | Port to expose from the VM. Docker-style static port mapping. May be specified multiple times. |
 | `--name NAME` | Handle alias for the instance. |
 | `--env K=V` | Environment variable to inject. May be specified multiple times. |
+| `--secret KEY` | Secret to inject (by name). May be specified multiple times. Use `--secret '*'` for all. Default: none. |
 
 Creates an instance via `POST /v1/instances`, streams logs, and watches for
 process exit. On Ctrl+C or process exit, sends `DELETE /v1/instances/{id}` to
 clean up.
 
+Secrets are **not injected by default**. You must explicitly name which secrets
+an instance receives via `--secret`. This prevents accidental leakage.
+
 **Examples:**
 
 ```
-# Run a one-shot command
+# Run a one-shot command (no secrets)
 $ aegis run -- echo "hello from aegis"
 hello from aegis
 
-# Run with a custom image
-$ aegis run --image alpine:3.21 -- echo hello
-hello
+# Run with specific secrets
+$ aegis run --secret API_KEY --expose 80 -- python app.py
 
-# Run with exposed ports
+# Run with all secrets
+$ aegis run --secret '*' -- python agent.py
+
+# Run with exposed ports (no secrets needed)
 $ aegis run --expose 80 -- python -m http.server 80
 Serving on http://127.0.0.1:8099
-
-# Named instance with env vars
-$ aegis run --name web --env API_KEY=sk-123 --expose 80 -- python app.py
 ```
 
 ---
@@ -180,12 +183,13 @@ aegis instance start [--name NAME] [--expose PORT] [--image IMAGE] [--env K=V] [
 | `--expose PORT` | Port to expose. May be specified multiple times. |
 | `--image IMAGE` | OCI image reference. |
 | `--env K=V` | Environment variable. May be specified multiple times. |
+| `--secret KEY` | Secret to inject. May be specified multiple times. `'*'` for all. Default: none. |
 | `--workspace PATH` | Host path for workspace volume. |
 
 **Example:**
 
 ```
-$ aegis instance start --name web --expose 80 -- python3 -m http.server 80
+$ aegis instance start --name web --secret API_KEY --expose 80 -- python3 -m http.server 80
 Instance started: inst-173f...
 Handle: web
 Router: http://127.0.0.1:8099
@@ -375,24 +379,19 @@ Serving HTTP on 0.0.0.0 port 80 ...
 
 ## Secret Commands
 
-Manage workspace secrets. Secret values are never displayed by any list command.
+Manage secrets. Secrets are a flat key-value store with AES-256 encryption at
+rest. All secrets are injected as env vars into every instance at boot. Values
+are never displayed by any list command.
 
 Run `aegis secret help` to print subcommand usage.
 
 ### aegis secret set
 
-Set a workspace secret.
+Set a secret (creates or updates).
 
 ```
 aegis secret set KEY VALUE
 ```
-
-**Arguments:**
-
-| Argument | Description |
-|---|---|
-| `KEY` | Secret name. |
-| `VALUE` | Secret value. |
 
 Sends `PUT /v1/secrets/{key}`.
 
@@ -407,7 +406,7 @@ Secret API_KEY set
 
 ### aegis secret list
 
-List workspace secret names. Values are never shown.
+List secret names. Values are never shown.
 
 ```
 aegis secret list
@@ -420,6 +419,25 @@ $ aegis secret list
 Secrets:
   API_KEY
   DB_PASSWORD
+```
+
+---
+
+### aegis secret delete
+
+Delete a secret.
+
+```
+aegis secret delete KEY
+```
+
+Sends `DELETE /v1/secrets/{key}`.
+
+**Example:**
+
+```
+$ aegis secret delete API_KEY
+Secret API_KEY deleted
 ```
 
 ---
@@ -442,5 +460,6 @@ Secrets:
 | `aegis instance resume` | Resume an instance |
 | `aegis exec` | Execute command in instance |
 | `aegis logs` | Stream instance logs |
-| `aegis secret set` | Set a workspace secret |
-| `aegis secret list` | List workspace secrets |
+| `aegis secret set` | Set a secret |
+| `aegis secret list` | List secret names |
+| `aegis secret delete` | Delete a secret |

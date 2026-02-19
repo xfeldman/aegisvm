@@ -60,9 +60,10 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v1/instances/{id}/resume", s.handleResumeInstance)
 	s.mux.HandleFunc("DELETE /v1/instances/{id}", s.handleDeleteInstance)
 
-	// Secret routes (workspace-scoped only)
-	s.mux.HandleFunc("PUT /v1/secrets/{name}", s.handleSetWorkspaceSecret)
-	s.mux.HandleFunc("GET /v1/secrets", s.handleListWorkspaceSecrets)
+	// Secret routes (workspace-scoped key-value store)
+	s.mux.HandleFunc("PUT /v1/secrets/{name}", s.handleSetSecret)
+	s.mux.HandleFunc("GET /v1/secrets", s.handleListSecrets)
+	s.mux.HandleFunc("DELETE /v1/secrets/{name}", s.handleDeleteSecret)
 
 	// Status
 	s.mux.HandleFunc("GET /v1/status", s.handleStatus)
@@ -132,6 +133,7 @@ type createInstanceRequest struct {
 	Command   []string          `json:"command"`
 	Exposes   []exposeRequest   `json:"exposes,omitempty"`
 	Env       map[string]string `json:"env,omitempty"`
+	Secrets   []string          `json:"secrets,omitempty"` // [] = none, ["*"] = all, ["KEY1","KEY2"] = allowlist
 	Handle    string            `json:"handle,omitempty"`
 	Workspace string            `json:"workspace,omitempty"`
 }
@@ -170,35 +172,10 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	if req.ImageRef != "" {
 		opts = append(opts, lifecycle.WithImageRef(req.ImageRef))
 	}
-	if len(req.Env) > 0 {
-		// Merge workspace secrets into env (workspace secrets as base, explicit env overrides)
-		env := make(map[string]string)
-		if s.secretStore != nil {
-			wsSecrets, _ := s.registry.ListWorkspaceSecrets()
-			for _, sec := range wsSecrets {
-				val, err := s.secretStore.DecryptString(sec.EncryptedValue)
-				if err == nil {
-					env[sec.Name] = val
-				}
-			}
-		}
-		for k, v := range req.Env {
-			env[k] = v
-		}
+	// Resolve secrets + env into final env map
+	env := s.resolveEnv(req.Secrets, req.Env)
+	if len(env) > 0 {
 		opts = append(opts, lifecycle.WithEnv(env))
-	} else if s.secretStore != nil {
-		// Even without explicit env, inject workspace secrets
-		env := make(map[string]string)
-		wsSecrets, _ := s.registry.ListWorkspaceSecrets()
-		for _, sec := range wsSecrets {
-			val, err := s.secretStore.DecryptString(sec.EncryptedValue)
-			if err == nil {
-				env[sec.Name] = val
-			}
-		}
-		if len(env) > 0 {
-			opts = append(opts, lifecycle.WithEnv(env))
-		}
 	}
 	if req.Workspace != "" {
 		opts = append(opts, lifecycle.WithWorkspace(req.Workspace))
@@ -563,7 +540,8 @@ func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
-// Secret handlers (workspace-scoped only)
+// Secret handlers — dumb key-value store with encryption.
+// No scoping, no naming rules, no rotation, no kit semantics.
 
 type setSecretRequest struct {
 	Value string `json:"value"`
@@ -571,11 +549,10 @@ type setSecretRequest struct {
 
 type secretResponse struct {
 	Name      string `json:"name"`
-	Scope     string `json:"scope"`
 	CreatedAt string `json:"created_at"`
 }
 
-func (s *Server) handleSetWorkspaceSecret(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSetSecret(w http.ResponseWriter, r *http.Request) {
 	name := pathParam(r, "name")
 
 	var req setSecretRequest
@@ -597,43 +574,87 @@ func (s *Server) handleSetWorkspaceSecret(w http.ResponseWriter, r *http.Request
 
 	secret := &registry.Secret{
 		ID:             fmt.Sprintf("sec-%d", time.Now().UnixNano()),
-		AppID:          "",
 		Name:           name,
 		EncryptedValue: encrypted,
-		Scope:          "per_workspace",
 		CreatedAt:      time.Now(),
 	}
 
 	if err := s.registry.SaveSecret(secret); err != nil {
-		log.Printf("save workspace secret: %v", err)
+		log.Printf("save secret: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to save secret")
 		return
 	}
 
-	log.Printf("workspace secret set: %s", name)
+	log.Printf("secret set: %s", name)
 	writeJSON(w, http.StatusOK, secretResponse{
 		Name:      secret.Name,
-		Scope:     secret.Scope,
 		CreatedAt: secret.CreatedAt.Format(time.RFC3339),
 	})
 }
 
-func (s *Server) handleListWorkspaceSecrets(w http.ResponseWriter, r *http.Request) {
-	secrets, err := s.registry.ListWorkspaceSecrets()
+func (s *Server) handleListSecrets(w http.ResponseWriter, r *http.Request) {
+	secs, err := s.registry.ListSecrets()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("list secrets: %v", err))
 		return
 	}
 
-	resp := make([]secretResponse, 0, len(secrets))
-	for _, sec := range secrets {
+	resp := make([]secretResponse, 0, len(secs))
+	for _, sec := range secs {
 		resp = append(resp, secretResponse{
 			Name:      sec.Name,
-			Scope:     sec.Scope,
 			CreatedAt: sec.CreatedAt.Format(time.RFC3339),
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
+	name := pathParam(r, "name")
+	if err := s.registry.DeleteSecretByName(name); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	log.Printf("secret deleted: %s", name)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// resolveEnv builds the final env map for an instance by resolving secrets
+// from the allowlist and merging explicit env vars on top.
+//
+//   - secretKeys == nil or []  → inject no secrets
+//   - secretKeys == ["*"]      → inject all secrets
+//   - secretKeys == ["A","B"]  → inject only named secrets
+//
+// Explicit env vars always override secrets on name collision.
+func (s *Server) resolveEnv(secretKeys []string, explicitEnv map[string]string) map[string]string {
+	env := make(map[string]string)
+
+	if s.secretStore != nil && len(secretKeys) > 0 {
+		injectAll := len(secretKeys) == 1 && secretKeys[0] == "*"
+		var allowlist map[string]bool
+		if !injectAll {
+			allowlist = make(map[string]bool, len(secretKeys))
+			for _, k := range secretKeys {
+				allowlist[k] = true
+			}
+		}
+		secrets, _ := s.registry.ListSecrets()
+		for _, sec := range secrets {
+			if injectAll || allowlist[sec.Name] {
+				val, err := s.secretStore.DecryptString(sec.EncryptedValue)
+				if err == nil {
+					env[sec.Name] = val
+				}
+			}
+		}
+	}
+
+	// Explicit env overrides secrets
+	for k, v := range explicitEnv {
+		env[k] = v
+	}
+	return env
 }
 
 // writeJSON writes a JSON response.

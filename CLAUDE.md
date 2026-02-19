@@ -54,13 +54,12 @@ make all
 
 ```
 aegis up / down / status / doctor
-aegis instance start [--name H] [--expose P] [--env K=V] [--image REF] -- CMD
+aegis instance start [--name H] [--expose P] [--env K=V] [--secret KEY] [--image REF] -- CMD
 aegis instance list / info / stop / delete / pause / resume
 aegis exec <handle|id> -- CMD
 aegis logs <handle|id> [--follow]
-aegis run [--expose P] [--env K=V] [--name H] -- CMD   (sugar: start + follow + delete)
-aegis secret set KEY VALUE
-aegis secret list
+aegis run [--expose P] [--env K=V] [--secret KEY] [--name H] -- CMD   (sugar: start + follow + delete)
+aegis secret set KEY VALUE / list / delete KEY
 ```
 
 ## Conventions
