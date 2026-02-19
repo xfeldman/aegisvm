@@ -19,20 +19,16 @@ docker build -t agent-base:python .
 ## Usage
 
 ```bash
-aegis app create --name myapp --image agent-base:python --expose 80 -- python server.py
-aegis app publish myapp
-aegis app serve myapp
-```
+# Long-lived instance with exposed port
+aegis run --name myapp --image agent-base:python --expose 80 -- python server.py
 
-For task-mode agents (run once and exit):
-
-```bash
+# One-shot command
 aegis run --image agent-base:python -- python agent.py
 ```
 
 ## Harness injection
 
-You do not need to include `aegis-harness` in your image. Aegis injects the harness automatically at publish time (`aegis app publish`). The harness is always PID 1 inside the VM. Aegis ignores any `ENTRYPOINT` or `CMD` set in the Dockerfile.
+You do not need to include `aegis-harness` in your image. Aegis injects the harness automatically when preparing the instance rootfs. The harness is always PID 1 inside the VM. Aegis ignores any `ENTRYPOINT` or `CMD` set in the Dockerfile.
 
 ## Conventions
 

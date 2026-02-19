@@ -39,9 +39,9 @@ make base-rootfs
 
 `make all` builds three binaries into `./bin/`:
 
-- `aegisd` -- the control plane daemon
+- `aegisd` -- the infrastructure control plane daemon
 - `aegis` -- the CLI
-- `aegis-harness` -- the guest PID 1 (Linux ARM64, statically linked)
+- `aegis-harness` -- the guest control agent (Linux ARM64, statically linked)
 
 `make base-rootfs` creates an Alpine ARM64 ext4 root filesystem with the harness baked in. This is the default image used when you do not specify one.
 
@@ -75,9 +75,10 @@ What happened behind the scenes:
 
 1. The CLI sent a request to `aegisd` over `~/.aegis/aegisd.sock`.
 2. `aegisd` booted a microVM using libkrun (Apple Hypervisor Framework).
-3. Inside the VM, `aegis-harness` (PID 1) received the command over vsock JSON-RPC.
-4. The harness executed `echo "hello from aegis"` and streamed stdout back to the CLI.
-5. The VM was shut down after the command completed.
+3. Inside the VM, `aegis-harness` (PID 1) received the `run` RPC over vsock JSON-RPC.
+4. The harness executed `echo "hello from aegis"` and streamed stdout back.
+5. When the process exited, the harness sent a `processExited` notification.
+6. The CLI received the exit, deleted the instance, and exited with code 0.
 
 ## 5. Run with a Custom Image
 
@@ -103,47 +104,31 @@ You should see the directory listing from Python's HTTP server.
 
 How this works:
 
-- The `--expose 80` flag tells aegisd to route HTTP traffic to port 80 inside the VM.
-- The embedded router in aegisd listens on `127.0.0.1:8099` and proxies requests into the VM.
-- When the last HTTP connection closes and no new requests arrive for 60 seconds, the VM is paused (SIGSTOP). After 20 minutes idle, the VM is terminated entirely.
-- The next incoming request cold-boots the VM again automatically (scale-to-zero).
+- The `--expose 80` flag tells aegisd to map port 80 inside the VM to a host port (Docker-style static port mapping).
+- The router in aegisd listens on `127.0.0.1:8099` and proxies requests into the VM.
+- When idle for 60 seconds, the VM is paused (SIGSTOP). After 20 minutes idle, the VM is stopped entirely.
+- The next incoming request wakes the VM automatically (scale-to-zero).
 
 Press Ctrl+C in the first terminal to stop.
 
-## 7. Create an App
+## 7. Start a Named Instance
 
-A full app lifecycle: create, set secrets, publish, serve, and call.
-
-```bash
-# Create the app definition
-./bin/aegis app create --name demo --image python:3.12-alpine --expose 80 -- python -m http.server 80
-
-# Inject a secret (available as an env var inside the VM)
-./bin/aegis secret set demo API_KEY sk-test123
-
-# Publish a release (snapshots the image + config into a release rootfs)
-./bin/aegis app publish demo
-
-# Serve the app (boots the VM and starts routing)
-./bin/aegis app serve demo
-```
-
-In a second terminal:
+Start a long-lived instance with a handle:
 
 ```bash
+# Start the instance
+./bin/aegis instance start --name demo --expose 80 -- python3 -m http.server 80
+
+# Set a workspace secret (available as env var inside VMs)
+./bin/aegis secret set API_KEY sk-test123
+
+# Curl the server
 curl http://127.0.0.1:8099/
-```
-
-When you are done, stop the app:
-
-```bash
-# Ctrl+C in the serve terminal, or:
-./bin/aegis app stop demo
 ```
 
 ## 8. Exec Into a Running Instance
 
-While the app is serving, you can exec commands inside the VM:
+While the instance is running, exec commands inside the VM:
 
 ```bash
 ./bin/aegis exec demo -- echo "hello from inside"
@@ -155,24 +140,24 @@ Expected output:
 hello from inside
 ```
 
-This uses the existing ControlChannel -- no SSH, no serial console. The instance
+This uses the existing control channel -- no SSH, no serial console. The instance
 is auto-resumed if paused.
 
 ## 9. Stream Logs
 
-View logs from a running app:
+View logs from a running instance:
 
 ```bash
 ./bin/aegis logs demo --follow
 ```
 
-Logs are captured from the moment the VM boots (no gap) and persisted to
+Logs are captured from the moment the VM starts and persisted to
 `~/.aegis/data/logs/`. Without `--follow`, all buffered logs are printed and the
 command exits. With `--follow`, new log entries stream live until Ctrl+C.
 
 ## 10. Inspect Instances
 
-List all running instances:
+List all instances:
 
 ```bash
 ./bin/aegis instance list
@@ -181,7 +166,13 @@ List all running instances:
 Get detailed info about a specific instance:
 
 ```bash
-./bin/aegis instance info <instance-id>
+./bin/aegis instance info demo
+```
+
+Stop the instance:
+
+```bash
+./bin/aegis instance stop demo
 ```
 
 ## 11. Where Is My Data?
@@ -192,10 +183,10 @@ All Aegis state lives under `~/.aegis/`:
 |---|---|
 | `~/.aegis/aegisd.sock` | Unix domain socket for CLI-to-daemon communication |
 | `~/.aegis/data/aegisd.pid` | PID file for the running daemon |
-| `~/.aegis/data/aegis.db` | SQLite database (apps, releases, metadata) |
+| `~/.aegis/data/aegis.db` | SQLite database (instances, secrets) |
 | `~/.aegis/data/images/` | Cached OCI image layers |
-| `~/.aegis/data/releases/` | Published release rootfs snapshots |
-| `~/.aegis/data/workspaces/{appID}/` | Per-app workspace directories (persistent across reboots) |
+| `~/.aegis/data/overlays/` | Instance rootfs overlays |
+| `~/.aegis/data/workspaces/` | Workspace directories |
 | `~/.aegis/data/logs/` | Per-instance NDJSON log files |
 | `~/.aegis/master.key` | Encryption key for secrets at rest |
 | `~/.aegis/base-rootfs/` | Default Alpine rootfs built by `make base-rootfs` |
@@ -208,21 +199,6 @@ All Aegis state lives under `~/.aegis/`:
 
 This shuts down `aegisd` and all running VMs.
 
-What is removed:
-
-- All running microVM processes
-- The daemon process
-- The Unix socket (`~/.aegis/aegisd.sock`)
-- The PID file
-
-What is kept:
-
-- Workspaces (`~/.aegis/data/workspaces/`)
-- Cached images (`~/.aegis/data/images/`)
-- The database (`~/.aegis/data/aegis.db`)
-- Published releases (`~/.aegis/data/releases/`)
-- The master key (`~/.aegis/master.key`)
-
 To remove everything and start fresh:
 
 ```bash
@@ -234,4 +210,4 @@ rm -rf ~/.aegis
 
 - [AGENT_CONVENTIONS.md](AGENT_CONVENTIONS.md) -- conventions for building agents that run on Aegis
 - [CLI.md](CLI.md) -- full CLI reference
-- `examples/` -- sample apps and agent configurations
+- `examples/` -- sample agents

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Workspaces are persistent, writable volumes mounted into VMs at `/workspace`. They survive VM termination and restarts. Each app gets its own workspace, created automatically on first `aegis app serve`.
+Workspaces are persistent, writable volumes mounted into VMs at `/workspace`. They survive VM termination and restarts.
 
 ## Guest Paths
 
@@ -18,28 +18,20 @@ These paths are conventions, not enforced by the harness. You can write anywhere
 
 On the host, workspaces live at:
 
-- `~/.aegis/data/workspaces/{appID}/` -- one directory per app
+- `~/.aegis/data/workspaces/`
 
-The `appID` is the internal ID (e.g., `app-1739893456`), not the app name. You can find the appID via `aegis app info myapp`. You can inspect workspace contents directly:
-
-```bash
-ls ~/.aegis/data/workspaces/app-173.../
-```
+You can inspect workspace contents directly on the host.
 
 ## Lifecycle
 
-- **Created**: automatically when `aegis app serve` is called.
-- **Persists**: across VM pause/resume, terminate/restart, and daemon restart.
-- **Deleted**: only when the app is deleted via `aegis app delete` (cascade).
-- **NOT deleted**: on `aegis down` (daemon stop) or on VM terminate (idle timeout).
+- **Created**: when an instance is started with `--workspace` flag.
+- **Persists**: across VM pause/resume, stop/restart, and daemon restart.
+- **Deleted**: only when explicitly removed by the user.
+- **NOT deleted**: on `aegis down` (daemon stop) or on VM stop (idle timeout).
 
 ## When No Workspace Exists
 
-Not all execution modes provide a workspace:
-
-- **Task mode** (`aegis run -- cmd`): no workspace unless the task references an app.
-- **Instance mode** (`aegis run --expose 80 -- cmd`): no workspace.
-- **App serve mode** (`aegis app serve`): workspace always available.
+Not all instances have a workspace. A workspace is only available when explicitly configured via `--workspace` at instance creation.
 
 To check from inside the guest:
 
@@ -49,20 +41,20 @@ if os.path.isdir("/workspace")
 
 ## Retention and Backup
 
-There is no automatic retention policy in M3. Workspaces grow unbounded.
+There is no automatic retention policy. Workspaces grow unbounded.
 
-To reclaim space, `aegis app delete myapp` removes the workspace. You can also manually delete files under `~/.aegis/data/workspaces/`.
+To reclaim space, manually delete files under `~/.aegis/data/workspaces/`.
 
-There is no built-in backup. Treat workspace contents as you would any local data -- back up `~/.aegis/data/workspaces/` if needed.
+There is no built-in backup. Treat workspace contents as you would any local data.
 
-GC and retention policies are planned for M5.
+GC and retention policies are planned for a future milestone.
 
 ## Shared Workspaces (Future)
 
-Shared workspaces are not implemented in M3. All workspaces are per-app (isolated mode).
+Shared workspaces are not implemented. All workspaces are currently per-instance (isolated mode).
 
-The OpenClaw kit requires shared workspaces (multiple VMs mounting the same directory). This is planned for M5. When implemented, the kit manifest will specify `workspace.mode: shared`.
+Shared workspaces (multiple VMs mounting the same directory) are planned for M5.
 
 ## Workspace vs Root Filesystem
 
-Important invariant: workspace volumes are NEVER part of release overlays or snapshots. They are separate disk layers with separate lifecycles. Publishing a release never captures workspace state. Terminating a VM never touches the workspace.
+Important invariant: workspace volumes are NEVER part of rootfs overlays or snapshots. They are separate disk layers with separate lifecycles.

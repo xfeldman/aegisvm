@@ -12,36 +12,30 @@ The master key lives at `~/.aegis/master.key` (32 random bytes, auto-generated o
 
 Secret values are never exposed in API responses. List endpoints return names only.
 
-## Scopes
+## Scope
 
-Aegis supports two secret scopes:
-
-- **per_app**: scoped to a single app. Set via `aegis secret set APP KEY VALUE`. Stored with `app_id` in the DB.
-- **per_workspace**: shared across all apps. Set via `aegis secret set-workspace KEY VALUE`. Stored with `app_id = ""`.
-
-Merge rule: workspace secrets are loaded first, then app secrets overlay on top. App-scoped secrets win on name collision.
+All secrets are **workspace-scoped** -- shared across all instances. Set via `aegis secret set KEY VALUE`. Stored with `scope = "per_workspace"`.
 
 ## Injection
 
-Secrets are decrypted on the host at VM boot or task creation time. They are merged into the `env` field of the `runTask` or `startServer` RPC. The harness passes them to the child process via `execve`. The agent reads them via `os.environ` or `process.env`.
+Secrets are decrypted on the host at instance boot time. They are merged into the `env` field of the `run` RPC. The harness passes them to the child process via `execve`. The agent reads them via `os.environ` or `process.env`.
 
-Per-task env vars (from `aegis run` or the API) take precedence over secrets. If a key already exists in the explicit env, the secret does not overwrite it.
+Per-instance env vars (from `--env` flag or the API) take precedence over secrets. If a key already exists in the explicit env, the secret does not overwrite it.
 
 ## What Aegis Guarantees
 
 - Encrypted at rest (AES-256-GCM with local master key).
 - Never written to disk inside the VM.
-- Never included in any snapshot tier (base, release, or cached instance).
+- Never included in any snapshot tier.
 - Never returned in API responses (list shows names only).
 - Re-injected on every cold boot from disk layers.
 
 ## What Aegis Does NOT Guarantee
 
-- No key rotation. Deleting `~/.aegis/master.key` invalidates ALL stored secrets -- they become undecryptable. You must re-set all secrets after key deletion. Proper rotation (decrypt-all, re-encrypt) is a future concern.
+- No key rotation. Deleting `~/.aegis/master.key` invalidates ALL stored secrets -- they become undecryptable. You must re-set all secrets after key deletion.
 - No audit logging of secret access.
-- No per-run scoping (all app secrets are injected into every task/serve for that app).
 - No hardware security module (HSM) integration -- the master key is a plain file.
-- An agent process CAN leak secrets by logging them, writing them to `/workspace`, or sending them over the network. Aegis prevents disk persistence inside the VM but cannot prevent the process from exfiltrating its own env.
+- An agent process CAN leak secrets by logging them, writing them to `/workspace`, or sending them over the network.
 
 ## Master Key
 
@@ -54,18 +48,13 @@ Per-task env vars (from `aegis run` or the API) take precedence over secrets. If
 
 ## CLI Commands
 
-Quick reference. See CLI.md for full documentation.
-
 | Command | Description |
 |---------|-------------|
-| `aegis secret set APP KEY VALUE` | Set app-scoped secret |
-| `aegis secret list APP` | List secret names (no values) |
-| `aegis secret delete APP KEY` | Delete app secret |
-| `aegis secret set-workspace KEY VALUE` | Set workspace-wide secret |
-| `aegis secret list-workspace` | List workspace secret names |
+| `aegis secret set KEY VALUE` | Set workspace secret |
+| `aegis secret list` | List secret names (no values) |
 
-## Snapshot Restore and Secrets (M4+)
+## Snapshot Restore and Secrets (Future)
 
-In the current model (M3), "restore" means cold boot from disk layers. Secrets are re-injected via the `startServer` RPC `env` field on every boot. This works because the harness is a fresh process.
+In the current model, "restore" means cold boot from disk layers. Secrets are re-injected via the `run` RPC `env` field on every boot.
 
-When memory snapshot restore arrives (M4+), the harness will already be running and cannot receive secrets via `startServer`. Two approaches are under consideration: a dedicated `injectSecrets` RPC, or a "restart server process with env" contract. See IMPLEMENTATION_KICKOFF.md section 10.1 for details.
+When memory snapshot restore arrives, the harness will already be running and cannot receive secrets via `run`. A dedicated `injectSecrets` RPC or "restart process with env" contract will be needed.

@@ -1,10 +1,10 @@
 # simple-task-python
 
-Demonstrates a task-mode Aegis agent written in Python. The agent runs once and exits.
+Demonstrates a short-lived Aegis agent written in Python. The agent runs once and exits.
 
 ## What this example shows
 
-- **Task mode**: the agent runs to completion and exits with code 0.
+- **One-shot execution**: the agent runs to completion and exits with code 0.
 - **Secrets**: reads the `GREETING` environment variable (injected by Aegis secrets).
 - **Workspace writes**: creates output files under `/workspace/output/`.
 - **Structured logging**: writes JSON log lines to stdout with level, message, and timestamp.
@@ -31,7 +31,7 @@ aegis run -- python /workspace/agent.py
 To inject a secret:
 
 ```bash
-aegis secret set myapp GREETING "Hello, world"
+aegis secret set GREETING "Hello, world"
 ```
 
 ## Conventions used

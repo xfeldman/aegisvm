@@ -14,8 +14,7 @@ Everything else follows from that distinction.
 3. [Filesystem Layout](#filesystem-layout)
 4. [Environment Variables and Secrets](#environment-variables-and-secrets)
 5. [Logging](#logging)
-6. [Readiness (Serve Mode)](#readiness-serve-mode)
-7. [Lifecycle and Signals](#lifecycle-and-signals)
+6. [Lifecycle and Signals](#lifecycle-and-signals)
 8. [Networking](#networking)
 9. [Resource Defaults](#resource-defaults)
 10. [Workspace Conventions](#workspace-conventions)
@@ -32,7 +31,7 @@ ignored at runtime:
 |-------------------|-----------------------------------------------------|
 | `ENTRYPOINT`      | Ignored. PID 1 is always `aegis-harness`.           |
 | `CMD`             | Ignored. Agent command comes from the RPC request.  |
-| `EXPOSE`          | Ignored. Ports are declared in the kit manifest.    |
+| `EXPOSE`          | Ignored. Ports are declared via `--expose` flag.    |
 | `ENV`             | Ignored. Environment is set by the harness and RPC. |
 | `VOLUME`          | Ignored. Writable paths are fixed (see Filesystem). |
 | Layer caching     | Not applicable. No build cache.                     |
@@ -55,17 +54,12 @@ COPY ./agent /app
 Every Aegis microVM boots with `aegis-harness` as PID 1. The harness:
 
 1. Mounts the guest filesystem (see below).
-2. Connects to the host control plane over TCP (tunneled via vsock/TSI).
+2. Connects to the infrastructure control plane (aegisd) over TCP (tunneled via vsock/TSI).
 3. Waits for JSON-RPC 2.0 commands from the host.
 
-Your agent code runs as a **child process** of the harness, started by one of
-two RPC methods:
-
-- **`runTask`** -- runs a command to completion, returns the exit code. Used for
-  one-shot jobs (data processing, code execution, batch tasks).
-- **`startServer`** -- starts a long-lived process, polls a readiness port, and
-  sends a `serverReady` notification when the port accepts TCP connections.
-  Used for HTTP servers, API agents, and anything that listens on a port.
+Your agent code runs as a **child process** of the harness, started by the
+`run` RPC. The harness streams stdout/stderr as `log` notifications and sends
+a `processExited` notification when the process exits.
 
 There is no process supervisor, no automatic restart, and no init system. If
 your process exits, the instance transitions to `STOPPED`. If you need retry
@@ -114,7 +108,7 @@ command line:
 | `TERM`            | `linux`              | Terminal type.                       |
 | `AEGIS_HOST_ADDR` | `host:port`          | Internal. Used by the harness only.  |
 
-When the host sends a `runTask` or `startServer` RPC, it can include an `env`
+When the host sends a `run` or `exec` RPC, it can include an `env`
 field -- a map of key-value pairs. The harness merges these on top of the base
 environment before calling `execve`. This is how secrets reach your agent.
 
@@ -189,79 +183,15 @@ Guidelines:
 
 ---
 
-## Readiness (Serve Mode)
-
-When the host sends a `startServer` RPC, it includes a `readiness_port` field.
-The harness polls this port via TCP connect attempts:
-
-- **Interval:** 200ms between attempts.
-- **Timeout:** 30 seconds total.
-- **Success condition:** The port accepts a TCP connection.
-
-When your server binds the port and accepts connections, the harness sends a
-`serverReady` notification to the host, which then begins routing traffic to
-your instance.
-
-If the port does not accept connections within 30 seconds, the harness sends a
-`serverFailed` notification and the instance is marked as unhealthy.
-
-Your agent must:
-
-1. Bind the declared readiness port.
-2. Accept TCP connections on that port within 30 seconds of process start.
-
-This is a TCP check, not an HTTP health check. The harness does not send an HTTP
-request -- it only needs the `connect()` syscall to succeed. If your framework
-binds the port before the application is fully initialized, that is fine from
-the harness's perspective. If you need application-level readiness gating, bind
-the port only after initialization is complete.
-
-**Python (FastAPI/Uvicorn):**
-```python
-# Uvicorn binds the port when it is ready to accept connections.
-# No special readiness logic needed.
-import uvicorn
-from fastapi import FastAPI
-
-app = FastAPI()
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-```
-
-**Node.js (Express):**
-```javascript
-const express = require("express");
-const app = express();
-const PORT = 8000;
-
-app.get("/health", (req, res) => res.json({ status: "ok" }));
-
-// The listen callback fires after the port is bound.
-app.listen(PORT, () => {
-  console.log(JSON.stringify({ level: "info", msg: `listening on ${PORT}` }));
-});
-```
-
----
-
 ## Lifecycle and Signals
 
 The harness handles `SIGTERM` and `SIGINT` for its own graceful shutdown. What
 your agent receives depends on the execution mode:
 
-**Task mode (`runTask`):** Your process runs to completion. The harness waits
-for it to exit and returns the exit code. If the VM shuts down while your task
-is running, the context is cancelled and the process is terminated.
-
-**Serve mode (`startServer`):** Your server process runs indefinitely. On
-shutdown, the harness currently sends `SIGKILL` to server processes (immediate
-termination, no grace period). Future versions will send `SIGTERM` with a
-5-second grace period before `SIGKILL`.
+Your process runs as a child of the harness. When the VM shuts down (via
+`aegis instance stop` or daemon shutdown), the harness kills all child processes.
+Currently this is `SIGKILL` (immediate termination). Future versions will send
+`SIGTERM` with a 5-second grace period before `SIGKILL`.
 
 Regardless of the current behavior, **write your agent to handle `SIGTERM`**.
 When the graceful shutdown path is enabled, agents that already handle `SIGTERM`
@@ -303,7 +233,7 @@ resolve DNS, and call external APIs. On macOS with libkrun, egress uses TSI
 VMM tunnels traffic transparently. No special configuration needed.
 
 **Ingress (inbound):** Traffic reaches your agent only through the Aegis router
-on ports declared in your kit manifest. There is no direct host-to-VM access.
+on ports declared via `--expose`. There is no direct host-to-VM access.
 You cannot `curl localhost:8000` from the host to reach a VM -- all inbound
 traffic flows through the router.
 
@@ -317,13 +247,10 @@ is `AEGIS_HOST_ADDR`, used internally by the harness for the control channel.)
 
 | Resource | Default | Configurable |
 |----------|---------|--------------|
-| Memory   | 512 MB  | Yes, per-kit or per-run (max 4 GB) |
-| CPU      | 1 vCPU  | Yes, per-kit or per-run (max 4 vCPU) |
+| Memory   | 512 MB  | Yes, per-instance (max 4 GB) |
+| CPU      | 1 vCPU  | Yes, per-instance (max 4 vCPU) |
 
-These defaults apply when the kit manifest does not specify resource overrides.
-For most agents, the defaults are sufficient. If your agent loads large models,
-processes large datasets, or runs memory-intensive computations, declare higher
-limits in the kit manifest.
+These defaults apply unless overridden at instance creation.
 
 ---
 
@@ -541,6 +468,5 @@ Before deploying an agent to Aegis, verify:
 - [ ] Agent does not attempt to write to `/usr`, `/etc`, or other root filesystem paths.
 - [ ] stdout output is newline-delimited. Ideally structured JSON.
 - [ ] stderr is used for errors and diagnostics.
-- [ ] Server agents bind the readiness port within 30 seconds.
 - [ ] Agent handles SIGTERM for graceful shutdown.
 - [ ] No secrets are logged or written to disk.

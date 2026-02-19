@@ -22,16 +22,14 @@ docker build -t agent-base:full .
 ## Usage
 
 ```bash
-aegis app create --name myapp --image agent-base:full --expose 80 -- python server.py
-aegis app publish myapp
-aegis app serve myapp
+aegis run --name myapp --image agent-base:full --expose 80 -- python server.py
 ```
 
 This image is suitable for agents that need both Python and Node.js, or that shell out to git, jq, or other tools during execution.
 
 ## Harness injection
 
-You do not need to include `aegis-harness` in your image. Aegis injects the harness automatically at publish time. The harness is always PID 1 inside the VM.
+You do not need to include `aegis-harness` in your image. Aegis injects the harness automatically when preparing the instance rootfs. The harness is always PID 1 inside the VM.
 
 ## Conventions
 
