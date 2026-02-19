@@ -156,7 +156,7 @@ aegis run [--expose PORT] [--image IMAGE] -- COMMAND [ARGS...]
 
 | Flag | Description |
 |---|---|
-| `--image IMAGE` | OCI image reference to pull and use as the rootfs (e.g., `alpine:3.21`, `python:3.12-alpine`). Without this flag, the base rootfs is used. |
+| `--image IMAGE` | OCI image reference to pull and use as the rootfs (e.g., `alpine:3.21`, `python:3.12-alpine-alpine`). Without this flag, the base rootfs is used. |
 | `--expose PORT` | Port to expose from the VM. Switches the command into serve mode. May be specified multiple times. |
 
 **Task mode** (no `--expose`):
@@ -223,7 +223,7 @@ Everything after `--` is the command to run inside the VM.
 **Example:**
 
 ```
-$ aegis app create --name myapp --image python:3.12 --expose 80 -- python -m http.server 80
+$ aegis app create --name myapp --image python:3.12-alpine --expose 80 -- python -m http.server 80
 App created: myapp (id=app-173f...)
 ```
 
@@ -302,7 +302,7 @@ Columns: NAME, IMAGE, ID.
 ```
 $ aegis app list
 NAME                 IMAGE                          ID
-myapp                python:3.12                    app-173f...
+myapp                python:3.12-alpine                    app-173f...
 frontend             node:20-alpine                 app-28a1...
 ```
 
@@ -330,7 +330,7 @@ Displays: Name, ID, Image, Command, Ports, and a list of releases.
 $ aegis app info myapp
 Name:    myapp
 ID:      app-173f...
-Image:   python:3.12
+Image:   python:3.12-alpine
 Command: python -m http.server 80
 Ports:   80
 
@@ -682,7 +682,9 @@ aegis exec TARGET -- COMMAND [ARGS...]
 
 Everything after `--` is the command to execute inside the VM.
 
-Paused instances are auto-resumed. Stopped instances return an error (409).
+Valid in RUNNING, PAUSED (auto-resume), and STARTING (waits for ready).
+Returns 409 if the instance is STOPPED. If the instance is stopped while an
+exec is in flight, the command exits with code `-1`.
 
 **Examples:**
 

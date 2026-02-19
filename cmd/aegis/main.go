@@ -86,7 +86,7 @@ Examples:
   aegis run -- echo "hello from aegis"
   aegis run --image alpine:3.21 -- echo hello
   aegis run --expose 80 -- python -m http.server 80
-  aegis app create --name myapp --image python:3.12 --expose 80 -- python -m http.server 80
+  aegis app create --name myapp --image python:3.12-alpine --expose 80 -- python3 -m http.server 80
   aegis app publish myapp
   aegis app serve myapp
   aegis instance list
@@ -579,7 +579,7 @@ Commands:
   logs       Stream app instance logs
 
 Examples:
-  aegis app create --name myapp --image python:3.12 --expose 80 -- python -m http.server 80
+  aegis app create --name myapp --image python:3.12-alpine --expose 80 -- python3 -m http.server 80
   aegis app publish myapp [--label v1]
   aegis app serve myapp
   aegis app list
@@ -588,7 +588,7 @@ Examples:
 }
 
 // cmdAppCreate creates a new app.
-// aegis app create --name myapp --image python:3.12 --expose 80 -- python -m http.server 80
+// aegis app create --name myapp --image python:3.12-alpine --expose 80 -- python3 -m http.server 80
 func cmdAppCreate(client *http.Client) {
 	args := os.Args[3:]
 
@@ -1303,6 +1303,15 @@ func cmdExec() {
 		if first {
 			first = false
 			continue
+		}
+
+		// Check for exec completion marker
+		if done, _ := entry["done"].(bool); done {
+			if ecStr, _ := entry["exit_code"].(string); ecStr != "" && ecStr != "0" {
+				exitCode, _ := strconv.Atoi(ecStr)
+				os.Exit(exitCode)
+			}
+			return
 		}
 
 		line, _ := entry["line"].(string)

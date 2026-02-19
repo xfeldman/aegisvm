@@ -1182,6 +1182,8 @@ type channelDemuxer struct {
 
 5. **Goroutine lifecycle:** The demuxer is created during `bootInstance()` and stored on the `Instance` struct as `inst.demuxer`. It runs until `Stop()` is called (on instance stop/terminate) or the channel errors (guest crash). The `logCapture` boolean on `Instance` guards against double-attach when a terminated instance is rebooted.
 
+6. **Stop semantics:** `Stop()` closes the underlying `ControlChannel` to unblock the recv goroutine, then waits for it to exit. Context cancellation alone is insufficient because `NetControlChannel.Recv()` only respects context **deadlines**, not cancellation — a `context.WithCancel` context has no deadline, so `Recv()` blocks forever on `scanner.Scan()`. Closing the channel causes `Recv()` to return an error, which the recv loop recognizes as a clean shutdown (errors containing "closed" are suppressed). Because `Stop()` closes the channel, callers must not call `ch.Close()` separately — the demuxer owns the channel's lifecycle once created.
+
 ### 5.2 LogStore — Ring Buffer + NDJSON Persistence
 
 **New package: `internal/logstore/logstore.go`**
@@ -1208,11 +1210,11 @@ The `onNotif` handler routes four notification types:
 - `"log"` → `logStore.GetOrCreate(inst.ID, ...).Append(stream, line, execID)`
 - `"serverReady"` → send on `readyCh`
 - `"serverFailed"` → send error on `failCh`
-- `"execDone"` → log the exit code (future use for exec tracking)
+- `"execDone"` → signal the exec waiter channel with exit code (see §5.5)
 
-**StopInstance changes:** Stops the demuxer before sending the shutdown RPC on the raw channel (demuxer is already stopped, so we send directly). Calls `logStore.Remove(id)` after removing the instance from the map.
+**StopInstance changes:** Sends the shutdown RPC **via the demuxer** (which serializes writes), then calls `demux.Stop()` (which closes the channel). This ordering is critical — the demuxer must be alive to send the shutdown RPC, and `Stop()` must come after to unblock the recv loop. Before stopping, all exec waiter channels are signaled with exit code `-1` so any in-flight exec API handlers unblock immediately. Calls `logStore.Remove(id)` after removing the instance from the map.
 
-**terminateInstance changes:** Stops the demuxer, sets `inst.demuxer = nil` and `inst.logCapture = false`, but does NOT remove logs — terminated instances keep logs until explicit deletion.
+**terminateInstance changes:** Calls `demux.Stop()` (no shutdown RPC needed — the VM is being killed). Because `Stop()` closes the channel, no separate `ch.Close()` call is needed. Does NOT remove logs — terminated instances keep logs until explicit deletion.
 
 ### 5.4 Harness Exec RPC
 
@@ -1245,14 +1247,23 @@ Key differences from `startServer`:
 ### 5.5 ExecInstance in Lifecycle Manager
 
 ```go
-func (m *Manager) ExecInstance(ctx, id, command, env) (execID, startedAt, error)
+func (m *Manager) ExecInstance(ctx, id, command, env) (execID, startedAt, doneCh, error)
 ```
 
-State-aware exec:
-- `StateRunning` → proceed with exec via `inst.demuxer.Call()`
-- `StatePaused` → auto-resume via `resumeInstance()`, then exec
-- `StateStopped` → return `ErrInstanceStopped` (caller maps to 409)
-- `StateStarting` → `waitForRunning()` then exec
+**Exec is valid in:** RUNNING (proceed), PAUSED (auto-resume), STARTING (wait-for-ready).
+
+**Exec is invalid in:** STOPPED → 409.
+
+**Instance stopped while exec in-flight:** done channel receives `-1`.
+
+**Exec completion tracking:** `ExecInstance` returns a `<-chan int` (done channel) alongside the exec ID. The Instance struct has an `execWaiters map[string]chan int` that maps exec IDs to their done channels. The flow:
+
+1. `ExecInstance` creates a buffered `chan int` and registers it in `inst.execWaiters` **before** sending the exec RPC (prevents race with fast-completing commands)
+2. The demuxer's `onNotif` handler receives `execDone` → looks up the exec ID in `inst.execWaiters` → sends exit code → closes channel → deletes entry
+3. The API handler `select`s on both the log subscription channel and the done channel. When done fires, it drains remaining buffered logs, sends `{done: true, exit_code: N}`, and returns
+4. On instance stop, `StopInstance` iterates `inst.execWaiters`, sends `-1` on each, and closes them — ensuring no API handler blocks indefinitely
+
+This design avoids mixing control signals (exec completion) with data (log entries) in the same channel. Earlier iterations used a sentinel log entry with `stream: "execDone"` appended to the logstore, which had two race conditions: (a) fast execs could complete before the API handler subscribed, leaving the sentinel in `existing` entries where it wasn't checked; (b) instance stop could close subscriber channels before the sentinel arrived, causing silent exit-code-0 regardless of actual result.
 
 The host generates the `exec_id` as `exec-{UnixNano}` and passes it in the RPC params. The demuxer's `onNotif` handler captures all `"log"` notifications (including those with `exec_id`) and routes them to LogStore — no special exec-specific capture needed.
 
@@ -1279,7 +1290,7 @@ Four new routes:
 
 Content-Type: `application/x-ndjson`. Uses the same `streamJSON` helper as task logs.
 
-**`POST /v1/instances/{id}/exec`** — accepts `{command: [], env: {}}`. Returns 409 if instance is stopped. On success, streams NDJSON: first line is `{exec_id, started_at}`, followed by log entries filtered by `exec_id` until client disconnect.
+**`POST /v1/instances/{id}/exec`** — accepts `{command: [], env: {}}`. Returns 409 if instance is stopped. On success, streams NDJSON: first line is `{exec_id, started_at}`, followed by log entries filtered by `exec_id`, terminated by `{exec_id, exit_code, done: true}` when the process exits. The handler uses the done channel from `ExecInstance` (not log subscription) to detect completion, avoiding race conditions with fast-completing commands.
 
 **Task logs enhancement:** `GET /v1/tasks/{id}/logs` now supports `since` and `tail` query params (backward-compatible addition).
 
@@ -1356,6 +1367,7 @@ aegis/
 │   │   ├── manager.go              # + logStore field, demuxer integration, ExecInstance,
 │   │   │                           #   ListInstances, boot refactor, stop/terminate updates
 │   │   ├── demuxer.go              # NEW: channelDemuxer
+│   │   ├── demuxer_test.go         # NEW: 4 unit tests (stop, call, notification, timeout)
 │   │   └── manager_test.go         # + logstore in newTestManager
 │   ├── logstore/                   # NEW PACKAGE
 │   │   ├── logstore.go             #   Store, InstanceLog, LogEntry, ring buffer, NDJSON
@@ -1375,3 +1387,23 @@ No new external dependencies.
 No new system dependencies.
 All new code uses stdlib only (encoding/json, sync, os, time, etc.).
 ```
+
+### 5.12 Post-Implementation Corrections
+
+Two bugs discovered during manual testing after the initial M3b implementation:
+
+**1. `demuxer.Stop()` hung indefinitely (blocked Ctrl+C on `aegis app serve`)**
+
+**Root cause:** `Stop()` cancelled a `context.WithCancel` context, but `NetControlChannel.Recv()` only respects context **deadlines** (via `conn.SetReadDeadline`), not cancellation. A cancel-only context has no deadline, so `Recv()` blocked forever on `scanner.Scan()`.
+
+**Fix:** `Stop()` now calls `ch.Close()` to unblock the recv loop (closed connection causes `scanner.Scan()` to return false). This means the demuxer owns the channel lifecycle — callers must not close the channel separately. `StopInstance` was refactored to send the shutdown RPC **through the demuxer** (via `demux.Call()`) before calling `demux.Stop()`, rather than stopping the demuxer first and then trying to send on the now-closed channel. `terminateInstance` uses `demux.Stop()` alone (no shutdown RPC needed, VM is being killed).
+
+**Test added:** `TestDemuxerStopReturnsPromptly` — verifies `Stop()` returns within 2 seconds. Uses a `mockChannel` that respects `Close()` in its `Recv()` implementation.
+
+**2. `aegis exec` hung after command completed**
+
+**Root cause:** The exec API handler streamed log entries via the logstore subscription but had no way to detect when the exec process finished. The `execDone` notification was received by the demuxer's `onNotif` handler but only logged — it was never communicated back to the API handler. Additionally, a sentinel-in-logstore approach was tried but had two race conditions: (a) fast execs could complete before the subscribe, leaving the sentinel in existing entries where it wasn't checked; (b) instance stop could close subscriber channels before the sentinel arrived.
+
+**Fix:** Replaced with a dedicated done channel design. `ExecInstance` now returns a `<-chan int` that the demuxer signals when `execDone` arrives. The API handler `select`s on both the log subscription and the done channel. On done, it drains remaining buffered logs and sends a `{done: true, exit_code: N}` marker. On instance stop, all exec waiter channels receive `-1` to unblock handlers.
+
+**Bonus fix: OCI image unpack performance.** `unpackLayer()` used `layer.Uncompressed()` which decompresses via stdlib `compress/gzip` (~50MB/s). Switched to `layer.Compressed()` + `klauspost/compress/gzip` (already a transitive dependency), reducing unpack time for `python:3.12` from ~185s to ~61s on M1 (3x improvement).

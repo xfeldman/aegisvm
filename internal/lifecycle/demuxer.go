@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 
 	"github.com/xfeldman/aegis/internal/vmm"
@@ -51,7 +52,11 @@ func (d *channelDemuxer) recvLoop(ctx context.Context) {
 		msg, err := d.ch.Recv(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
-				// Normal shutdown
+				// Normal shutdown (context cancelled)
+				return
+			}
+			// Channel closed by Stop() — also normal shutdown
+			if strings.Contains(err.Error(), "closed") {
 				return
 			}
 			log.Printf("demuxer: recv error: %v", err)
@@ -137,9 +142,12 @@ func (d *channelDemuxer) Call(ctx context.Context, method string, params interfa
 	}
 }
 
-// Stop cancels the recv loop and waits for it to exit.
+// Stop closes the underlying channel to unblock the recv loop, then waits for exit.
+// We close the channel rather than relying on context cancellation because
+// NetControlChannel.Recv() only respects context deadlines, not cancellation.
 func (d *channelDemuxer) Stop() {
 	d.cancel()
+	d.ch.Close()
 	<-d.done
 }
 

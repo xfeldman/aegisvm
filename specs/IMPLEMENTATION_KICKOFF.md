@@ -617,7 +617,7 @@ Each example includes a `README.md` with the exact `aegis` commands to run it an
 
 2. **Serve-mode log capture** — The ControlChannel has exactly one Recv loop per instance; it begins immediately after channel establishment and runs until close. It demuxes responses (`id` present) from notifications (`method == "log"`, etc.) and routes all log notifications to LogStore regardless of readiness state. This means boot-time logs are captured from the moment the channel opens — no gap between boot and `serverReady`. **Goroutine lifecycle:** on instance stop, the goroutine exits cleanly (channel close). On resume, a new goroutine is spawned — must guard against double-attach (check `inst.logCapture` field before spawning).
 
-3. **Exec RPC** — New `exec` method on the existing ControlChannel. Reuses serve-mode connection (`inst.Channel`). Differs from `runTask`: runs concurrently with the server process. **Tagging:** host generates `exec_id` and passes it to harness in the `exec` RPC params; harness includes `exec_id` in every log notification emitted by that process. The host Recv loop routes tagged notifications to LogStore with `exec_id` set. This requires a harness-side change (new `exec` method handler). **Resume behavior:** paused instances are auto-resumed on exec; 409 only for stopped instances. Response: `{exec_id, started_at}`, then output streamed as tagged log notifications. Multiple concurrent execs supported (each gets a unique `exec_id`). **Cancellation:** exec cannot be cancelled in M3b other than VM stop; add `DELETE /v1/instances/{id}/exec/{exec_id}` with SIGTERM in a later milestone.
+3. **Exec RPC** — New `exec` method on the existing ControlChannel. Reuses serve-mode connection (`inst.Channel`). Differs from `runTask`: runs concurrently with the server process. **Tagging:** host generates `exec_id` and passes it to harness in the `exec` RPC params; harness includes `exec_id` in every log notification emitted by that process. The host Recv loop routes tagged notifications to LogStore with `exec_id` set. This requires a harness-side change (new `exec` method handler). **Exec validity:** RUNNING (proceed), PAUSED (auto-resume), STARTING (wait-for-ready). STOPPED → 409. Instance stopped while exec in-flight → done channel receives `-1`. Response: `{exec_id, started_at}`, then output streamed as tagged log notifications, terminated by `{done: true, exit_code: N}`. Multiple concurrent execs supported (each gets a unique `exec_id`). **Cancellation:** exec cannot be cancelled in M3b other than VM stop; add `DELETE /v1/instances/{id}/exec/{exec_id}` with SIGTERM in a later milestone.
 
 4. **No SSH** — Aegis does not run `sshd` inside VMs. No SSH keys, no serial console. `aegis exec` is the sole mechanism for guest interaction. This is by design: the ControlChannel is always available, requires no additional daemon.
 
@@ -628,7 +628,7 @@ Each example includes a `README.md` with the exact `aegis` commands to run it an
 | `GET` | `/v1/instances` | List all instances (state, app, started_at, last_active_at, connections) |
 | `GET` | `/v1/instances/{id}` | Enhanced: full detail (endpoints, app, workspace, idle timers, log file path, ring buffer size) |
 | `GET` | `/v1/instances/{id}/logs?follow=1&since=TS&tail=N` | Stream instance logs (NDJSON) |
-| `POST` | `/v1/instances/{id}/exec` | Exec command, stream output (auto-resumes paused; 409 if stopped) |
+| `POST` | `/v1/instances/{id}/exec` | Exec command, stream output. Valid: RUNNING, PAUSED (auto-resume), STARTING (wait). Invalid: STOPPED (409). In-flight exec on stop → done `-1` |
 
 **CLI additions:**
 
@@ -636,7 +636,7 @@ Each example includes a `README.md` with the exact `aegis` commands to run it an
 |---|---|
 | `aegis instance list` | Show all instances with state, app, uptime |
 | `aegis instance info INST_ID` | Detailed instance view |
-| `aegis exec APP\|INST -- CMD...` | Execute command in running instance (auto-resumes paused) |
+| `aegis exec APP\|INST -- CMD...` | Execute command in instance (RUNNING/PAUSED/STARTING; 409 if STOPPED) |
 | `aegis app logs APP [--follow]` | Stream logs for an app's instance |
 | `aegis logs APP [--follow]` | Short alias for `aegis app logs` |
 

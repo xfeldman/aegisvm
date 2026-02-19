@@ -376,7 +376,7 @@ func (s *Server) handleExecInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	execID, startedAt, err := s.lifecycle.ExecInstance(r.Context(), id, req.Command, req.Env)
+	execID, startedAt, doneCh, err := s.lifecycle.ExecInstance(r.Context(), id, req.Command, req.Env)
 	if err != nil {
 		if err == lifecycle.ErrInstanceStopped {
 			writeError(w, http.StatusConflict, "instance is stopped")
@@ -400,10 +400,16 @@ func (s *Server) handleExecInstance(w http.ResponseWriter, r *http.Request) {
 	// Subscribe to logs filtered by exec_id
 	il := s.logStore.Get(id)
 	if il == nil {
+		// Wait for done even without logs
+		select {
+		case exitCode := <-doneCh:
+			streamJSON(w, map[string]interface{}{"exec_id": execID, "exit_code": exitCode, "done": true})
+		case <-r.Context().Done():
+		}
 		return
 	}
 
-	ch, existing, unsub := il.Subscribe()
+	logCh, existing, unsub := il.Subscribe()
 	defer unsub()
 
 	// Stream any existing logs for this exec
@@ -413,19 +419,36 @@ func (s *Server) handleExecInstance(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Stream live logs until exec completes or client disconnects
 	ctx := r.Context()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case entry, ok := <-ch:
+		case exitCode := <-doneCh:
+			// Exec finished — drain any remaining buffered logs then send done
+			for {
+				select {
+				case entry := <-logCh:
+					if entry.ExecID == execID {
+						streamJSON(w, entry)
+					}
+				default:
+					streamJSON(w, map[string]interface{}{
+						"exec_id":   execID,
+						"exit_code": exitCode,
+						"done":      true,
+					})
+					return
+				}
+			}
+		case entry, ok := <-logCh:
 			if !ok {
 				return
 			}
-			if entry.ExecID != execID {
-				continue
+			if entry.ExecID == execID {
+				streamJSON(w, entry)
 			}
-			streamJSON(w, entry)
 		}
 	}
 }

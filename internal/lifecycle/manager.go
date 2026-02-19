@@ -73,6 +73,9 @@ type Instance struct {
 	demuxer    *channelDemuxer
 	logCapture bool // guard against double-attach
 
+	// Exec completion tracking: execID → channel that receives exit code
+	execWaiters map[string]chan int
+
 	// Timestamps
 	CreatedAt time.Time
 }
@@ -290,6 +293,13 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 			}
 			if json.Unmarshal(params, &ep) == nil {
 				log.Printf("instance %s: exec %s done (exit_code=%d)", inst.ID, ep.ExecID, ep.ExitCode)
+				inst.mu.Lock()
+				if ch, ok := inst.execWaiters[ep.ExecID]; ok {
+					ch <- ep.ExitCode
+					close(ch)
+					delete(inst.execWaiters, ep.ExecID)
+				}
+				inst.mu.Unlock()
 			}
 		}
 	})
@@ -534,11 +544,10 @@ func (m *Manager) terminateInstance(inst *Instance) {
 	log.Printf("instance %s: stopped (extended idle)", inst.ID)
 	m.notifyStateChange(inst.ID, StateStopped)
 
-	// Stop demuxer before closing channel
+	// Stop demuxer (closes channel internally) or close channel directly
 	if demux != nil {
 		demux.Stop()
-	}
-	if ch != nil {
+	} else if ch != nil {
 		ch.Close()
 	}
 	m.vmm.StopVM(handle)
@@ -626,6 +635,12 @@ func (m *Manager) StopInstance(id string) error {
 	inst.State = StateStopped
 	inst.demuxer = nil
 	inst.logCapture = false
+	// Close all exec waiters so handlers unblock
+	for eid, ch := range inst.execWaiters {
+		ch <- -1
+		close(ch)
+		delete(inst.execWaiters, eid)
+	}
 	inst.mu.Unlock()
 	m.notifyStateChange(id, StateStopped)
 
@@ -634,13 +649,15 @@ func (m *Manager) StopInstance(id string) error {
 		m.vmm.ResumeVM(handle)
 	}
 
-	// Stop demuxer first, then send shutdown on raw channel
 	if demux != nil {
+		// Send shutdown via demuxer (which serializes writes), then stop it.
+		// demuxer.Stop() closes the channel, so no separate ch.Close() needed.
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		demux.Call(shutCtx, "shutdown", nil, 99)
+		cancel()
 		demux.Stop()
-	}
-
-	// Send shutdown RPC if channel available
-	if ch != nil {
+	} else if ch != nil {
+		// No demuxer (e.g. instance never fully booted) — send directly
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		shutdownReq, _ := json.Marshal(map[string]interface{}{
 			"jsonrpc": "2.0",
@@ -695,12 +712,13 @@ func (m *Manager) ListInstances() []*Instance {
 }
 
 // ExecInstance runs a command in a running instance via the demuxer.
-func (m *Manager) ExecInstance(ctx context.Context, id string, command []string, env map[string]string) (string, time.Time, error) {
+// Returns the exec ID, start time, a done channel that receives the exit code, and any error.
+func (m *Manager) ExecInstance(ctx context.Context, id string, command []string, env map[string]string) (string, time.Time, <-chan int, error) {
 	m.mu.Lock()
 	inst, ok := m.instances[id]
 	m.mu.Unlock()
 	if !ok {
-		return "", time.Time{}, fmt.Errorf("instance not found")
+		return "", time.Time{}, nil, fmt.Errorf("instance not found")
 	}
 
 	inst.mu.Lock()
@@ -712,13 +730,13 @@ func (m *Manager) ExecInstance(ctx context.Context, id string, command []string,
 		// proceed
 	case StatePaused:
 		if err := m.resumeInstance(inst); err != nil {
-			return "", time.Time{}, fmt.Errorf("resume for exec: %w", err)
+			return "", time.Time{}, nil, fmt.Errorf("resume for exec: %w", err)
 		}
 	case StateStopped:
-		return "", time.Time{}, ErrInstanceStopped
+		return "", time.Time{}, nil, ErrInstanceStopped
 	case StateStarting:
 		if err := m.waitForRunning(ctx, inst); err != nil {
-			return "", time.Time{}, err
+			return "", time.Time{}, nil, err
 		}
 	}
 
@@ -727,11 +745,20 @@ func (m *Manager) ExecInstance(ctx context.Context, id string, command []string,
 	inst.mu.Unlock()
 
 	if demux == nil {
-		return "", time.Time{}, fmt.Errorf("instance has no active channel")
+		return "", time.Time{}, nil, fmt.Errorf("instance has no active channel")
 	}
 
 	execID := fmt.Sprintf("exec-%d", time.Now().UnixNano())
 	startedAt := time.Now()
+
+	// Register done channel before sending RPC to avoid race
+	doneCh := make(chan int, 1)
+	inst.mu.Lock()
+	if inst.execWaiters == nil {
+		inst.execWaiters = make(map[string]chan int)
+	}
+	inst.execWaiters[execID] = doneCh
+	inst.mu.Unlock()
 
 	resp, err := demux.Call(ctx, "exec", map[string]interface{}{
 		"command": command,
@@ -739,7 +766,10 @@ func (m *Manager) ExecInstance(ctx context.Context, id string, command []string,
 		"exec_id": execID,
 	}, nextRPCID())
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("exec RPC: %w", err)
+		inst.mu.Lock()
+		delete(inst.execWaiters, execID)
+		inst.mu.Unlock()
+		return "", time.Time{}, nil, fmt.Errorf("exec RPC: %w", err)
 	}
 
 	// Check for error in response
@@ -749,10 +779,13 @@ func (m *Manager) ExecInstance(ctx context.Context, id string, command []string,
 		} `json:"error"`
 	}
 	if json.Unmarshal(resp, &respObj) == nil && respObj.Error != nil {
-		return "", time.Time{}, fmt.Errorf("exec failed: %s", respObj.Error.Message)
+		inst.mu.Lock()
+		delete(inst.execWaiters, execID)
+		inst.mu.Unlock()
+		return "", time.Time{}, nil, fmt.Errorf("exec failed: %s", respObj.Error.Message)
 	}
 
-	return execID, startedAt, nil
+	return execID, startedAt, doneCh, nil
 }
 
 // ActiveConns returns the active connection count for an instance.
