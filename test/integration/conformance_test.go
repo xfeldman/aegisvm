@@ -5,177 +5,374 @@ package integration
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
 )
 
-// Conformance Suite: Backend-validating tests that ensure correctness.
-// These tests validate that the VMM backend correctly implements
-// the expected behavior. When Firecracker arrives in M4, these same
-// tests must pass on both backends.
+// Backend conformance: exercises the core instance lifecycle paths that any
+// VMM backend must support. These tests run against whatever backend aegisd
+// was started with (libkrun today, Firecracker in M4+).
 
-func TestConformanceTaskRun(t *testing.T) {
-	out := aegisRun(t, "run", "--", "echo", "conformance-hello")
-	if !strings.Contains(out, "conformance-hello") {
-		t.Fatalf("expected 'conformance-hello' in output, got: %s", out)
+// TestConformance_RunEcho — boot VM, run command, verify output, instance stops.
+func TestConformance_RunEcho(t *testing.T) {
+	out := aegisRun(t, "run", "--", "echo", "conformance-echo")
+	if !strings.Contains(out, "conformance-echo") {
+		t.Fatalf("expected 'conformance-echo' in output, got: %s", out)
 	}
 }
 
-func TestConformanceServeRequest(t *testing.T) {
-	// Create instance with exposed port
-	inst := apiPost(t, "/v1/instances", map[string]interface{}{
-		"command":      []string{"python3", "-m", "http.server", "80"},
-		"expose_ports": []int{80},
-	})
-	id := inst["id"].(string)
-	t.Cleanup(func() { apiDelete(t, "/v1/instances/"+id) })
-
-	// Wait for HTTP to be available via router
-	body, err := waitForHTTP("http://127.0.0.1:8099/", 60*time.Second)
-	if err != nil {
-		t.Fatalf("serve HTTP failed: %v", err)
-	}
-	if !strings.Contains(body, "Directory listing") {
-		t.Fatalf("expected directory listing, got: %.200s", body)
+// TestConformance_RunExitCode — verify non-zero exit code propagation.
+func TestConformance_RunExitCode(t *testing.T) {
+	_, err := aegis("run", "--", "sh", "-c", "exit 42")
+	if err == nil {
+		t.Fatal("expected non-zero exit, got success")
 	}
 }
 
-func TestConformancePauseOnIdle(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping pause test in short mode")
-	}
-
-	// This test relies on the idle timeout (60s default).
-	// Create instance, wait for it to be running, then wait for pause.
+// TestConformance_InstanceStartStop — start with API, verify running, stop, verify gone.
+func TestConformance_InstanceStartStop(t *testing.T) {
 	inst := apiPost(t, "/v1/instances", map[string]interface{}{
-		"command":      []string{"python3", "-m", "http.server", "80"},
-		"expose_ports": []int{80},
+		"command": []string{"sleep", "300"},
+		"handle":  "conf-startstop",
 	})
 	id := inst["id"].(string)
-	t.Cleanup(func() { apiDelete(t, "/v1/instances/"+id) })
+	t.Cleanup(func() { apiDeleteAllowFail(t, "/v1/instances/"+id) })
 
-	// Wait for running
-	_, err := waitForHTTP("http://127.0.0.1:8099/", 60*time.Second)
-	if err != nil {
-		t.Fatalf("serve failed: %v", err)
-	}
+	// Wait for RUNNING
+	waitForState(t, id, "running", 30*time.Second)
 
-	// Wait for idle timeout (60s) + buffer
-	t.Log("waiting for idle timeout...")
-	time.Sleep(70 * time.Second)
+	// Stop
+	apiDelete(t, "/v1/instances/"+id)
 
-	// Check state should be paused
+	// Verify gone from list
 	client := daemonClient()
 	resp, err := client.Get(fmt.Sprintf("http://aegis/v1/instances/%s", id))
-	if err != nil {
-		t.Fatalf("get instance: %v", err)
-	}
-	defer resp.Body.Close()
-
-	var state map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&state)
-
-	if state["state"] != "paused" {
-		t.Logf("instance state: %v (may already be stopped)", state["state"])
-	}
-
-	// A request should wake it up
-	body, err := waitForHTTP("http://127.0.0.1:8099/", 30*time.Second)
-	if err != nil {
-		t.Fatalf("wake from pause failed: %v", err)
-	}
-	if !strings.Contains(body, "Directory listing") {
-		t.Fatalf("expected directory listing after wake, got: %.200s", body)
+	if err == nil {
+		resp.Body.Close()
+		if resp.StatusCode == 200 {
+			t.Fatal("instance should be gone after delete")
+		}
 	}
 }
 
-func TestConformanceSecretInjection(t *testing.T) {
-	// Create app, set secret, run task with app_id
-	apiPost(t, "/v1/apps", map[string]interface{}{
-		"name":    "conf-secret-app",
-		"image":   "alpine:3.21",
-		"command": []string{"echo"},
+// TestConformance_InstanceList — start instance, verify it appears in list with handle.
+func TestConformance_InstanceList(t *testing.T) {
+	inst := apiPost(t, "/v1/instances", map[string]interface{}{
+		"command": []string{"sleep", "300"},
+		"handle":  "conf-list",
 	})
-	t.Cleanup(func() { apiDelete(t, "/v1/apps/conf-secret-app") })
+	id := inst["id"].(string)
+	t.Cleanup(func() { apiDeleteAllowFail(t, "/v1/instances/"+id) })
 
-	apiPut(t, "/v1/apps/conf-secret-app/secrets/CONF_SECRET",
-		map[string]string{"value": "conformance-secret-value"})
+	waitForState(t, id, "running", 30*time.Second)
 
 	client := daemonClient()
-	body := map[string]interface{}{
-		"command": []string{"sh", "-c", "echo $CONF_SECRET"},
-		"app_id":  "conf-secret-app",
-	}
-	bodyJSON, _ := json.Marshal(body)
-	resp, err := client.Post("http://aegis/v1/tasks", "application/json",
-		strings.NewReader(string(bodyJSON)))
+	resp, err := client.Get("http://aegis/v1/instances")
 	if err != nil {
-		t.Fatalf("create task: %v", err)
+		t.Fatalf("list instances: %v", err)
 	}
 	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
 
-	var task map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&task)
-	taskID := task["id"].(string)
+	var instances []map[string]interface{}
+	json.Unmarshal(data, &instances)
 
-	out := waitForTaskOutput(t, client, taskID, 60*time.Second)
-	if !strings.Contains(out, "conformance-secret-value") {
-		t.Fatalf("expected secret in output, got: %s", out)
+	found := false
+	for _, inst := range instances {
+		if inst["handle"] == "conf-list" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("instance with handle 'conf-list' not found in list: %s", data)
 	}
 }
 
-func TestConformanceSecretNotOnDisk(t *testing.T) {
-	// Secrets are injected via env, not written to disk.
-	// Run a task that tries to grep for the secret value on disk.
-	apiPost(t, "/v1/apps", map[string]interface{}{
-		"name":    "conf-nodisk-app",
-		"image":   "alpine:3.21",
-		"command": []string{"echo"},
+// TestConformance_Exec — start instance, exec a command, verify output + done marker.
+func TestConformance_Exec(t *testing.T) {
+	inst := apiPost(t, "/v1/instances", map[string]interface{}{
+		"command": []string{"sleep", "300"},
+		"handle":  "conf-exec",
 	})
-	t.Cleanup(func() { apiDelete(t, "/v1/apps/conf-nodisk-app") })
+	id := inst["id"].(string)
+	t.Cleanup(func() { apiDeleteAllowFail(t, "/v1/instances/"+id) })
 
-	apiPut(t, "/v1/apps/conf-nodisk-app/secrets/DISK_SECRET",
-		map[string]string{"value": "should-not-be-on-disk-xyz"})
+	waitForState(t, id, "running", 30*time.Second)
+
+	// Exec
+	client := daemonClient()
+	body := `{"command":["echo","exec-output"]}`
+	resp, err := client.Post(
+		fmt.Sprintf("http://aegis/v1/instances/%s/exec", id),
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("exec returned %d: %s", resp.StatusCode, data)
+	}
+
+	// Read NDJSON stream
+	decoder := json.NewDecoder(resp.Body)
+	gotOutput := false
+	gotDone := false
+	for decoder.More() {
+		var entry map[string]interface{}
+		if err := decoder.Decode(&entry); err != nil {
+			break
+		}
+		if line, ok := entry["line"].(string); ok && strings.Contains(line, "exec-output") {
+			gotOutput = true
+		}
+		if done, ok := entry["done"].(bool); ok && done {
+			gotDone = true
+		}
+	}
+
+	if !gotOutput {
+		t.Fatal("did not see exec output in NDJSON stream")
+	}
+	if !gotDone {
+		t.Fatal("did not see done marker in NDJSON stream")
+	}
+}
+
+// TestConformance_Logs — start instance, generate output, verify logs contain it.
+func TestConformance_Logs(t *testing.T) {
+	inst := apiPost(t, "/v1/instances", map[string]interface{}{
+		"command": []string{"sh", "-c", "echo log-test-line && sleep 300"},
+		"handle":  "conf-logs",
+	})
+	id := inst["id"].(string)
+	t.Cleanup(func() { apiDeleteAllowFail(t, "/v1/instances/"+id) })
+
+	waitForState(t, id, "running", 30*time.Second)
+
+	// Give the echo time to appear in logs
+	time.Sleep(2 * time.Second)
 
 	client := daemonClient()
-	body := map[string]interface{}{
-		"command": []string{"sh", "-c", "grep -r should-not-be-on-disk-xyz /etc /tmp 2>/dev/null || echo CLEAN"},
-		"app_id":  "conf-nodisk-app",
-	}
-	bodyJSON, _ := json.Marshal(body)
-	resp, err := client.Post("http://aegis/v1/tasks", "application/json",
-		strings.NewReader(string(bodyJSON)))
+	resp, err := client.Get(fmt.Sprintf("http://aegis/v1/instances/%s/logs", id))
 	if err != nil {
-		t.Fatalf("create task: %v", err)
+		t.Fatalf("get logs: %v", err)
 	}
 	defer resp.Body.Close()
 
-	var task map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&task)
-	taskID := task["id"].(string)
-
-	out := waitForTaskOutput(t, client, taskID, 60*time.Second)
-	if !strings.Contains(out, "CLEAN") {
-		t.Fatalf("expected CLEAN (secret not on disk), got: %s", out)
+	data, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(data), "log-test-line") {
+		t.Fatalf("expected 'log-test-line' in logs, got: %.500s", data)
 	}
 }
 
-func TestConformanceEgressWorks(t *testing.T) {
-	// Verify the VM can reach the internet
-	out := aegisRun(t, "run", "--", "sh", "-c", "wget -q -O /dev/null http://example.com && echo EGRESS_OK || echo EGRESS_FAIL")
-	if !strings.Contains(out, "EGRESS_OK") {
-		t.Logf("egress test output: %s", out)
-		t.Skip("egress not available (may be offline or blocked)")
+// TestConformance_LogsExecSource — exec into instance, verify exec_id on log entries.
+func TestConformance_LogsExecSource(t *testing.T) {
+	inst := apiPost(t, "/v1/instances", map[string]interface{}{
+		"command": []string{"sleep", "300"},
+		"handle":  "conf-logsrc",
+	})
+	id := inst["id"].(string)
+	t.Cleanup(func() { apiDeleteAllowFail(t, "/v1/instances/"+id) })
+
+	waitForState(t, id, "running", 30*time.Second)
+
+	// Exec
+	client := daemonClient()
+	body := `{"command":["echo","exec-src-line"]}`
+	resp, err := client.Post(
+		fmt.Sprintf("http://aegis/v1/instances/%s/exec", id),
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	// Drain the exec response
+	io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	// Read instance logs, look for exec source
+	time.Sleep(1 * time.Second)
+	logsResp, err := client.Get(fmt.Sprintf("http://aegis/v1/instances/%s/logs", id))
+	if err != nil {
+		t.Fatalf("get logs: %v", err)
+	}
+	defer logsResp.Body.Close()
+
+	decoder := json.NewDecoder(logsResp.Body)
+	foundExecSource := false
+	for decoder.More() {
+		var entry map[string]interface{}
+		if err := decoder.Decode(&entry); err != nil {
+			break
+		}
+		if entry["source"] == "exec" && entry["exec_id"] != nil && entry["exec_id"] != "" {
+			foundExecSource = true
+			break
+		}
+	}
+	if !foundExecSource {
+		t.Fatal("no log entry with source=exec and exec_id found")
 	}
 }
 
-// Capability-gated tests — skip on libkrun
+// TestConformance_ProcessExited — start short-lived command, verify instance transitions to stopped.
+func TestConformance_ProcessExited(t *testing.T) {
+	inst := apiPost(t, "/v1/instances", map[string]interface{}{
+		"command": []string{"echo", "done"},
+		"handle":  "conf-exit",
+	})
+	id := inst["id"].(string)
+	t.Cleanup(func() { apiDeleteAllowFail(t, "/v1/instances/"+id) })
 
-func TestConformanceMemorySnapshot(t *testing.T) {
-	t.Skip("libkrun: no snapshot support")
+	// Wait for instance to transition through running → stopped
+	waitForState(t, id, "stopped", 30*time.Second)
+
+	// Verify system log entry
+	time.Sleep(500 * time.Millisecond)
+	client := daemonClient()
+	resp, err := client.Get(fmt.Sprintf("http://aegis/v1/instances/%s/logs", id))
+	if err != nil {
+		t.Fatalf("get logs: %v", err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(data), "process exited") {
+		t.Fatalf("expected 'process exited' system log, got: %.500s", data)
+	}
 }
 
-func TestConformanceCachedResume(t *testing.T) {
-	t.Skip("libkrun: no snapshot support")
+// TestConformance_ExecStopped409 — exec on stopped instance returns 409.
+func TestConformance_ExecStopped409(t *testing.T) {
+	inst := apiPost(t, "/v1/instances", map[string]interface{}{
+		"command": []string{"echo", "quick"},
+		"handle":  "conf-exec409",
+	})
+	id := inst["id"].(string)
+	t.Cleanup(func() { apiDeleteAllowFail(t, "/v1/instances/"+id) })
+
+	// Wait for process to exit → stopped
+	waitForState(t, id, "stopped", 30*time.Second)
+
+	// Exec should fail with 409
+	client := daemonClient()
+	body := `{"command":["echo","fail"]}`
+	resp, err := client.Post(
+		fmt.Sprintf("http://aegis/v1/instances/%s/exec", id),
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("exec request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 409 {
+		t.Fatalf("expected 409 for exec on stopped instance, got %d", resp.StatusCode)
+	}
+}
+
+// TestConformance_HandleResolution — create with handle, resolve by handle for exec and logs.
+func TestConformance_HandleResolution(t *testing.T) {
+	inst := apiPost(t, "/v1/instances", map[string]interface{}{
+		"command": []string{"sleep", "300"},
+		"handle":  "conf-handle",
+	})
+	id := inst["id"].(string)
+	t.Cleanup(func() { apiDeleteAllowFail(t, "/v1/instances/"+id) })
+
+	waitForState(t, id, "running", 30*time.Second)
+
+	// Get by handle
+	info := apiGet(t, "/v1/instances/conf-handle")
+	if info["id"] != id {
+		t.Fatalf("handle resolution: got id %v, want %s", info["id"], id)
+	}
+
+	// Exec by handle
+	client := daemonClient()
+	body := `{"command":["echo","handle-exec"]}`
+	resp, err := client.Post(
+		"http://aegis/v1/instances/conf-handle/exec",
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("exec by handle: %v", err)
+	}
+	io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Fatalf("exec by handle returned %d", resp.StatusCode)
+	}
+}
+
+// TestConformance_PauseResume — explicit pause/resume via API.
+func TestConformance_PauseResume(t *testing.T) {
+	if testing.Short() {
+		t.Skip("pause/resume test skipped in short mode")
+	}
+
+	inst := apiPost(t, "/v1/instances", map[string]interface{}{
+		"command": []string{"sleep", "300"},
+		"handle":  "conf-pr",
+	})
+	id := inst["id"].(string)
+	t.Cleanup(func() { apiDeleteAllowFail(t, "/v1/instances/"+id) })
+
+	waitForState(t, id, "running", 30*time.Second)
+
+	// Pause
+	apiPost(t, fmt.Sprintf("/v1/instances/%s/pause", id), nil)
+
+	info := apiGet(t, fmt.Sprintf("/v1/instances/%s", id))
+	if info["state"] != "paused" {
+		t.Fatalf("expected paused, got %v", info["state"])
+	}
+
+	// Resume
+	apiPost(t, fmt.Sprintf("/v1/instances/%s/resume", id), nil)
+
+	info = apiGet(t, fmt.Sprintf("/v1/instances/%s", id))
+	if info["state"] != "running" {
+		t.Fatalf("expected running after resume, got %v", info["state"])
+	}
+}
+
+// TestConformance_CLIRun — aegis run -- echo hello exits with 0.
+func TestConformance_CLIRun(t *testing.T) {
+	out := aegisRun(t, "run", "--", "echo", "cli-run-test")
+	if !strings.Contains(out, "cli-run-test") {
+		t.Fatalf("expected 'cli-run-test', got: %s", out)
+	}
+}
+
+// waitForState polls instance state until it matches or timeout.
+func waitForState(t *testing.T, id, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	client := daemonClient()
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(fmt.Sprintf("http://aegis/v1/instances/%s", id))
+		if err != nil {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		var inst map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&inst)
+		resp.Body.Close()
+		if state, _ := inst["state"].(string); state == want {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Fatalf("instance %s did not reach state %q within %v", id, want, timeout)
 }

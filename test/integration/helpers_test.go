@@ -196,31 +196,21 @@ func apiDeleteAllowFail(t *testing.T, path string) {
 	resp.Body.Close()
 }
 
-func waitForTaskOutput(t *testing.T, client *http.Client, taskID string, timeout time.Duration) string {
+func apiGet(t *testing.T, path string) map[string]interface{} {
 	t.Helper()
-
-	// Follow logs
-	logsResp, err := client.Get(fmt.Sprintf("http://aegis/v1/tasks/%s/logs?follow=true", taskID))
+	client := daemonClient()
+	resp, err := client.Get("http://aegis" + path)
 	if err != nil {
-		t.Fatalf("follow logs: %v", err)
+		t.Fatalf("GET %s: %v", path, err)
 	}
-	defer logsResp.Body.Close()
-
-	var lines []string
-	decoder := json.NewDecoder(logsResp.Body)
-	for decoder.More() {
-		var logLine map[string]interface{}
-		if err := decoder.Decode(&logLine); err != nil {
-			break
-		}
-		if line, ok := logLine["line"].(string); ok {
-			lines = append(lines, line)
-		}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	var result map[string]interface{}
+	json.Unmarshal(data, &result)
+	if resp.StatusCode >= 400 {
+		t.Fatalf("GET %s returned %d: %s", path, resp.StatusCode, data)
 	}
-
-	// Wait briefly and check final status
-	time.Sleep(200 * time.Millisecond)
-	return strings.Join(lines, "\n")
+	return result
 }
 
 func waitForHTTP(url string, timeout time.Duration) (string, error) {

@@ -6,16 +6,25 @@ Aegis is a local agent runtime platform that runs AI agent workloads inside isol
 
 ## Key Architecture
 
-- **aegisd** (Go): local control plane daemon managing microVMs, written in Go
+Two-layer control model:
+
+- **Infrastructure control plane (aegisd)**: VM lifecycle, port mapping, secrets, images, registry
+- **Guest control agent (aegis-harness)**: PID 1 inside VMs, process management, exec, log streaming
+- **Application control plane**: kit layer (versioning, readiness, routing policy) — lives outside core
+
+Components:
+
+- **aegisd** (Go): infrastructure control plane daemon
 - **aegis** (Go): CLI tool
-- **aegis-harness** (Go): guest PID 1 inside VMs, vsock JSON-RPC server
+- **aegis-harness** (Go): guest control agent (PID 1 inside VMs, JSON-RPC server)
 - **VMM Backend**: libkrun on macOS (Apple HVF), Firecracker on Linux (KVM)
-- **Registry**: SQLite (M1+), in-memory for M0
-- **Wire Protocol**: JSON-RPC 2.0 over vsock
+- **Registry**: SQLite for persistent state (instances, secrets)
+- **Wire Protocol**: JSON-RPC 2.0 over vsock (control channel)
+- **Ingress**: Docker-style static port mapping (`--expose`), infrastructure config not app semantics
 
-## Current Milestone: M3b (complete)
+## Current State: Instance-centric (post-pivot)
 
-M3b = durable per-instance logs, exec into running VMs, instance list/info APIs. M0-M3a are complete.
+After the architectural pivot, Aegis manages **instances** — a VM running a command with optional port exposure. No app, release, task, or kit objects in core. The harness uses a single `run` RPC for all workloads. The `run` RPC is the handoff point — infrastructure hands off to guest control.
 
 ## Build
 
@@ -34,7 +43,24 @@ brew install libkrun e2fsprogs
 make all
 ./bin/aegisd &
 ./bin/aegis run -- echo hello
+./bin/aegis run --expose 80 -- python3 -m http.server 80
+./bin/aegis instance list
+./bin/aegis exec <handle> -- echo hello
+./bin/aegis logs <handle>
 ./bin/aegis down
+```
+
+## CLI Commands
+
+```
+aegis up / down / status / doctor
+aegis instance start [--name H] [--expose P] [--env K=V] [--image REF] -- CMD
+aegis instance list / info / stop / pause / resume
+aegis exec <handle|id> -- CMD
+aegis logs <handle|id> [--follow]
+aegis run [--expose P] [--env K=V] [--name H] -- CMD   (sugar: start + follow + delete)
+aegis secret set KEY VALUE
+aegis secret list
 ```
 
 ## Conventions
@@ -51,5 +77,5 @@ make all
 Full specs live in the famiglia repo at `specs/aegis/`:
 - AEGIS_PLATFORM_SPEC.md — platform spec
 - IMPLEMENTATION_KICKOFF.md — engineering decisions + milestones
-- FAMIGLIA_KIT_SPEC.md — Famiglia kit
-- OPENCLAW_KIT_SPEC.md — OpenClaw kit
+- aegis_architectural_pivot_spec.md — pivot spec (instance-centric)
+- KIT_BOUNDARY_SPEC.md — kit boundary

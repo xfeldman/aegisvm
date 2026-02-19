@@ -7,13 +7,15 @@ import (
 	"time"
 )
 
-// Instance represents a persistent serve-mode instance.
+// Instance represents a persistent instance.
 type Instance struct {
 	ID          string    `json:"id"`
 	State       string    `json:"state"`
 	Command     []string  `json:"command"`
 	ExposePorts []int     `json:"expose_ports"`
 	VMID        string    `json:"vm_id,omitempty"`
+	Handle      string    `json:"handle,omitempty"`
+	ImageRef    string    `json:"image_ref,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -24,15 +26,18 @@ func (d *DB) SaveInstance(inst *Instance) error {
 	portsJSON, _ := json.Marshal(inst.ExposePorts)
 
 	_, err := d.db.Exec(`
-		INSERT INTO instances (id, state, command, expose_ports, vm_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO instances (id, state, command, expose_ports, vm_id, handle, image_ref, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			state = excluded.state,
 			command = excluded.command,
 			expose_ports = excluded.expose_ports,
 			vm_id = excluded.vm_id,
+			handle = excluded.handle,
+			image_ref = excluded.image_ref,
 			updated_at = excluded.updated_at
 	`, inst.ID, inst.State, string(cmdJSON), string(portsJSON), inst.VMID,
+		inst.Handle, inst.ImageRef,
 		inst.CreatedAt.Format(time.RFC3339), time.Now().Format(time.RFC3339))
 	return err
 }
@@ -40,7 +45,7 @@ func (d *DB) SaveInstance(inst *Instance) error {
 // GetInstance retrieves an instance by ID.
 func (d *DB) GetInstance(id string) (*Instance, error) {
 	row := d.db.QueryRow(`
-		SELECT id, state, command, expose_ports, vm_id, created_at, updated_at
+		SELECT id, state, command, expose_ports, vm_id, handle, image_ref, created_at, updated_at
 		FROM instances WHERE id = ?
 	`, id)
 	return scanInstance(row)
@@ -49,7 +54,7 @@ func (d *DB) GetInstance(id string) (*Instance, error) {
 // ListInstances returns all instances.
 func (d *DB) ListInstances() ([]*Instance, error) {
 	rows, err := d.db.Query(`
-		SELECT id, state, command, expose_ports, vm_id, created_at, updated_at
+		SELECT id, state, command, expose_ports, vm_id, handle, image_ref, created_at, updated_at
 		FROM instances ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -97,15 +102,12 @@ func (d *DB) DeleteInstance(id string) error {
 	return err
 }
 
-type scannable interface {
-	Scan(dest ...interface{}) error
-}
-
 func scanInstance(row *sql.Row) (*Instance, error) {
 	var inst Instance
 	var cmdJSON, portsJSON, createdStr, updatedStr string
 
-	err := row.Scan(&inst.ID, &inst.State, &cmdJSON, &portsJSON, &inst.VMID, &createdStr, &updatedStr)
+	err := row.Scan(&inst.ID, &inst.State, &cmdJSON, &portsJSON, &inst.VMID,
+		&inst.Handle, &inst.ImageRef, &createdStr, &updatedStr)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -124,7 +126,8 @@ func scanInstanceRow(rows *sql.Rows) (*Instance, error) {
 	var inst Instance
 	var cmdJSON, portsJSON, createdStr, updatedStr string
 
-	err := rows.Scan(&inst.ID, &inst.State, &cmdJSON, &portsJSON, &inst.VMID, &createdStr, &updatedStr)
+	err := rows.Scan(&inst.ID, &inst.State, &cmdJSON, &portsJSON, &inst.VMID,
+		&inst.Handle, &inst.ImageRef, &createdStr, &updatedStr)
 	if err != nil {
 		return nil, err
 	}

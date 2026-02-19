@@ -55,42 +55,19 @@ func (d *DB) migrate() error {
 			command     TEXT NOT NULL,
 			expose_ports TEXT NOT NULL DEFAULT '[]',
 			vm_id       TEXT NOT NULL DEFAULT '',
+			handle      TEXT NOT NULL DEFAULT '',
+			image_ref   TEXT NOT NULL DEFAULT '',
 			created_at  TEXT NOT NULL DEFAULT (datetime('now')),
 			updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-		)`,
-		`CREATE TABLE IF NOT EXISTS apps (
-			id          TEXT PRIMARY KEY,
-			name        TEXT NOT NULL UNIQUE,
-			image       TEXT NOT NULL,
-			command     TEXT NOT NULL DEFAULT '[]',
-			expose_ports TEXT NOT NULL DEFAULT '[]',
-			config      TEXT NOT NULL DEFAULT '{}',
-			created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-		)`,
-		`CREATE TABLE IF NOT EXISTS releases (
-			id           TEXT PRIMARY KEY,
-			app_id       TEXT NOT NULL REFERENCES apps(id),
-			image_digest TEXT NOT NULL,
-			rootfs_path  TEXT NOT NULL,
-			label        TEXT,
-			created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 		)`,
 		`CREATE TABLE IF NOT EXISTS secrets (
 			id         TEXT PRIMARY KEY,
 			app_id     TEXT NOT NULL DEFAULT '',
 			name       TEXT NOT NULL,
 			value      BLOB NOT NULL,
-			scope      TEXT NOT NULL DEFAULT 'per_app',
+			scope      TEXT NOT NULL DEFAULT 'per_workspace',
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			UNIQUE(app_id, name)
-		)`,
-		`CREATE TABLE IF NOT EXISTS kits (
-			name         TEXT PRIMARY KEY,
-			version      TEXT NOT NULL,
-			description  TEXT NOT NULL DEFAULT '',
-			config       TEXT NOT NULL,
-			image_ref    TEXT NOT NULL,
-			installed_at TEXT NOT NULL DEFAULT (datetime('now'))
 		)`,
 	}
 	for _, stmt := range stmts {
@@ -98,5 +75,15 @@ func (d *DB) migrate() error {
 			return err
 		}
 	}
+
+	// Add columns if they don't exist (for migration from older schema)
+	migrateCols := []string{
+		`ALTER TABLE instances ADD COLUMN handle TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE instances ADD COLUMN image_ref TEXT NOT NULL DEFAULT ''`,
+	}
+	for _, stmt := range migrateCols {
+		d.db.Exec(stmt) // Ignore error — column may already exist
+	}
+
 	return nil
 }

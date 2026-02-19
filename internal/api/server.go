@@ -12,10 +12,8 @@ import (
 	"time"
 
 	"github.com/xfeldman/aegis/internal/config"
-	"github.com/xfeldman/aegis/internal/image"
 	"github.com/xfeldman/aegis/internal/lifecycle"
 	"github.com/xfeldman/aegis/internal/logstore"
-	"github.com/xfeldman/aegis/internal/overlay"
 	"github.com/xfeldman/aegis/internal/registry"
 	"github.com/xfeldman/aegis/internal/secrets"
 	"github.com/xfeldman/aegis/internal/vmm"
@@ -25,11 +23,8 @@ import (
 type Server struct {
 	cfg         *config.Config
 	vmm         vmm.VMM
-	tasks       *TaskStore
 	lifecycle   *lifecycle.Manager
 	registry    *registry.DB
-	imageCache  *image.Cache
-	overlay     overlay.Overlay
 	secretStore *secrets.Store
 	logStore    *logstore.Store
 	mux         *http.ServeMux
@@ -38,15 +33,12 @@ type Server struct {
 }
 
 // NewServer creates a new API server.
-func NewServer(cfg *config.Config, v vmm.VMM, lm *lifecycle.Manager, reg *registry.DB, imgCache *image.Cache, ov overlay.Overlay, ss *secrets.Store, ls *logstore.Store) *Server {
+func NewServer(cfg *config.Config, v vmm.VMM, lm *lifecycle.Manager, reg *registry.DB, ss *secrets.Store, ls *logstore.Store) *Server {
 	s := &Server{
 		cfg:         cfg,
 		vmm:         v,
-		tasks:       NewTaskStore(v, cfg, imgCache, ov),
 		lifecycle:   lm,
 		registry:    reg,
-		imageCache:  imgCache,
-		overlay:     ov,
 		secretStore: ss,
 		logStore:    ls,
 		mux:         http.NewServeMux(),
@@ -57,38 +49,22 @@ func NewServer(cfg *config.Config, v vmm.VMM, lm *lifecycle.Manager, reg *regist
 }
 
 func (s *Server) registerRoutes() {
-	s.mux.HandleFunc("POST /v1/tasks", s.handleCreateTask)
-	s.mux.HandleFunc("GET /v1/tasks/{id}", s.handleGetTask)
-	s.mux.HandleFunc("GET /v1/tasks/{id}/logs", s.handleGetTaskLogs)
+	// Instance routes
 	s.mux.HandleFunc("POST /v1/instances", s.handleCreateInstance)
 	s.mux.HandleFunc("GET /v1/instances", s.handleListInstances)
 	s.mux.HandleFunc("GET /v1/instances/{id}", s.handleGetInstance)
 	s.mux.HandleFunc("GET /v1/instances/{id}/logs", s.handleInstanceLogs)
 	s.mux.HandleFunc("POST /v1/instances/{id}/exec", s.handleExecInstance)
+	s.mux.HandleFunc("POST /v1/instances/{id}/pause", s.handlePauseInstance)
+	s.mux.HandleFunc("POST /v1/instances/{id}/resume", s.handleResumeInstance)
 	s.mux.HandleFunc("DELETE /v1/instances/{id}", s.handleDeleteInstance)
-	s.mux.HandleFunc("GET /v1/status", s.handleStatus)
 
-	// App routes (M2)
-	s.mux.HandleFunc("POST /v1/apps", s.handleCreateApp)
-	s.mux.HandleFunc("GET /v1/apps", s.handleListApps)
-	s.mux.HandleFunc("GET /v1/apps/{id}", s.handleGetApp)
-	s.mux.HandleFunc("DELETE /v1/apps/{id}", s.handleDeleteApp)
-	s.mux.HandleFunc("POST /v1/apps/{id}/publish", s.handlePublishApp)
-	s.mux.HandleFunc("GET /v1/apps/{id}/releases", s.handleListReleases)
-	s.mux.HandleFunc("POST /v1/apps/{id}/serve", s.handleServeApp)
-
-	// Secret routes (M3)
-	s.mux.HandleFunc("PUT /v1/apps/{id}/secrets/{name}", s.handleSetSecret)
-	s.mux.HandleFunc("GET /v1/apps/{id}/secrets", s.handleListSecrets)
-	s.mux.HandleFunc("DELETE /v1/apps/{id}/secrets/{name}", s.handleDeleteSecret)
+	// Secret routes (workspace-scoped only)
 	s.mux.HandleFunc("PUT /v1/secrets/{name}", s.handleSetWorkspaceSecret)
 	s.mux.HandleFunc("GET /v1/secrets", s.handleListWorkspaceSecrets)
 
-	// Kit routes (M3)
-	s.mux.HandleFunc("POST /v1/kits", s.handleRegisterKit)
-	s.mux.HandleFunc("GET /v1/kits", s.handleListKits)
-	s.mux.HandleFunc("GET /v1/kits/{name}", s.handleGetKit)
-	s.mux.HandleFunc("DELETE /v1/kits/{name}", s.handleDeleteKit)
+	// Status
+	s.mux.HandleFunc("GET /v1/status", s.handleStatus)
 }
 
 // Start begins listening on the unix socket.
@@ -127,16 +103,10 @@ type statusResponse struct {
 	Status       string                 `json:"status"`
 	Backend      string                 `json:"backend"`
 	Capabilities map[string]interface{} `json:"capabilities"`
-	KitCount     int                    `json:"kit_count"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	caps := s.vmm.Capabilities()
-
-	kitCount := 0
-	if kits, err := s.registry.ListKits(); err == nil {
-		kitCount = len(kits)
-	}
 
 	writeJSON(w, http.StatusOK, statusResponse{
 		Status:  "running",
@@ -146,23 +116,23 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"memory_snapshots":      caps.SnapshotRestore,
 			"boot_from_disk_layers": true,
 		},
-		KitCount: kitCount,
 	})
 }
 
 // Instance API types
 
-type createInstanceRequest struct {
-	Command     []string `json:"command"`
-	ExposePorts []int    `json:"expose_ports"`
+type exposeRequest struct {
+	Port     int    `json:"port"`
+	Protocol string `json:"protocol,omitempty"`
 }
 
-type instanceResponse struct {
-	ID          string   `json:"id"`
-	State       string   `json:"state"`
-	Command     []string `json:"command"`
-	ExposePorts []int    `json:"expose_ports"`
-	RouterAddr  string   `json:"router_addr,omitempty"`
+type createInstanceRequest struct {
+	ImageRef  string            `json:"image_ref,omitempty"`
+	Command   []string          `json:"command"`
+	Exposes   []exposeRequest   `json:"exposes,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	Handle    string            `json:"handle,omitempty"`
+	Workspace string            `json:"workspace,omitempty"`
 }
 
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
@@ -175,32 +145,80 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "command is required")
 		return
 	}
-	if len(req.ExposePorts) == 0 {
-		writeError(w, http.StatusBadRequest, "expose_ports is required")
-		return
-	}
 
 	id := fmt.Sprintf("inst-%d", time.Now().UnixNano())
 
 	// Build PortExpose list
 	var exposePorts []vmm.PortExpose
-	for _, p := range req.ExposePorts {
+	for _, e := range req.Exposes {
+		proto := e.Protocol
+		if proto == "" {
+			proto = "http"
+		}
 		exposePorts = append(exposePorts, vmm.PortExpose{
-			GuestPort: p,
-			Protocol:  "http",
+			GuestPort: e.Port,
+			Protocol:  proto,
 		})
 	}
 
+	// Build options
+	var opts []lifecycle.InstanceOption
+	if req.Handle != "" {
+		opts = append(opts, lifecycle.WithHandle(req.Handle))
+	}
+	if req.ImageRef != "" {
+		opts = append(opts, lifecycle.WithImageRef(req.ImageRef))
+	}
+	if len(req.Env) > 0 {
+		// Merge workspace secrets into env (workspace secrets as base, explicit env overrides)
+		env := make(map[string]string)
+		if s.secretStore != nil {
+			wsSecrets, _ := s.registry.ListWorkspaceSecrets()
+			for _, sec := range wsSecrets {
+				val, err := s.secretStore.DecryptString(sec.EncryptedValue)
+				if err == nil {
+					env[sec.Name] = val
+				}
+			}
+		}
+		for k, v := range req.Env {
+			env[k] = v
+		}
+		opts = append(opts, lifecycle.WithEnv(env))
+	} else if s.secretStore != nil {
+		// Even without explicit env, inject workspace secrets
+		env := make(map[string]string)
+		wsSecrets, _ := s.registry.ListWorkspaceSecrets()
+		for _, sec := range wsSecrets {
+			val, err := s.secretStore.DecryptString(sec.EncryptedValue)
+			if err == nil {
+				env[sec.Name] = val
+			}
+		}
+		if len(env) > 0 {
+			opts = append(opts, lifecycle.WithEnv(env))
+		}
+	}
+	if req.Workspace != "" {
+		opts = append(opts, lifecycle.WithWorkspace(req.Workspace))
+	}
+
 	// Create in lifecycle manager
-	s.lifecycle.CreateInstance(id, req.Command, exposePorts)
+	s.lifecycle.CreateInstance(id, req.Command, exposePorts, opts...)
 
 	// Persist to registry
 	if s.registry != nil {
+		portInts := make([]int, len(exposePorts))
+		for i, p := range exposePorts {
+			portInts[i] = p.GuestPort
+		}
 		regInst := &registry.Instance{
 			ID:          id,
 			State:       "stopped",
 			Command:     req.Command,
-			ExposePorts: req.ExposePorts,
+			ExposePorts: portInts,
+			Handle:      req.Handle,
+			ImageRef:    req.ImageRef,
 			CreatedAt:   time.Now(),
 			UpdatedAt:   time.Now(),
 		}
@@ -211,25 +229,44 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 
 	// Boot the instance
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 		if err := s.lifecycle.EnsureInstance(ctx, id); err != nil {
 			log.Printf("instance %s boot failed: %v", id, err)
 		}
 	}()
 
-	writeJSON(w, http.StatusCreated, instanceResponse{
-		ID:          id,
-		State:       "starting",
-		Command:     req.Command,
-		ExposePorts: req.ExposePorts,
-		RouterAddr:  s.cfg.RouterAddr,
-	})
+	resp := map[string]interface{}{
+		"id":         id,
+		"state":      "starting",
+		"command":    req.Command,
+		"router_addr": s.cfg.RouterAddr,
+	}
+	if req.Handle != "" {
+		resp["handle"] = req.Handle
+	}
+	if req.ImageRef != "" {
+		resp["image_ref"] = req.ImageRef
+	}
+	if len(exposePorts) > 0 {
+		ports := make([]int, len(exposePorts))
+		for i, p := range exposePorts {
+			ports[i] = p.GuestPort
+		}
+		resp["expose_ports"] = ports
+	}
+
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 	id := pathParam(r, "id")
+
+	// Try by ID first, then by handle
 	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
 	if inst == nil {
 		writeError(w, http.StatusNotFound, "instance not found")
 		return
@@ -239,11 +276,16 @@ func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 		"id":                inst.ID,
 		"state":             inst.State,
 		"command":           inst.Command,
-		"app_id":            inst.AppID,
-		"release_id":        inst.ReleaseID,
 		"created_at":        inst.CreatedAt.Format(time.RFC3339),
 		"last_active_at":    s.lifecycle.LastActivity(inst.ID).Format(time.RFC3339),
 		"active_connections": s.lifecycle.ActiveConns(inst.ID),
+	}
+
+	if inst.HandleAlias != "" {
+		resp["handle"] = inst.HandleAlias
+	}
+	if inst.ImageRef != "" {
+		resp["image_ref"] = inst.ImageRef
 	}
 
 	if len(inst.ExposePorts) > 0 {
@@ -274,15 +316,21 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 
 	result := make([]map[string]interface{}, 0, len(instances))
 	for _, inst := range instances {
-		result = append(result, map[string]interface{}{
+		entry := map[string]interface{}{
 			"id":                inst.ID,
 			"state":             inst.State,
-			"app_id":            inst.AppID,
 			"command":           inst.Command,
 			"created_at":        inst.CreatedAt.Format(time.RFC3339),
 			"last_active_at":    s.lifecycle.LastActivity(inst.ID).Format(time.RFC3339),
 			"active_connections": s.lifecycle.ActiveConns(inst.ID),
-		})
+		}
+		if inst.HandleAlias != "" {
+			entry["handle"] = inst.HandleAlias
+		}
+		if inst.ImageRef != "" {
+			entry["image_ref"] = inst.ImageRef
+		}
+		result = append(result, entry)
 	}
 
 	writeJSON(w, http.StatusOK, result)
@@ -290,7 +338,12 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleInstanceLogs(w http.ResponseWriter, r *http.Request) {
 	id := pathParam(r, "id")
+
+	// Resolve by ID or handle
 	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
 	if inst == nil {
 		writeError(w, http.StatusNotFound, "instance not found")
 		return
@@ -310,7 +363,7 @@ func (s *Server) handleInstanceLogs(w http.ResponseWriter, r *http.Request) {
 		fmt.Sscanf(tailStr, "%d", &tail)
 	}
 
-	il := s.logStore.Get(id)
+	il := s.logStore.Get(inst.ID)
 	if il == nil {
 		// No logs yet — return empty
 		w.Header().Set("Content-Type", "application/x-ndjson")
@@ -363,6 +416,16 @@ func (s *Server) handleInstanceLogs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleExecInstance(w http.ResponseWriter, r *http.Request) {
 	id := pathParam(r, "id")
 
+	// Resolve by ID or handle
+	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
 	var req struct {
 		Command []string          `json:"command"`
 		Env     map[string]string `json:"env,omitempty"`
@@ -376,7 +439,7 @@ func (s *Server) handleExecInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	execID, startedAt, doneCh, err := s.lifecycle.ExecInstance(r.Context(), id, req.Command, req.Env)
+	execID, startedAt, doneCh, err := s.lifecycle.ExecInstance(r.Context(), inst.ID, req.Command, req.Env)
 	if err != nil {
 		if err == lifecycle.ErrInstanceStopped {
 			writeError(w, http.StatusConflict, "instance is stopped")
@@ -398,7 +461,7 @@ func (s *Server) handleExecInstance(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Subscribe to logs filtered by exec_id
-	il := s.logStore.Get(id)
+	il := s.logStore.Get(inst.ID)
 	if il == nil {
 		// Wait for done even without logs
 		select {
@@ -453,6 +516,24 @@ func (s *Server) handleExecInstance(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handlePauseInstance(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+	if err := s.lifecycle.PauseInstance(id); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "paused"})
+}
+
+func (s *Server) handleResumeInstance(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+	if err := s.lifecycle.ResumeInstance(id); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "running"})
+}
+
 func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 	id := pathParam(r, "id")
 	if err := s.lifecycle.StopInstance(id); err != nil {
@@ -465,6 +546,79 @@ func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
+}
+
+// Secret handlers (workspace-scoped only)
+
+type setSecretRequest struct {
+	Value string `json:"value"`
+}
+
+type secretResponse struct {
+	Name      string `json:"name"`
+	Scope     string `json:"scope"`
+	CreatedAt string `json:"created_at"`
+}
+
+func (s *Server) handleSetWorkspaceSecret(w http.ResponseWriter, r *http.Request) {
+	name := pathParam(r, "name")
+
+	var req setSecretRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
+		return
+	}
+	if req.Value == "" {
+		writeError(w, http.StatusBadRequest, "value is required")
+		return
+	}
+
+	encrypted, err := s.secretStore.EncryptString(req.Value)
+	if err != nil {
+		log.Printf("encrypt secret: %v", err)
+		writeError(w, http.StatusInternalServerError, "encryption failed")
+		return
+	}
+
+	secret := &registry.Secret{
+		ID:             fmt.Sprintf("sec-%d", time.Now().UnixNano()),
+		AppID:          "",
+		Name:           name,
+		EncryptedValue: encrypted,
+		Scope:          "per_workspace",
+		CreatedAt:      time.Now(),
+	}
+
+	if err := s.registry.SaveSecret(secret); err != nil {
+		log.Printf("save workspace secret: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to save secret")
+		return
+	}
+
+	log.Printf("workspace secret set: %s", name)
+	writeJSON(w, http.StatusOK, secretResponse{
+		Name:      secret.Name,
+		Scope:     secret.Scope,
+		CreatedAt: secret.CreatedAt.Format(time.RFC3339),
+	})
+}
+
+func (s *Server) handleListWorkspaceSecrets(w http.ResponseWriter, r *http.Request) {
+	secrets, err := s.registry.ListWorkspaceSecrets()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("list secrets: %v", err))
+		return
+	}
+
+	resp := make([]secretResponse, 0, len(secrets))
+	for _, sec := range secrets {
+		resp = append(resp, secretResponse{
+			Name:      sec.Name,
+			Scope:     sec.Scope,
+			CreatedAt: sec.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // writeJSON writes a JSON response.
@@ -480,7 +634,6 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 // pathParam extracts a path parameter from the request.
-// For Go 1.22+ with "GET /v1/tasks/{id}" patterns.
 func pathParam(r *http.Request, name string) string {
 	return r.PathValue(name)
 }

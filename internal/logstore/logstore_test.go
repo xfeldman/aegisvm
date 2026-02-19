@@ -11,7 +11,7 @@ import (
 func TestRingBufferEvictionByCount(t *testing.T) {
 	dir := t.TempDir()
 	s := NewStore(dir)
-	il := s.GetOrCreate("inst-1", "app-1", "rel-1")
+	il := s.GetOrCreate("inst-1")
 
 	// Fill ring buffer beyond maxLines
 	for i := 0; i < maxLines+100; i++ {
@@ -27,7 +27,7 @@ func TestRingBufferEvictionByCount(t *testing.T) {
 func TestRingBufferEvictionByBytes(t *testing.T) {
 	dir := t.TempDir()
 	s := NewStore(dir)
-	il := s.GetOrCreate("inst-2", "", "")
+	il := s.GetOrCreate("inst-2")
 
 	// Write entries with large lines to exceed byte cap
 	bigLine := strings.Repeat("x", 10000)
@@ -48,7 +48,7 @@ func TestRingBufferEvictionByBytes(t *testing.T) {
 func TestFilePersistence(t *testing.T) {
 	dir := t.TempDir()
 	s := NewStore(dir)
-	il := s.GetOrCreate("inst-3", "app-1", "rel-1")
+	il := s.GetOrCreate("inst-3")
 
 	il.Append("stdout", "hello", "", SourceServer)
 	il.Append("stderr", "world", "", SourceServer)
@@ -70,11 +70,11 @@ func TestFilePersistence(t *testing.T) {
 func TestFileRotation(t *testing.T) {
 	dir := t.TempDir()
 	s := NewStore(dir)
-	il := s.GetOrCreate("inst-4", "", "")
+	il := s.GetOrCreate("inst-4")
 
 	// Write enough data to trigger rotation
 	bigLine := strings.Repeat("a", 100000) // 100KB per line
-	for i := 0; i < 120; i++ { // ~12MB total > maxFileBytes
+	for i := 0; i < 120; i++ {             // ~12MB total > maxFileBytes
 		il.Append("stdout", bigLine, "", SourceServer)
 	}
 
@@ -88,7 +88,7 @@ func TestFileRotation(t *testing.T) {
 func TestSubscribeAndRead(t *testing.T) {
 	dir := t.TempDir()
 	s := NewStore(dir)
-	il := s.GetOrCreate("inst-5", "", "")
+	il := s.GetOrCreate("inst-5")
 
 	// Add some entries before subscribing
 	il.Append("stdout", "before-1", "", SourceServer)
@@ -117,7 +117,7 @@ func TestSubscribeAndRead(t *testing.T) {
 func TestReadSinceAndTail(t *testing.T) {
 	dir := t.TempDir()
 	s := NewStore(dir)
-	il := s.GetOrCreate("inst-6", "", "")
+	il := s.GetOrCreate("inst-6")
 
 	t1 := time.Now()
 	time.Sleep(10 * time.Millisecond)
@@ -151,7 +151,7 @@ func TestReadSinceAndTail(t *testing.T) {
 func TestRemove(t *testing.T) {
 	dir := t.TempDir()
 	s := NewStore(dir)
-	il := s.GetOrCreate("inst-7", "", "")
+	il := s.GetOrCreate("inst-7")
 	il.Append("stdout", "test", "", SourceServer)
 
 	filePath := filepath.Join(dir, "inst-7.ndjson")
@@ -172,16 +172,15 @@ func TestRemove(t *testing.T) {
 func TestSourceField(t *testing.T) {
 	dir := t.TempDir()
 	s := NewStore(dir)
-	il := s.GetOrCreate("inst-src", "", "")
+	il := s.GetOrCreate("inst-src")
 
-	il.Append("stdout", "booting", "", SourceBoot)
 	il.Append("stdout", "serving", "", SourceServer)
 	il.Append("stdout", "exec-out", "exec-1", SourceExec)
 	il.Append("stdout", "lifecycle", "", SourceSystem)
 
 	entries := il.Read(time.Time{}, 0)
-	if len(entries) != 4 {
-		t.Fatalf("expected 4 entries, got %d", len(entries))
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(entries))
 	}
 
 	expected := []struct {
@@ -189,7 +188,6 @@ func TestSourceField(t *testing.T) {
 		source string
 		execID string
 	}{
-		{"booting", SourceBoot, ""},
 		{"serving", SourceServer, ""},
 		{"exec-out", SourceExec, "exec-1"},
 		{"lifecycle", SourceSystem, ""},
@@ -212,8 +210,8 @@ func TestGetOrCreateIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	s := NewStore(dir)
 
-	il1 := s.GetOrCreate("inst-8", "app-1", "rel-1")
-	il2 := s.GetOrCreate("inst-8", "app-1", "rel-1")
+	il1 := s.GetOrCreate("inst-8")
+	il2 := s.GetOrCreate("inst-8")
 
 	if il1 != il2 {
 		t.Fatal("GetOrCreate should return the same InstanceLog for the same ID")

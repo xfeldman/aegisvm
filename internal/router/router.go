@@ -1,4 +1,4 @@
-// Package router provides the HTTP reverse proxy that fronts serve-mode instances.
+// Package router provides the HTTP reverse proxy that fronts instances.
 // It listens on a local port (default 127.0.0.1:8099) and proxies incoming
 // requests to the VM's mapped host port. It handles wake-on-connect (resuming
 // paused VMs), connection tracking, and WebSocket upgrades.
@@ -20,26 +20,19 @@ import (
 	"github.com/xfeldman/aegis/internal/lifecycle"
 )
 
-// AppResolver looks up an app by name or ID. Used for multi-app routing.
-type AppResolver interface {
-	GetAppByName(name string) (appID string, ok bool)
-}
-
-// Router is the HTTP reverse proxy for serve-mode instances.
+// Router is the HTTP reverse proxy for instances.
 type Router struct {
-	lm       *lifecycle.Manager
-	addr     string
-	server   *http.Server
-	resolver AppResolver
-	mu       sync.Mutex
+	lm     *lifecycle.Manager
+	addr   string
+	server *http.Server
+	mu     sync.Mutex
 }
 
 // New creates a new router.
-func New(lm *lifecycle.Manager, addr string, resolver AppResolver) *Router {
+func New(lm *lifecycle.Manager, addr string) *Router {
 	r := &Router{
-		lm:       lm,
-		addr:     addr,
-		resolver: resolver,
+		lm:   lm,
+		addr: addr,
 	}
 	r.server = &http.Server{
 		Addr:    addr,
@@ -77,15 +70,7 @@ func (r *Router) Addr() string {
 }
 
 func (r *Router) handleRequest(w http.ResponseWriter, req *http.Request) {
-	// M2: try app-based routing via path prefix or X-Aegis-App header
 	inst := r.resolveInstance(req)
-	if inst == nil {
-		// Fall back to default instance (M1 backward compat)
-		if r.lm.InstanceCount() > 1 {
-			log.Printf("router: ambiguous request to %s with %d active instances — using default fallback. Use /app/{name}/... or X-Aegis-App header for explicit routing.", req.URL.Path, r.lm.InstanceCount())
-		}
-		inst = r.lm.GetDefaultInstance()
-	}
 	if inst == nil {
 		http.Error(w, "No active instance", http.StatusServiceUnavailable)
 		return
@@ -97,7 +82,8 @@ func (r *Router) handleRequest(w http.ResponseWriter, req *http.Request) {
 
 	if err := r.lm.EnsureInstance(ctx, inst.ID); err != nil {
 		log.Printf("router: ensure instance %s: %v", inst.ID, err)
-		r.serveLoadingPage(w, req, err)
+		w.Header().Set("Retry-After", "3")
+		http.Error(w, fmt.Sprintf("Service unavailable: %v", err), http.StatusServiceUnavailable)
 		return
 	}
 
@@ -134,40 +120,12 @@ func (r *Router) handleRequest(w http.ResponseWriter, req *http.Request) {
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("router proxy error: %v", err)
-			http.Error(w, "Bad Gateway", http.StatusBadGateway)
+			w.Header().Set("Retry-After", "3")
+			http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
 		},
 	}
 
 	proxy.ServeHTTP(w, req)
-}
-
-func (r *Router) serveLoadingPage(w http.ResponseWriter, req *http.Request, bootErr error) {
-	// If client accepts HTML, serve a loading page with meta refresh
-	if strings.Contains(req.Header.Get("Accept"), "text/html") {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Retry-After", "3")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		fmt.Fprintf(w, `<!DOCTYPE html>
-<html>
-<head>
-  <meta http-equiv="refresh" content="3">
-  <title>Starting...</title>
-  <style>body{font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#f5f5f5}
-  .c{text-align:center;color:#666}h1{font-size:1.5em}</style>
-</head>
-<body>
-  <div class="c">
-    <h1>Starting instance...</h1>
-    <p>This page will refresh automatically.</p>
-  </div>
-</body>
-</html>`)
-		return
-	}
-
-	// Non-HTML clients get 503 with Retry-After
-	w.Header().Set("Retry-After", "3")
-	http.Error(w, fmt.Sprintf("Instance starting: %v", bootErr), http.StatusServiceUnavailable)
 }
 
 func (r *Router) handleWebSocket(w http.ResponseWriter, req *http.Request, target string) {
@@ -217,45 +175,50 @@ func (r *Router) handleWebSocket(w http.ResponseWriter, req *http.Request, targe
 	<-done
 }
 
-// resolveInstance attempts to find an instance for a request using app-aware routing.
+// resolveInstance finds an instance for a request.
 // Resolution order:
-//  1. Path prefix: /app/{name}/... → strip prefix, route to app
-//  2. X-Aegis-App header → route to named app
-//  3. Fall through to default instance (caller handles this)
+//  1. X-Aegis-Instance header → route to instance by ID
+//  2. Path prefix: /{handle}/... → strip handle, route to instance by handle
+//  3. Fall back to default instance if only one exists
 func (r *Router) resolveInstance(req *http.Request) *lifecycle.Instance {
-	if r.resolver == nil {
-		return nil
+	// 1. Header-based routing: X-Aegis-Instance
+	if instID := req.Header.Get("X-Aegis-Instance"); instID != "" {
+		return r.lm.GetInstance(instID)
 	}
 
-	// 1. Path-based routing: /app/{name}/...
-	if strings.HasPrefix(req.URL.Path, "/app/") {
-		rest := strings.TrimPrefix(req.URL.Path, "/app/")
-		slashIdx := strings.IndexByte(rest, '/')
-		var appName string
+	// 2. Path-based routing: /{handle}/...
+	if req.URL.Path != "/" && req.URL.Path != "" {
+		path := strings.TrimPrefix(req.URL.Path, "/")
+		slashIdx := strings.IndexByte(path, '/')
+		var handle string
 		if slashIdx >= 0 {
-			appName = rest[:slashIdx]
-			// Strip the /app/{name} prefix — backend sees the remainder
-			req.URL.Path = rest[slashIdx:]
+			handle = path[:slashIdx]
 		} else {
-			appName = rest
-			req.URL.Path = "/"
+			handle = path
 		}
 
-		if appName != "" {
-			if appID, ok := r.resolver.GetAppByName(appName); ok {
-				return r.lm.GetInstanceByApp(appID)
+		if handle != "" {
+			inst := r.lm.GetInstanceByHandle(handle)
+			if inst != nil {
+				// Strip the handle prefix
+				if slashIdx >= 0 {
+					req.URL.Path = path[slashIdx:]
+				} else {
+					req.URL.Path = "/"
+				}
+				return inst
 			}
 		}
 	}
 
-	// 2. Header-based routing: X-Aegis-App
-	appName := req.Header.Get("X-Aegis-App")
-	if appName != "" {
-		if appID, ok := r.resolver.GetAppByName(appName); ok {
-			return r.lm.GetInstanceByApp(appID)
-		}
+	// 3. Default instance fallback
+	count := r.lm.InstanceCount()
+	if count == 1 {
+		return r.lm.GetDefaultInstance()
 	}
-
+	if count > 1 {
+		log.Printf("router: ambiguous request to %s with %d instances — use /{handle}/... path or X-Aegis-Instance header", req.URL.Path, count)
+	}
 	return nil
 }
 

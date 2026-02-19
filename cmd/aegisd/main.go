@@ -1,7 +1,7 @@
 // aegisd is the Aegis daemon — the local control plane for microVM management.
 //
-// It listens on a unix socket and provides an HTTP API for task execution,
-// instance management, and (in later milestones) routing and kit integration.
+// It listens on a unix socket and provides an HTTP API for instance management,
+// routing, and secret storage.
 package main
 
 import (
@@ -67,16 +67,16 @@ func main() {
 
 	// Initialize image cache and overlay
 	imgCache := image.NewCache(cfg.ImageCacheDir)
-	ov := overlay.NewCopyOverlay(cfg.ReleasesDir)
+	ov := overlay.NewCopyOverlay(cfg.OverlaysDir)
 
-	// Clean up stale task overlays and incomplete staging dirs from previous crashes
+	// Clean up stale overlays from previous crashes
 	ov.CleanStale(1 * time.Hour)
 
 	// Create log store
 	ls := logstore.NewStore(cfg.LogsDir)
 
-	// Create lifecycle manager
-	lm := lifecycle.NewManager(backend, cfg, ls)
+	// Create lifecycle manager (with image cache + overlay for image rootfs prep)
+	lm := lifecycle.NewManager(backend, cfg, ls, imgCache, ov)
 	lm.OnStateChange(func(id, state string) {
 		if err := reg.UpdateState(id, state); err != nil {
 			log.Printf("registry state update: %v", err)
@@ -90,14 +90,14 @@ func main() {
 	}
 	log.Printf("secret store: %s", cfg.MasterKeyPath)
 
-	// Start router with app resolver
-	rtr := router.New(lm, cfg.RouterAddr, &registryAppResolver{db: reg})
+	// Start router (handle-based routing, no app resolver)
+	rtr := router.New(lm, cfg.RouterAddr)
 	if err := rtr.Start(); err != nil {
 		log.Fatalf("start router: %v", err)
 	}
 
 	// Start API server
-	server := api.NewServer(cfg, backend, lm, reg, imgCache, ov, ss, ls)
+	server := api.NewServer(cfg, backend, lm, reg, ss, ls)
 	if err := server.Start(); err != nil {
 		log.Fatalf("start API server: %v", err)
 	}
@@ -133,17 +133,4 @@ func main() {
 	os.Remove(cfg.SocketPath)
 
 	log.Println("aegisd stopped")
-}
-
-// registryAppResolver adapts the registry DB to the router.AppResolver interface.
-type registryAppResolver struct {
-	db *registry.DB
-}
-
-func (r *registryAppResolver) GetAppByName(name string) (string, bool) {
-	app, err := r.db.GetAppByName(name)
-	if err != nil || app == nil {
-		return "", false
-	}
-	return app.ID, true
 }

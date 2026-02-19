@@ -42,30 +42,19 @@ type rpcError struct {
 
 // RPC params/results
 
-type runTaskParams struct {
+type runParams struct {
 	Command []string          `json:"command"`
 	Env     map[string]string `json:"env,omitempty"`
 	Workdir string            `json:"workdir,omitempty"`
 }
 
-type runTaskResult struct {
-	ExitCode  int      `json:"exit_code"`
-	Artifacts []string `json:"artifacts,omitempty"`
+type runResult struct {
+	PID       int    `json:"pid"`
+	StartedAt string `json:"started_at"`
 }
 
 type healthResult struct {
 	Status string `json:"status"`
-}
-
-type startServerParams struct {
-	Command      []string          `json:"command"`
-	Env          map[string]string `json:"env,omitempty"`
-	Workdir      string            `json:"workdir,omitempty"`
-	ReadinessPort int              `json:"readiness_port"`
-}
-
-type startServerResult struct {
-	PID int `json:"pid"`
 }
 
 type logParams struct {
@@ -91,22 +80,34 @@ type execResult struct {
 	StartedAt string `json:"started_at"`
 }
 
-// serverTracker tracks running server processes for cleanup on shutdown.
-type serverTracker struct {
-	mu      sync.Mutex
-	servers []*exec.Cmd
+// processTracker tracks running processes for cleanup on shutdown.
+type processTracker struct {
+	mu        sync.Mutex
+	processes []*exec.Cmd
+	primary   *exec.Cmd // primary process started by `run` RPC
 }
 
-func (st *serverTracker) add(cmd *exec.Cmd) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	st.servers = append(st.servers, cmd)
+func (pt *processTracker) add(cmd *exec.Cmd) {
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
+	pt.processes = append(pt.processes, cmd)
 }
 
-func (st *serverTracker) killAll() {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	for _, cmd := range st.servers {
+func (pt *processTracker) setPrimary(cmd *exec.Cmd) bool {
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
+	if pt.primary != nil {
+		return false // already running
+	}
+	pt.primary = cmd
+	pt.processes = append(pt.processes, cmd)
+	return true
+}
+
+func (pt *processTracker) killAll() {
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
+	for _, cmd := range pt.processes {
 		if cmd.Process != nil {
 			cmd.Process.Kill()
 		}
@@ -117,7 +118,7 @@ func (st *serverTracker) killAll() {
 func handleConnection(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
-	tracker := &serverTracker{}
+	tracker := &processTracker{}
 	defer tracker.killAll()
 
 	scanner := bufio.NewScanner(conn)
@@ -167,13 +168,10 @@ func handleConnection(ctx context.Context, conn net.Conn) {
 }
 
 // dispatch routes a JSON-RPC request to the appropriate handler.
-func dispatch(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *serverTracker) *rpcResponse {
+func dispatch(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *processTracker) *rpcResponse {
 	switch req.Method {
-	case "runTask":
-		return handleRunTask(ctx, req, conn)
-
-	case "startServer":
-		return handleStartServer(ctx, req, conn, tracker)
+	case "run":
+		return handleRun(ctx, req, conn, tracker)
 
 	case "exec":
 		return handleExec(ctx, req, conn, tracker)
@@ -205,9 +203,11 @@ func dispatch(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *serv
 	}
 }
 
-// handleRunTask executes a command and streams stdout/stderr as JSON-RPC notifications.
-func handleRunTask(ctx context.Context, req *rpcRequest, conn net.Conn) *rpcResponse {
-	var params runTaskParams
+// handleRun starts the primary process asynchronously, streaming output as log
+// notifications. When the process exits, it sends a processExited notification.
+// Only one primary process is allowed per instance.
+func handleRun(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *processTracker) *rpcResponse {
+	var params runParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return &rpcResponse{
 			JSONRPC: "2.0",
@@ -230,15 +230,27 @@ func handleRunTask(ctx context.Context, req *rpcRequest, conn net.Conn) *rpcResp
 		}
 	}
 
-	log.Printf("runTask: %v", params.Command)
+	log.Printf("run: %v", params.Command)
 
-	exitCode, err := executeCommand(ctx, params, conn)
+	cmd, err := startPrimaryProcess(ctx, params, conn)
 	if err != nil {
 		return &rpcResponse{
 			JSONRPC: "2.0",
 			Error: &rpcError{
 				Code:    -32000,
-				Message: fmt.Sprintf("execution error: %v", err),
+				Message: fmt.Sprintf("start process: %v", err),
+			},
+			ID: req.ID,
+		}
+	}
+
+	if !tracker.setPrimary(cmd) {
+		cmd.Process.Kill()
+		return &rpcResponse{
+			JSONRPC: "2.0",
+			Error: &rpcError{
+				Code:    -32000,
+				Message: "primary process already running",
 			},
 			ID: req.ID,
 		}
@@ -246,91 +258,17 @@ func handleRunTask(ctx context.Context, req *rpcRequest, conn net.Conn) *rpcResp
 
 	return &rpcResponse{
 		JSONRPC: "2.0",
-		Result: runTaskResult{
-			ExitCode: exitCode,
+		Result: runResult{
+			PID:       cmd.Process.Pid,
+			StartedAt: time.Now().Format(time.RFC3339),
 		},
 		ID: req.ID,
 	}
 }
 
-// handleStartServer starts a long-lived server process, polls its readiness port,
-// and sends a serverReady notification when the port accepts connections.
-func handleStartServer(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *serverTracker) *rpcResponse {
-	var params startServerParams
-	if err := json.Unmarshal(req.Params, &params); err != nil {
-		return &rpcResponse{
-			JSONRPC: "2.0",
-			Error: &rpcError{
-				Code:    -32602,
-				Message: fmt.Sprintf("invalid params: %v", err),
-			},
-			ID: req.ID,
-		}
-	}
-
-	if len(params.Command) == 0 {
-		return &rpcResponse{
-			JSONRPC: "2.0",
-			Error: &rpcError{
-				Code:    -32602,
-				Message: "command is required",
-			},
-			ID: req.ID,
-		}
-	}
-
-	if params.ReadinessPort <= 0 {
-		return &rpcResponse{
-			JSONRPC: "2.0",
-			Error: &rpcError{
-				Code:    -32602,
-				Message: "readiness_port is required",
-			},
-			ID: req.ID,
-		}
-	}
-
-	log.Printf("startServer: %v (readiness port %d)", params.Command, params.ReadinessPort)
-
-	cmd, err := startServerProcess(ctx, params, conn)
-	if err != nil {
-		return &rpcResponse{
-			JSONRPC: "2.0",
-			Error: &rpcError{
-				Code:    -32000,
-				Message: fmt.Sprintf("start server: %v", err),
-			},
-			ID: req.ID,
-		}
-	}
-
-	tracker.add(cmd)
-
-	// Poll readiness in background, send notification when ready
-	go func() {
-		if err := waitForPort(params.ReadinessPort, 30*time.Second); err != nil {
-			log.Printf("server readiness check failed: %v", err)
-			sendNotification(conn, "serverFailed", map[string]string{
-				"error": err.Error(),
-			})
-			return
-		}
-		log.Printf("server ready on port %d", params.ReadinessPort)
-		sendNotification(conn, "serverReady", map[string]interface{}{
-			"port": params.ReadinessPort,
-		})
-	}()
-
-	return &rpcResponse{
-		JSONRPC: "2.0",
-		Result:  startServerResult{PID: cmd.Process.Pid},
-		ID:      req.ID,
-	}
-}
-
 // handleExec starts a command asynchronously in the guest, streaming output as log
 // notifications with exec_id, and sending execDone when the process exits.
-func handleExec(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *serverTracker) *rpcResponse {
+func handleExec(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *processTracker) *rpcResponse {
 	var params execParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return &rpcResponse{

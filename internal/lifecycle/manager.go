@@ -18,12 +18,15 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/xfeldman/aegis/internal/config"
+	"github.com/xfeldman/aegis/internal/image"
 	"github.com/xfeldman/aegis/internal/logstore"
+	"github.com/xfeldman/aegis/internal/overlay"
 	"github.com/xfeldman/aegis/internal/vmm"
 )
 
@@ -40,7 +43,7 @@ const (
 	StatePaused   = "paused"
 )
 
-// Instance represents a managed serve-mode instance.
+// Instance represents a managed instance.
 type Instance struct {
 	mu sync.Mutex
 
@@ -52,9 +55,12 @@ type Instance struct {
 	Channel     vmm.ControlChannel
 	Endpoints   []vmm.HostEndpoint
 
-	// App/release association (M2+)
-	AppID         string
-	ReleaseID     string
+	// HandleAlias is a user-friendly name for the instance.
+	HandleAlias string
+
+	// ImageRef is the OCI image reference (e.g. "python:3.12-alpine").
+	ImageRef string
+
 	RootfsPath    string // if set, used instead of cfg.BaseRootfsPath
 	WorkspacePath string // if set, passed to VMConfig.WorkspacePath
 
@@ -65,9 +71,10 @@ type Instance struct {
 	activeConns int
 
 	// Idle management
-	idleTimer      *time.Timer
-	terminateTimer *time.Timer
-	lastActivity   time.Time
+	idleTimer *time.Timer
+	stopTimer *time.Timer
+
+	lastActivity time.Time
 
 	// Demuxer for persistent channel Recv loop (nil when stopped)
 	demuxer    *channelDemuxer
@@ -98,17 +105,22 @@ type Manager struct {
 	cfg       *config.Config
 	logStore  *logstore.Store
 
+	imageCache *image.Cache
+	overlay    overlay.Overlay
+
 	// Callbacks
 	onStateChange func(id, state string)
 }
 
 // NewManager creates a lifecycle manager.
-func NewManager(v vmm.VMM, cfg *config.Config, ls *logstore.Store) *Manager {
+func NewManager(v vmm.VMM, cfg *config.Config, ls *logstore.Store, imgCache *image.Cache, ov overlay.Overlay) *Manager {
 	return &Manager{
-		instances: make(map[string]*Instance),
-		vmm:       v,
-		cfg:       cfg,
-		logStore:  ls,
+		instances:  make(map[string]*Instance),
+		vmm:        v,
+		cfg:        cfg,
+		logStore:   ls,
+		imageCache: imgCache,
+		overlay:    ov,
 	}
 }
 
@@ -120,11 +132,17 @@ func (m *Manager) OnStateChange(fn func(id, state string)) {
 // InstanceOption configures an instance at creation time.
 type InstanceOption func(*Instance)
 
-// WithApp sets the app and release association.
-func WithApp(appID, releaseID string) InstanceOption {
+// WithHandle sets a user-friendly handle alias.
+func WithHandle(h string) InstanceOption {
 	return func(inst *Instance) {
-		inst.AppID = appID
-		inst.ReleaseID = releaseID
+		inst.HandleAlias = h
+	}
+}
+
+// WithImageRef sets the OCI image reference.
+func WithImageRef(ref string) InstanceOption {
+	return func(inst *Instance) {
+		inst.ImageRef = ref
 	}
 }
 
@@ -216,6 +234,19 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 	inst.mu.Unlock()
 	m.notifyStateChange(inst.ID, StateStarting)
 
+	// If image ref is set but no rootfs yet, prepare it
+	if inst.ImageRef != "" && inst.RootfsPath == "" {
+		rootfs, err := m.prepareImageRootfs(ctx, inst)
+		if err != nil {
+			inst.mu.Lock()
+			inst.State = StateStopped
+			inst.mu.Unlock()
+			m.notifyStateChange(inst.ID, StateStopped)
+			return fmt.Errorf("prepare image rootfs: %w", err)
+		}
+		inst.RootfsPath = rootfs
+	}
+
 	rootfsPath := m.cfg.BaseRootfsPath
 	if inst.RootfsPath != "" {
 		rootfsPath = inst.RootfsPath
@@ -253,13 +284,8 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 
 	endpoints, _ := m.vmm.HostEndpoints(handle)
 
-	// Set up channels for boot coordination
-	readyCh := make(chan struct{}, 1)
-	failCh := make(chan error, 1)
-	var booted int32 // 0 = booting, 1 = ready
-
 	// Create log store entry for this instance
-	il := m.logStore.GetOrCreate(inst.ID, inst.AppID, inst.ReleaseID)
+	il := m.logStore.GetOrCreate(inst.ID)
 
 	// Create demuxer with notification handler
 	demux := newChannelDemuxer(ch, func(method string, params json.RawMessage) {
@@ -274,25 +300,15 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 				source := logstore.SourceServer
 				if lp.ExecID != "" {
 					source = logstore.SourceExec
-				} else if atomic.LoadInt32(&booted) == 0 {
-					source = logstore.SourceBoot
 				}
 				il.Append(lp.Stream, lp.Line, lp.ExecID, source)
 			}
-		case "serverReady":
-			atomic.StoreInt32(&booted, 1)
-			select {
-			case readyCh <- struct{}{}:
-			default:
+		case "processExited":
+			var pe struct {
+				ExitCode int `json:"exit_code"`
 			}
-		case "serverFailed":
-			var fp struct {
-				Error string `json:"error"`
-			}
-			json.Unmarshal(params, &fp)
-			select {
-			case failCh <- fmt.Errorf("server failed to start: %s", fp.Error):
-			default:
+			if json.Unmarshal(params, &pe) == nil {
+				go m.handleProcessExited(inst, pe.ExitCode)
 			}
 		case "execDone":
 			var ep struct {
@@ -312,15 +328,18 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		}
 	})
 
-	// Send startServer RPC via demuxer
+	// Send run RPC via demuxer
 	rpcCtx, rpcCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer rpcCancel()
 
-	resp, err := demux.Call(rpcCtx, "startServer", map[string]interface{}{
-		"command":        inst.Command,
-		"readiness_port": inst.ExposePorts[0].GuestPort,
-		"env":            inst.Env,
-	}, nextRPCID())
+	rpcParams := map[string]interface{}{
+		"command": inst.Command,
+	}
+	if len(inst.Env) > 0 {
+		rpcParams["env"] = inst.Env
+	}
+
+	resp, err := demux.Call(rpcCtx, "run", rpcParams, nextRPCID())
 	if err != nil {
 		demux.Stop()
 		ch.Close()
@@ -329,10 +348,10 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		inst.State = StateStopped
 		inst.mu.Unlock()
 		m.notifyStateChange(inst.ID, StateStopped)
-		return fmt.Errorf("startServer RPC: %w", err)
+		return fmt.Errorf("run RPC: %w", err)
 	}
 
-	// Check for error in startServer response
+	// Check for error in run response
 	var respObj struct {
 		Error *struct {
 			Message string `json:"message"`
@@ -346,56 +365,75 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		inst.State = StateStopped
 		inst.mu.Unlock()
 		m.notifyStateChange(inst.ID, StateStopped)
-		return fmt.Errorf("startServer failed: %s", respObj.Error.Message)
+		return fmt.Errorf("run failed: %s", respObj.Error.Message)
 	}
 
-	// Wait for serverReady notification
-	readyCtx, readyCancel := context.WithTimeout(ctx, 60*time.Second)
-	defer readyCancel()
+	// Instance is RUNNING immediately after run RPC succeeds (no readiness wait)
+	inst.mu.Lock()
+	inst.Handle = handle
+	inst.Channel = ch
+	inst.Endpoints = endpoints
+	inst.State = StateRunning
+	inst.lastActivity = time.Now()
+	inst.demuxer = demux
+	inst.logCapture = true
+	inst.mu.Unlock()
+	m.notifyStateChange(inst.ID, StateRunning)
+	m.startIdleTimer(inst)
+	log.Printf("instance %s: running (endpoints: %v)", inst.ID, endpoints)
+	return nil
+}
 
-	select {
-	case <-readyCh:
-		// Server is ready
-		inst.mu.Lock()
-		inst.Handle = handle
-		inst.Channel = ch
-		inst.Endpoints = endpoints
-		inst.State = StateRunning
-		inst.lastActivity = time.Now()
-		inst.demuxer = demux
-		inst.logCapture = true
+// handleProcessExited handles the processExited notification from the harness.
+// This is the primary process exit path — distinct from idle timeout (stopIdleInstance)
+// and explicit user stop (StopInstance).
+func (m *Manager) handleProcessExited(inst *Instance, exitCode int) {
+	inst.mu.Lock()
+	if inst.State != StateRunning && inst.State != StateStarting {
+		// Already stopped/paused by another path — nothing to do.
 		inst.mu.Unlock()
-		m.notifyStateChange(inst.ID, StateRunning)
-		m.startIdleTimer(inst)
-		log.Printf("instance %s: server ready (endpoints: %v)", inst.ID, endpoints)
-		return nil
-	case err := <-failCh:
-		demux.Stop()
-		ch.Close()
-		m.vmm.StopVM(handle)
-		inst.mu.Lock()
-		inst.State = StateStopped
-		inst.mu.Unlock()
-		m.notifyStateChange(inst.ID, StateStopped)
-		return err
-	case <-readyCtx.Done():
-		demux.Stop()
-		ch.Close()
-		m.vmm.StopVM(handle)
-		inst.mu.Lock()
-		inst.State = StateStopped
-		inst.mu.Unlock()
-		m.notifyStateChange(inst.ID, StateStopped)
-		return fmt.Errorf("waiting for serverReady: %w", readyCtx.Err())
-	case <-demux.Done():
-		ch.Close()
-		m.vmm.StopVM(handle)
-		inst.mu.Lock()
-		inst.State = StateStopped
-		inst.mu.Unlock()
-		m.notifyStateChange(inst.ID, StateStopped)
-		return fmt.Errorf("channel closed while waiting for serverReady")
+		return
 	}
+	handle := inst.Handle
+	demux := inst.demuxer
+
+	// Cancel timers
+	if inst.idleTimer != nil {
+		inst.idleTimer.Stop()
+		inst.idleTimer = nil
+	}
+	if inst.stopTimer != nil {
+		inst.stopTimer.Stop()
+		inst.stopTimer = nil
+	}
+
+	// Close exec waiters so handlers unblock
+	for eid, ch := range inst.execWaiters {
+		ch <- -1
+		close(ch)
+		delete(inst.execWaiters, eid)
+	}
+
+	inst.State = StateStopped
+	inst.Channel = nil
+	inst.Endpoints = nil
+	inst.demuxer = nil
+	inst.logCapture = false
+	inst.mu.Unlock()
+
+	log.Printf("instance %s: process exited (code=%d)", inst.ID, exitCode)
+
+	il := m.logStore.GetOrCreate(inst.ID)
+	il.Append("stdout", fmt.Sprintf("process exited (code=%d)", exitCode), "", logstore.SourceSystem)
+
+	m.notifyStateChange(inst.ID, StateStopped)
+
+	// Shutdown demuxer → VM (demuxer.Stop closes the channel)
+	if demux != nil {
+		demux.Stop()
+	}
+	m.vmm.StopVM(handle)
+	// Instance stays in the map with logs — removed only by explicit DELETE.
 }
 
 func nextRPCID() int64 {
@@ -419,9 +457,9 @@ func (m *Manager) resumeInstance(inst *Instance) error {
 	inst.mu.Lock()
 	inst.State = StateRunning
 	inst.lastActivity = time.Now()
-	if inst.terminateTimer != nil {
-		inst.terminateTimer.Stop()
-		inst.terminateTimer = nil
+	if inst.stopTimer != nil {
+		inst.stopTimer.Stop()
+		inst.stopTimer = nil
 	}
 	inst.mu.Unlock()
 	m.notifyStateChange(inst.ID, StateRunning)
@@ -527,13 +565,13 @@ func (m *Manager) pauseInstance(inst *Instance) {
 
 	// Start terminate timer
 	inst.mu.Lock()
-	inst.terminateTimer = time.AfterFunc(m.cfg.TerminateAfterIdle, func() {
-		m.terminateInstance(inst)
+	inst.stopTimer = time.AfterFunc(m.cfg.StopAfterIdle, func() {
+		m.stopIdleInstance(inst)
 	})
 	inst.mu.Unlock()
 }
 
-func (m *Manager) terminateInstance(inst *Instance) {
+func (m *Manager) stopIdleInstance(inst *Instance) {
 	inst.mu.Lock()
 	if inst.State != StatePaused {
 		inst.mu.Unlock()
@@ -590,19 +628,19 @@ func (m *Manager) GetInstance(id string) *Instance {
 	return m.instances[id]
 }
 
-// GetInstanceByApp returns the instance associated with an app ID, or nil.
-func (m *Manager) GetInstanceByApp(appID string) *Instance {
+// GetInstanceByHandle returns the instance with the given handle alias, or nil.
+func (m *Manager) GetInstanceByHandle(handle string) *Instance {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, inst := range m.instances {
-		if inst.AppID == appID {
+		if inst.HandleAlias == handle {
 			return inst
 		}
 	}
 	return nil
 }
 
-// GetDefaultInstance returns the first instance (for M1 single-instance routing).
+// GetDefaultInstance returns the first instance (for single-instance routing).
 func (m *Manager) GetDefaultInstance() *Instance {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -612,11 +650,60 @@ func (m *Manager) GetDefaultInstance() *Instance {
 	return nil
 }
 
+// prepareImageRootfs pulls an OCI image, creates an overlay, and injects the harness.
+func (m *Manager) prepareImageRootfs(ctx context.Context, inst *Instance) (string, error) {
+	if m.imageCache == nil || m.overlay == nil {
+		return "", fmt.Errorf("image cache or overlay not configured")
+	}
+
+	cachedDir, _, err := m.imageCache.GetOrPull(ctx, inst.ImageRef)
+	if err != nil {
+		return "", fmt.Errorf("pull image: %w", err)
+	}
+
+	overlayID := inst.ID
+	overlayDir, err := m.overlay.Create(ctx, cachedDir, overlayID)
+	if err != nil {
+		return "", fmt.Errorf("create overlay: %w", err)
+	}
+
+	harnessBin := filepath.Join(m.cfg.BinDir, "aegis-harness")
+	if err := image.InjectHarness(overlayDir, harnessBin); err != nil {
+		m.overlay.Remove(overlayID)
+		return "", fmt.Errorf("inject harness: %w", err)
+	}
+
+	return overlayDir, nil
+}
+
 // InstanceCount returns the number of active instances.
 func (m *Manager) InstanceCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.instances)
+}
+
+// PauseInstance explicitly pauses a running instance.
+func (m *Manager) PauseInstance(id string) error {
+	m.mu.Lock()
+	inst, ok := m.instances[id]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("instance %s not found", id)
+	}
+	m.pauseInstance(inst)
+	return nil
+}
+
+// ResumeInstance explicitly resumes a paused instance.
+func (m *Manager) ResumeInstance(id string) error {
+	m.mu.Lock()
+	inst, ok := m.instances[id]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("instance %s not found", id)
+	}
+	return m.resumeInstance(inst)
 }
 
 // StopInstance stops an instance immediately.
@@ -637,8 +724,8 @@ func (m *Manager) StopInstance(id string) error {
 	if inst.idleTimer != nil {
 		inst.idleTimer.Stop()
 	}
-	if inst.terminateTimer != nil {
-		inst.terminateTimer.Stop()
+	if inst.stopTimer != nil {
+		inst.stopTimer.Stop()
 	}
 	inst.State = StateStopped
 	inst.demuxer = nil

@@ -18,8 +18,7 @@ const (
 
 // Log sources identify where a log entry originated.
 const (
-	SourceBoot   = "boot"   // Pre-serverReady boot output
-	SourceServer = "server" // Main server process after ready
+	SourceServer = "server" // Main process output
 	SourceExec   = "exec"   // Exec command output
 	SourceSystem = "system" // Lifecycle events (harness, demuxer)
 )
@@ -31,8 +30,6 @@ type LogEntry struct {
 	Line       string    `json:"line"`
 	Source     string    `json:"source"`
 	InstanceID string    `json:"instance_id"`
-	AppID      string    `json:"app_id,omitempty"`
-	ReleaseID  string    `json:"release_id,omitempty"`
 	ExecID     string    `json:"exec_id,omitempty"`
 }
 
@@ -53,7 +50,7 @@ func NewStore(logsDir string) *Store {
 }
 
 // GetOrCreate returns the InstanceLog for the given instance, creating it if needed.
-func (s *Store) GetOrCreate(instanceID, appID, releaseID string) *InstanceLog {
+func (s *Store) GetOrCreate(instanceID string) *InstanceLog {
 	s.mu.RLock()
 	il, ok := s.logs[instanceID]
 	s.mu.RUnlock()
@@ -70,7 +67,7 @@ func (s *Store) GetOrCreate(instanceID, appID, releaseID string) *InstanceLog {
 	}
 
 	filePath := filepath.Join(s.logsDir, instanceID+".ndjson")
-	il = newInstanceLog(instanceID, appID, releaseID, filePath)
+	il = newInstanceLog(instanceID, filePath)
 	s.logs[instanceID] = il
 	return il
 }
@@ -103,8 +100,6 @@ func (s *Store) Remove(instanceID string) {
 type InstanceLog struct {
 	mu         sync.Mutex
 	instanceID string
-	appID      string
-	releaseID  string
 
 	// Ring buffer
 	entries    []LogEntry
@@ -121,11 +116,9 @@ type InstanceLog struct {
 	fileBytes int64
 }
 
-func newInstanceLog(instanceID, appID, releaseID, filePath string) *InstanceLog {
+func newInstanceLog(instanceID, filePath string) *InstanceLog {
 	il := &InstanceLog{
 		instanceID: instanceID,
-		appID:      appID,
-		releaseID:  releaseID,
 		entries:    make([]LogEntry, maxLines),
 		filePath:   filePath,
 	}
@@ -151,8 +144,6 @@ func (il *InstanceLog) Append(stream, line, execID, source string) {
 		Line:       line,
 		Source:     source,
 		InstanceID: il.instanceID,
-		AppID:      il.appID,
-		ReleaseID:  il.releaseID,
 		ExecID:     execID,
 	}
 
@@ -249,7 +240,7 @@ func (il *InstanceLog) Read(since time.Time, tail int) []LogEntry {
 }
 
 // Subscribe returns a channel for live log entries, existing buffered entries,
-// and an unsubscribe function. Pattern matches TaskStore.subscribeLogs.
+// and an unsubscribe function.
 func (il *InstanceLog) Subscribe() (ch chan LogEntry, existing []LogEntry, unsub func()) {
 	il.mu.Lock()
 	defer il.mu.Unlock()

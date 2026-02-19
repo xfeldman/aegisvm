@@ -35,10 +35,10 @@ type Config struct {
 	// ImageCacheDir is the directory for cached OCI image rootfs directories.
 	ImageCacheDir string
 
-	// ReleasesDir is the directory for release rootfs copies.
-	ReleasesDir string
+	// OverlaysDir is the directory for instance rootfs overlays.
+	OverlaysDir string
 
-	// WorkspacesDir is the directory for app workspace volumes.
+	// WorkspacesDir is the directory for workspace volumes.
 	WorkspacesDir string
 
 	// LogsDir is the directory for per-instance log files.
@@ -50,8 +50,8 @@ type Config struct {
 	// PauseAfterIdle is the duration after which an idle instance is paused (SIGSTOP).
 	PauseAfterIdle time.Duration
 
-	// TerminateAfterIdle is the duration after which a paused instance is terminated.
-	TerminateAfterIdle time.Duration
+	// StopAfterIdle is the duration after which a paused instance is stopped.
+	StopAfterIdle time.Duration
 }
 
 // DefaultConfig returns the default configuration.
@@ -70,12 +70,12 @@ func DefaultConfig() *Config {
 		RouterAddr:         "127.0.0.1:8099",
 		DBPath:             filepath.Join(aegisDir, "data", "aegis.db"),
 		ImageCacheDir:      filepath.Join(aegisDir, "data", "images"),
-		ReleasesDir:        filepath.Join(aegisDir, "data", "releases"),
+		OverlaysDir:        filepath.Join(aegisDir, "data", "overlays"),
 		WorkspacesDir:      filepath.Join(aegisDir, "data", "workspaces"),
 		LogsDir:            filepath.Join(aegisDir, "data", "logs"),
 		MasterKeyPath:      filepath.Join(aegisDir, "master.key"),
 		PauseAfterIdle:     60 * time.Second,
-		TerminateAfterIdle: 20 * time.Minute,
+		StopAfterIdle:      20 * time.Minute,
 	}
 }
 
@@ -86,7 +86,7 @@ func (c *Config) EnsureDirs() error {
 		filepath.Join(c.DataDir, "sockets"),
 		filepath.Dir(c.SocketPath),
 		c.ImageCacheDir,
-		c.ReleasesDir,
+		c.OverlaysDir,
 		c.WorkspacesDir,
 		c.LogsDir,
 	}
