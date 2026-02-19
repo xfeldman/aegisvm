@@ -146,6 +146,8 @@ cd sdk/python && python3 -m venv .venv && .venv/bin/pip install pytest
 - [Platform spec](specs/AEGIS_PLATFORM_SPEC.md) — architecture, lifecycle, APIs, security model
 - [Implementation kickoff](specs/IMPLEMENTATION_KICKOFF.md) — engineering decisions, milestones, project structure
 - [Implementation notes](specs/IMPLEMENTATION_NOTES.md) — M0-M3b post-implementation details and corrections
+- [Architectural pivot](specs/aegis_architectural_pivot_spec.md) — removing serve mode, instance-centric architecture
+- [Kit boundary](specs/KIT_BOUNDARY_SPEC.md) — responsibility split between core and kits
 - [Famiglia kit](specs/FAMIGLIA_KIT_SPEC.md) — team agents with chat and data integration
 - [OpenClaw kit](specs/OPENCLAW_KIT_SPEC.md) — multi-agent autonomous runtime
 
