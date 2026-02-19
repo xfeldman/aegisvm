@@ -1314,13 +1314,12 @@ func cmdExec() {
 			return
 		}
 
+		// For exec, don't show [exec] prefix — it's redundant
 		line, _ := entry["line"].(string)
 		stream, _ := entry["stream"].(string)
-
-		switch stream {
-		case "stderr":
+		if stream == "stderr" {
 			fmt.Fprintln(os.Stderr, line)
-		default:
+		} else {
 			fmt.Println(line)
 		}
 	}
@@ -1423,6 +1422,42 @@ func cmdAppLogs(client *http.Client) {
 	streamAppLogs(client, appName, follow)
 }
 
+// ANSI color codes for log sources.
+const (
+	colorReset  = "\033[0m"
+	colorDim    = "\033[2m"    // boot: dim
+	colorCyan   = "\033[36m"   // exec: cyan
+	colorYellow = "\033[33m"   // system: yellow
+	// server: no color (default terminal color)
+)
+
+// printLogEntry formats and prints a log entry with color-coded [source] prefix.
+func printLogEntry(entry map[string]interface{}) {
+	line, _ := entry["line"].(string)
+	stream, _ := entry["stream"].(string)
+	source, _ := entry["source"].(string)
+
+	var prefix string
+	switch source {
+	case "boot":
+		prefix = colorDim + "[boot]" + colorReset + " "
+	case "exec":
+		prefix = colorCyan + "[exec]" + colorReset + " "
+	case "system":
+		prefix = colorYellow + "[system]" + colorReset + " "
+	default:
+		// server: no prefix for clean default output
+		prefix = ""
+	}
+
+	switch stream {
+	case "stderr":
+		fmt.Fprintf(os.Stderr, "%s%s\n", prefix, line)
+	default:
+		fmt.Printf("%s%s\n", prefix, line)
+	}
+}
+
 // streamAppLogs resolves an app name to an instance and streams its logs.
 func streamAppLogs(client *http.Client, appName string, follow bool) {
 	instID := resolveInstanceTarget(client, appName)
@@ -1449,16 +1484,7 @@ func streamAppLogs(client *http.Client, appName string, follow bool) {
 		if err := decoder.Decode(&entry); err != nil {
 			break
 		}
-
-		line, _ := entry["line"].(string)
-		stream, _ := entry["stream"].(string)
-
-		switch stream {
-		case "stderr":
-			fmt.Fprintln(os.Stderr, line)
-		default:
-			fmt.Println(line)
-		}
+		printLogEntry(entry)
 	}
 }
 

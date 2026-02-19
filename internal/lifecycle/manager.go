@@ -256,6 +256,7 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 	// Set up channels for boot coordination
 	readyCh := make(chan struct{}, 1)
 	failCh := make(chan error, 1)
+	var booted int32 // 0 = booting, 1 = ready
 
 	// Create log store entry for this instance
 	il := m.logStore.GetOrCreate(inst.ID, inst.AppID, inst.ReleaseID)
@@ -270,9 +271,16 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 				ExecID string `json:"exec_id,omitempty"`
 			}
 			if json.Unmarshal(params, &lp) == nil {
-				il.Append(lp.Stream, lp.Line, lp.ExecID)
+				source := logstore.SourceServer
+				if lp.ExecID != "" {
+					source = logstore.SourceExec
+				} else if atomic.LoadInt32(&booted) == 0 {
+					source = logstore.SourceBoot
+				}
+				il.Append(lp.Stream, lp.Line, lp.ExecID, source)
 			}
 		case "serverReady":
+			atomic.StoreInt32(&booted, 1)
 			select {
 			case readyCh <- struct{}{}:
 			default:

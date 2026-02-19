@@ -15,7 +15,7 @@ func TestRingBufferEvictionByCount(t *testing.T) {
 
 	// Fill ring buffer beyond maxLines
 	for i := 0; i < maxLines+100; i++ {
-		il.Append("stdout", "line", "")
+		il.Append("stdout", "line", "", SourceServer)
 	}
 
 	entries := il.Read(time.Time{}, 0)
@@ -32,7 +32,7 @@ func TestRingBufferEvictionByBytes(t *testing.T) {
 	// Write entries with large lines to exceed byte cap
 	bigLine := strings.Repeat("x", 10000)
 	for i := 0; i < 1000; i++ {
-		il.Append("stdout", bigLine, "")
+		il.Append("stdout", bigLine, "", SourceServer)
 	}
 
 	entries := il.Read(time.Time{}, 0)
@@ -50,8 +50,8 @@ func TestFilePersistence(t *testing.T) {
 	s := NewStore(dir)
 	il := s.GetOrCreate("inst-3", "app-1", "rel-1")
 
-	il.Append("stdout", "hello", "")
-	il.Append("stderr", "world", "")
+	il.Append("stdout", "hello", "", SourceServer)
+	il.Append("stderr", "world", "", SourceServer)
 
 	// Check file exists and has content
 	filePath := filepath.Join(dir, "inst-3.ndjson")
@@ -75,7 +75,7 @@ func TestFileRotation(t *testing.T) {
 	// Write enough data to trigger rotation
 	bigLine := strings.Repeat("a", 100000) // 100KB per line
 	for i := 0; i < 120; i++ { // ~12MB total > maxFileBytes
-		il.Append("stdout", bigLine, "")
+		il.Append("stdout", bigLine, "", SourceServer)
 	}
 
 	// Check that rotation happened
@@ -91,8 +91,8 @@ func TestSubscribeAndRead(t *testing.T) {
 	il := s.GetOrCreate("inst-5", "", "")
 
 	// Add some entries before subscribing
-	il.Append("stdout", "before-1", "")
-	il.Append("stdout", "before-2", "")
+	il.Append("stdout", "before-1", "", SourceServer)
+	il.Append("stdout", "before-2", "", SourceServer)
 
 	ch, existing, unsub := il.Subscribe()
 	defer unsub()
@@ -102,7 +102,7 @@ func TestSubscribeAndRead(t *testing.T) {
 	}
 
 	// Add entry after subscribing
-	il.Append("stdout", "after-1", "")
+	il.Append("stdout", "after-1", "", SourceServer)
 
 	select {
 	case entry := <-ch:
@@ -121,10 +121,10 @@ func TestReadSinceAndTail(t *testing.T) {
 
 	t1 := time.Now()
 	time.Sleep(10 * time.Millisecond)
-	il.Append("stdout", "line-1", "")
-	il.Append("stdout", "line-2", "")
-	il.Append("stdout", "line-3", "")
-	il.Append("stdout", "line-4", "")
+	il.Append("stdout", "line-1", "", SourceServer)
+	il.Append("stdout", "line-2", "", SourceServer)
+	il.Append("stdout", "line-3", "", SourceServer)
+	il.Append("stdout", "line-4", "", SourceServer)
 
 	// Read all
 	all := il.Read(time.Time{}, 0)
@@ -152,7 +152,7 @@ func TestRemove(t *testing.T) {
 	dir := t.TempDir()
 	s := NewStore(dir)
 	il := s.GetOrCreate("inst-7", "", "")
-	il.Append("stdout", "test", "")
+	il.Append("stdout", "test", "", SourceServer)
 
 	filePath := filepath.Join(dir, "inst-7.ndjson")
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
@@ -166,6 +166,45 @@ func TestRemove(t *testing.T) {
 	}
 	if _, err := os.Stat(filePath); !os.IsNotExist(err) {
 		t.Fatal("log file should be removed")
+	}
+}
+
+func TestSourceField(t *testing.T) {
+	dir := t.TempDir()
+	s := NewStore(dir)
+	il := s.GetOrCreate("inst-src", "", "")
+
+	il.Append("stdout", "booting", "", SourceBoot)
+	il.Append("stdout", "serving", "", SourceServer)
+	il.Append("stdout", "exec-out", "exec-1", SourceExec)
+	il.Append("stdout", "lifecycle", "", SourceSystem)
+
+	entries := il.Read(time.Time{}, 0)
+	if len(entries) != 4 {
+		t.Fatalf("expected 4 entries, got %d", len(entries))
+	}
+
+	expected := []struct {
+		line   string
+		source string
+		execID string
+	}{
+		{"booting", SourceBoot, ""},
+		{"serving", SourceServer, ""},
+		{"exec-out", SourceExec, "exec-1"},
+		{"lifecycle", SourceSystem, ""},
+	}
+
+	for i, e := range expected {
+		if entries[i].Line != e.line {
+			t.Errorf("[%d] line = %q, want %q", i, entries[i].Line, e.line)
+		}
+		if entries[i].Source != e.source {
+			t.Errorf("[%d] source = %q, want %q", i, entries[i].Source, e.source)
+		}
+		if entries[i].ExecID != e.execID {
+			t.Errorf("[%d] exec_id = %q, want %q", i, entries[i].ExecID, e.execID)
+		}
 	}
 }
 

@@ -16,11 +16,20 @@ const (
 	maxFileBytes = 10 * 1024 * 1024 // 10MB per log file before rotation
 )
 
+// Log sources identify where a log entry originated.
+const (
+	SourceBoot   = "boot"   // Pre-serverReady boot output
+	SourceServer = "server" // Main server process after ready
+	SourceExec   = "exec"   // Exec command output
+	SourceSystem = "system" // Lifecycle events (harness, demuxer)
+)
+
 // LogEntry represents a single log line from an instance.
 type LogEntry struct {
 	Timestamp  time.Time `json:"ts"`
 	Stream     string    `json:"stream"`
 	Line       string    `json:"line"`
+	Source     string    `json:"source"`
 	InstanceID string    `json:"instance_id"`
 	AppID      string    `json:"app_id,omitempty"`
 	ReleaseID  string    `json:"release_id,omitempty"`
@@ -135,11 +144,12 @@ func newInstanceLog(instanceID, appID, releaseID, filePath string) *InstanceLog 
 }
 
 // Append adds a log entry to the ring buffer, persists to disk, and notifies subscribers.
-func (il *InstanceLog) Append(stream, line, execID string) {
+func (il *InstanceLog) Append(stream, line, execID, source string) {
 	entry := LogEntry{
 		Timestamp:  time.Now(),
 		Stream:     stream,
 		Line:       line,
+		Source:     source,
 		InstanceID: il.instanceID,
 		AppID:      il.appID,
 		ReleaseID:  il.releaseID,

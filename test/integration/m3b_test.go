@@ -128,7 +128,10 @@ func TestInstanceLogs(t *testing.T) {
 
 	waitForInstanceState(t, client, instID, "running", 60*time.Second)
 
-	// Get logs (non-follow)
+	// Generate a log line by hitting the server
+	waitForHTTP("http://127.0.0.1:8099/", 30*time.Second)
+
+	// Get logs (non-follow) and verify structure
 	resp, err := client.Get(fmt.Sprintf("http://aegis/v1/instances/%s/logs", instID))
 	if err != nil {
 		t.Fatalf("get logs: %v", err)
@@ -140,6 +143,124 @@ func TestInstanceLogs(t *testing.T) {
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != "application/x-ndjson" {
 		t.Fatalf("expected Content-Type application/x-ndjson, got %s", ct)
+	}
+
+	// Parse NDJSON entries and verify fields
+	var entries []map[string]interface{}
+	decoder := json.NewDecoder(resp.Body)
+	for decoder.More() {
+		var entry map[string]interface{}
+		if err := decoder.Decode(&entry); err != nil {
+			break
+		}
+		entries = append(entries, entry)
+	}
+
+	if len(entries) == 0 {
+		t.Fatal("expected at least one log entry, got none")
+	}
+
+	// Verify each entry has required fields
+	for i, entry := range entries {
+		for _, field := range []string{"ts", "stream", "line", "source", "instance_id"} {
+			if _, ok := entry[field]; !ok {
+				t.Errorf("entry %d missing field %q", i, field)
+			}
+		}
+	}
+
+	// Verify we have boot-source entries (server startup logs)
+	hasBoot := false
+	for _, entry := range entries {
+		if entry["source"] == "boot" {
+			hasBoot = true
+			break
+		}
+	}
+	if !hasBoot {
+		t.Log("warning: no boot-source entries found (may be timing-dependent)")
+	}
+
+	// Verify server-source entries exist (from the HTTP request)
+	hasServer := false
+	for _, entry := range entries {
+		if entry["source"] == "server" {
+			hasServer = true
+			break
+		}
+	}
+	if !hasServer {
+		t.Log("warning: no server-source entries found (python http.server may not log to stdout)")
+	}
+}
+
+func TestInstanceLogsExecSource(t *testing.T) {
+	client := daemonClient()
+
+	// Create and serve an app
+	apiPost(t, "/v1/apps", map[string]interface{}{
+		"name":         "logsrc-test",
+		"image":        "alpine:3.21",
+		"command":      []string{"python3", "-m", "http.server", "80"},
+		"expose_ports": []int{80},
+	})
+	t.Cleanup(func() { apiDeleteAllowFail(t, "/v1/apps/logsrc-test") })
+
+	apiPost(t, "/v1/apps/logsrc-test/publish", map[string]interface{}{})
+
+	result := apiPost(t, "/v1/apps/logsrc-test/serve", map[string]interface{}{})
+	instID, _ := result["id"].(string)
+	t.Cleanup(func() { apiDeleteAllowFail(t, fmt.Sprintf("/v1/instances/%s", instID)) })
+
+	waitForInstanceState(t, client, instID, "running", 60*time.Second)
+
+	// Exec a command
+	bodyJSON, _ := json.Marshal(map[string]interface{}{
+		"command": []string{"echo", "exec-marker-12345"},
+	})
+	execResp, err := client.Post(
+		fmt.Sprintf("http://aegis/v1/instances/%s/exec", instID),
+		"application/json",
+		strings.NewReader(string(bodyJSON)),
+	)
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	// Read and discard exec response (wait for completion)
+	io.ReadAll(execResp.Body)
+	execResp.Body.Close()
+
+	// Now fetch logs and verify exec entries
+	logsResp, err := client.Get(fmt.Sprintf("http://aegis/v1/instances/%s/logs", instID))
+	if err != nil {
+		t.Fatalf("get logs: %v", err)
+	}
+	defer logsResp.Body.Close()
+
+	var entries []map[string]interface{}
+	decoder := json.NewDecoder(logsResp.Body)
+	for decoder.More() {
+		var entry map[string]interface{}
+		if err := decoder.Decode(&entry); err != nil {
+			break
+		}
+		entries = append(entries, entry)
+	}
+
+	// Find the exec entry
+	foundExec := false
+	for _, entry := range entries {
+		if entry["source"] == "exec" && strings.Contains(fmt.Sprint(entry["line"]), "exec-marker-12345") {
+			foundExec = true
+			// Verify exec_id is set
+			if entry["exec_id"] == nil || entry["exec_id"] == "" {
+				t.Error("exec entry missing exec_id")
+			}
+			break
+		}
+	}
+	if !foundExec {
+		t.Fatal("expected exec-source entry with 'exec-marker-12345', not found in logs")
 	}
 }
 
@@ -182,10 +303,48 @@ func TestExecRunning(t *testing.T) {
 		t.Fatalf("exec returned %d: %s", resp.StatusCode, body)
 	}
 
-	// Read response stream
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "hello-from-exec") {
-		t.Fatalf("expected 'hello-from-exec' in exec output, got: %s", body)
+	// Parse NDJSON response and verify structure
+	var entries []map[string]interface{}
+	decoder := json.NewDecoder(resp.Body)
+	for decoder.More() {
+		var entry map[string]interface{}
+		if err := decoder.Decode(&entry); err != nil {
+			break
+		}
+		entries = append(entries, entry)
+	}
+
+	if len(entries) < 2 {
+		t.Fatalf("expected at least 2 entries (header + output), got %d", len(entries))
+	}
+
+	// First entry should be the exec info header
+	header := entries[0]
+	if header["exec_id"] == nil || header["exec_id"] == "" {
+		t.Fatal("first entry missing exec_id")
+	}
+
+	// Last entry should be the done marker
+	last := entries[len(entries)-1]
+	if done, _ := last["done"].(bool); !done {
+		t.Fatalf("last entry should be done marker, got: %v", last)
+	}
+	if ec, _ := last["exit_code"].(float64); ec != 0 {
+		t.Fatalf("expected exit_code 0, got %v", last["exit_code"])
+	}
+
+	// Middle entries should contain our output
+	foundOutput := false
+	for _, entry := range entries[1 : len(entries)-1] {
+		if line, _ := entry["line"].(string); line == "hello-from-exec" {
+			foundOutput = true
+			if entry["source"] != "exec" {
+				t.Errorf("expected source 'exec', got %v", entry["source"])
+			}
+		}
+	}
+	if !foundOutput {
+		t.Fatalf("'hello-from-exec' not found in exec output entries")
 	}
 }
 

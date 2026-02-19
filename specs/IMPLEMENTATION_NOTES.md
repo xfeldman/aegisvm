@@ -1196,7 +1196,7 @@ Per the spec. Implementation details:
 
 - **Subscriber pattern:** Matches `TaskStore.subscribeLogs` exactly — `Subscribe()` returns a channel, existing entries, and an unsubscribe function. Notifications happen outside the lock to prevent deadlocks.
 
-- **Log entry fields:** `{ts, stream, line, instance_id, app_id, release_id, exec_id}`. The `exec_id` field is present only for exec output; empty string for server logs.
+- **Log entry fields:** `{ts, stream, line, source, instance_id, app_id, release_id, exec_id}`. The `source` field is one of `boot`, `server`, `exec`, `system` (see §5.11). The `exec_id` field is present only for exec output; empty string for server logs.
 
 - **Lifecycle:** `Store.Remove(instanceID)` closes the file handle, deletes both `.ndjson` and `.ndjson.1` files. Called on explicit instance deletion (`StopInstance`), not on idle termination. Terminated instances keep their logs for later retrieval.
 
@@ -1370,7 +1370,7 @@ aegis/
 │   │   ├── demuxer_test.go         # NEW: 4 unit tests (stop, call, notification, timeout)
 │   │   └── manager_test.go         # + logstore in newTestManager
 │   ├── logstore/                   # NEW PACKAGE
-│   │   ├── logstore.go             #   Store, InstanceLog, LogEntry, ring buffer, NDJSON
+│   │   ├── logstore.go             #   Store, InstanceLog, LogEntry (w/ source), ring buffer, NDJSON
 │   │   └── logstore_test.go        #   8 unit tests
 │   └── ...                         # unchanged
 ├── test/integration/
@@ -1380,7 +1380,32 @@ aegis/
 └── ...
 ```
 
-### 5.11 M3b Dependencies (Actual)
+### 5.11 Log Sources
+
+Every `LogEntry` has a `source` field identifying its origin:
+
+| Source | Meaning | CLI display |
+|--------|---------|-------------|
+| `boot` | Pre-serverReady output (server startup) | `[boot]` dim/gray |
+| `server` | Main server process after ready | No prefix (clean default) |
+| `exec` | Exec command output (has `exec_id`) | `[exec]` cyan |
+| `system` | Lifecycle events | `[system]` yellow |
+
+**Source determination** happens in the demuxer's `onNotif` handler using an atomic `booted` flag:
+- Before `serverReady` notification → `boot`
+- After `serverReady`, no `exec_id` → `server`
+- `exec_id` present → `exec`
+
+The CLI's `printLogEntry` helper formats entries with ANSI color-coded `[source]` prefixes. Server logs have no prefix for clean output. The `aegis exec` command skips the prefix entirely (all output is exec by definition). The `aegis logs` command shows all sources interleaved with their prefixes, making it easy to distinguish server output from exec sessions and boot logs.
+
+**NDJSON wire format** now includes `source` in every entry:
+```json
+{"ts":"2026-02-19T10:30:00Z","stream":"stdout","line":"Serving HTTP on 0.0.0.0 port 80","source":"boot","instance_id":"inst-123"}
+{"ts":"2026-02-19T10:30:01Z","stream":"stderr","line":"GET / HTTP/1.1 200","source":"server","instance_id":"inst-123"}
+{"ts":"2026-02-19T10:31:00Z","stream":"stdout","line":"hello","source":"exec","instance_id":"inst-123","exec_id":"exec-456"}
+```
+
+### 5.13 M3b Dependencies (Actual)
 
 ```
 No new external dependencies.
@@ -1388,7 +1413,7 @@ No new system dependencies.
 All new code uses stdlib only (encoding/json, sync, os, time, etc.).
 ```
 
-### 5.12 Post-Implementation Corrections
+### 5.14 Post-Implementation Corrections
 
 Two bugs discovered during manual testing after the initial M3b implementation:
 
