@@ -20,6 +20,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -348,13 +349,6 @@ func cmdRun() {
 		fmt.Printf("Serving on http://%s\n", routerAddr)
 	}
 
-	// Follow logs
-	logsResp, err := client.Get(fmt.Sprintf("http://aegis/v1/instances/%s/logs?follow=1", instanceID))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "follow logs: %v\n", err)
-		os.Exit(1)
-	}
-
 	// Set up signal handler for cleanup
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
@@ -364,22 +358,32 @@ func cmdRun() {
 
 	go func() {
 		defer close(done)
+
+		// Follow logs. The logstore entry is pre-created at instance creation,
+		// so follow connects to a real subscriber even before boot starts.
+		logsResp, err := client.Get(fmt.Sprintf("http://aegis/v1/instances/%s/logs?follow=1", instanceID))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "follow logs: %v\n", err)
+			return
+		}
 		defer logsResp.Body.Close()
 
-		decoder := json.NewDecoder(logsResp.Body)
-		for decoder.More() {
+		scanner := bufio.NewScanner(logsResp.Body)
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			if len(line) == 0 {
+				continue
+			}
 			var entry map[string]interface{}
-			if err := decoder.Decode(&entry); err != nil {
-				break
+			if err := json.Unmarshal(line, &entry); err != nil {
+				continue
 			}
 
-			// Check for system message indicating process exit
 			source, _ := entry["source"].(string)
-			line, _ := entry["line"].(string)
-			if source == "system" && strings.HasPrefix(line, "process exited") {
-				// Parse exit code from "process exited (code=N)"
-				if idx := strings.Index(line, "code="); idx >= 0 {
-					codeStr := line[idx+5:]
+			text, _ := entry["line"].(string)
+			if source == "system" && strings.HasPrefix(text, "process exited") {
+				if idx := strings.Index(text, "code="); idx >= 0 {
+					codeStr := text[idx+5:]
 					codeStr = strings.TrimSuffix(codeStr, ")")
 					if ec, err := strconv.Atoi(codeStr); err == nil {
 						exitCode = ec

@@ -184,6 +184,10 @@ func (m *Manager) CreateInstance(id string, command []string, exposePorts []vmm.
 	m.instances[id] = inst
 	m.mu.Unlock()
 
+	// Pre-create logstore entry so logs are available immediately
+	// (before boot goroutine starts).
+	m.logStore.GetOrCreate(id)
+
 	return inst
 }
 
