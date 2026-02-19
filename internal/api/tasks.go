@@ -385,6 +385,17 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetTaskLogs(w http.ResponseWriter, r *http.Request) {
 	id := pathParam(r, "id")
 	follow := r.URL.Query().Get("follow") == "true"
+	sinceStr := r.URL.Query().Get("since")
+	tailStr := r.URL.Query().Get("tail")
+
+	var since time.Time
+	if sinceStr != "" {
+		since, _ = time.Parse(time.RFC3339, sinceStr)
+	}
+	tail := 0
+	if tailStr != "" {
+		fmt.Sscanf(tailStr, "%d", &tail)
+	}
 
 	task, ok := s.tasks.getTask(id)
 	if !ok {
@@ -402,6 +413,9 @@ func (s *Server) handleGetTaskLogs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer unsub()
+
+		// Apply since/tail filters to existing logs
+		existing = filterTaskLogs(existing, since, tail)
 		for _, ll := range existing {
 			streamJSON(w, ll)
 		}
@@ -415,6 +429,9 @@ func (s *Server) handleGetTaskLogs(w http.ResponseWriter, r *http.Request) {
 			case ll, ok := <-ch:
 				if !ok {
 					return
+				}
+				if !since.IsZero() && !ll.Timestamp.After(since) {
+					continue
 				}
 				streamJSON(w, ll)
 			case <-ticker.C:
@@ -438,8 +455,25 @@ func (s *Server) handleGetTaskLogs(w http.ResponseWriter, r *http.Request) {
 	} else {
 		_, existing, unsub := s.tasks.subscribeLogs(id)
 		unsub()
+		existing = filterTaskLogs(existing, since, tail)
 		for _, ll := range existing {
 			streamJSON(w, ll)
 		}
 	}
+}
+
+func filterTaskLogs(logs []LogLine, since time.Time, tail int) []LogLine {
+	if !since.IsZero() {
+		filtered := make([]LogLine, 0, len(logs))
+		for _, ll := range logs {
+			if ll.Timestamp.After(since) {
+				filtered = append(filtered, ll)
+			}
+		}
+		logs = filtered
+	}
+	if tail > 0 && len(logs) > tail {
+		logs = logs[len(logs)-tail:]
+	}
+	return logs
 }

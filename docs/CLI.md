@@ -605,6 +605,151 @@ Kit "famiglia" uninstalled
 
 ---
 
+## Instance Commands
+
+Inspect and interact with running instances.
+
+### aegis instance list
+
+List all active instances.
+
+```
+aegis instance list
+```
+
+Columns: ID, STATE, APP, CONNS.
+
+**Example:**
+
+```
+$ aegis instance list
+ID                             STATE      APP                  CONNS
+inst-1739893456789012345       running    app-173f...          0
+```
+
+---
+
+### aegis instance info
+
+Show detailed information about an instance.
+
+```
+aegis instance info INSTANCE_ID
+```
+
+**Arguments:**
+
+| Argument | Description |
+|---|---|
+| `INSTANCE_ID` | Instance ID. |
+
+Displays: ID, State, App ID, Release ID, Command, Ports, Connections, Created
+time, Last Active time.
+
+**Example:**
+
+```
+$ aegis instance info inst-1739893456789012345
+ID:          inst-1739893456789012345
+State:       running
+App:         app-173f...
+Release:     rel-8a4b...
+Command:     python -m http.server 80
+Ports:       80
+Connections: 0
+Created:     2026-02-19T10:30:00Z
+Last Active: 2026-02-19T10:35:00Z
+```
+
+---
+
+## Exec Command
+
+Execute a command inside a running instance. No SSH required -- uses the
+existing ControlChannel.
+
+### aegis exec
+
+```
+aegis exec TARGET -- COMMAND [ARGS...]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|---|---|
+| `TARGET` | Instance ID or app name. If an app name is given, resolves to the running instance for that app. |
+
+Everything after `--` is the command to execute inside the VM.
+
+Paused instances are auto-resumed. Stopped instances return an error (409).
+
+**Examples:**
+
+```
+# Exec by app name
+$ aegis exec myapp -- echo hello
+hello
+
+# Exec by instance ID
+$ aegis exec inst-1739893456789012345 -- ls /workspace
+data/
+output/
+
+# Run a diagnostic command
+$ aegis exec myapp -- cat /etc/os-release
+```
+
+---
+
+## Log Commands
+
+Stream instance logs. Logs are captured from the moment the VM channel opens
+(no boot-log gap) and persisted to `~/.aegis/data/logs/`.
+
+### aegis logs
+
+Short alias for `aegis app logs`.
+
+```
+aegis logs APP_NAME [--follow]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|---|---|
+| `APP_NAME` | App name or instance ID. |
+
+**Flags:**
+
+| Flag | Description |
+|---|---|
+| `--follow`, `-f` | Stream live logs (blocks until Ctrl+C). |
+
+**Example:**
+
+```
+$ aegis logs myapp --follow
+Serving HTTP on 0.0.0.0 port 80 ...
+127.0.0.1 - - [19/Feb/2026 10:35:12] "GET / HTTP/1.1" 200 -
+```
+
+---
+
+### aegis app logs
+
+Stream logs for an app's running instance.
+
+```
+aegis app logs APP_NAME [--follow]
+```
+
+Identical to `aegis logs` -- resolves the app name to its running instance and
+streams the instance logs.
+
+---
+
 ## Quick Reference
 
 | Command | Description |
@@ -619,7 +764,12 @@ Kit "famiglia" uninstalled
 | `aegis app serve` | Serve an app |
 | `aegis app list` | List apps |
 | `aegis app info` | Show app details |
+| `aegis app logs` | Stream app logs |
 | `aegis app delete` | Delete an app |
+| `aegis instance list` | List instances |
+| `aegis instance info` | Show instance details |
+| `aegis exec` | Execute command in instance |
+| `aegis logs` | Stream instance logs |
 | `aegis secret set` | Set an app secret |
 | `aegis secret list` | List app secrets |
 | `aegis secret delete` | Delete an app secret |

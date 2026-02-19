@@ -46,6 +46,12 @@ func main() {
 		cmdDoctor()
 	case "app":
 		cmdApp()
+	case "instance":
+		cmdInstance()
+	case "exec":
+		cmdExec()
+	case "logs":
+		cmdLogs()
 	case "secret":
 		cmdSecret()
 	case "kit":
@@ -68,7 +74,10 @@ Commands:
   run        Run a command in a microVM
   status     Show daemon status
   doctor     Print platform and backend info
-  app        Manage apps (create, publish, serve, list, info, delete)
+  app        Manage apps (create, publish, serve, list, info, delete, logs)
+  instance   Manage instances (list, info)
+  exec       Execute a command in a running instance
+  logs       Stream instance logs (alias for 'app logs')
   secret     Manage secrets (set, list, delete, set-workspace, list-workspace)
   kit        Manage kits (install, list, info, uninstall)
 
@@ -80,6 +89,9 @@ Examples:
   aegis app create --name myapp --image python:3.12 --expose 80 -- python -m http.server 80
   aegis app publish myapp
   aegis app serve myapp
+  aegis instance list
+  aegis exec myapp -- echo hello
+  aegis logs myapp --follow
   aegis secret set myapp API_KEY sk-test123
   aegis kit install manifest.yaml
   aegis down`)
@@ -543,6 +555,8 @@ func cmdApp() {
 		cmdAppInfo(client)
 	case "delete":
 		cmdAppDelete(client)
+	case "logs":
+		cmdAppLogs(client)
 	case "help", "--help", "-h":
 		appUsage()
 	default:
@@ -562,6 +576,7 @@ Commands:
   list       List all apps
   info       Show app details
   delete     Delete an app and its releases
+  logs       Stream app instance logs
 
 Examples:
   aegis app create --name myapp --image python:3.12 --expose 80 -- python -m http.server 80
@@ -1097,6 +1112,345 @@ func cmdAppDelete(client *http.Client) {
 	}
 
 	fmt.Printf("App %q deleted\n", appName)
+}
+
+// cmdInstance dispatches instance subcommands.
+func cmdInstance() {
+	if len(os.Args) < 3 {
+		fmt.Println(`Usage: aegis instance <command>
+
+Commands:
+  list    List all instances
+  info    Show instance details`)
+		os.Exit(1)
+	}
+
+	if !isDaemonRunning() {
+		fmt.Fprintln(os.Stderr, "aegisd is not running. Run 'aegis up' first.")
+		os.Exit(1)
+	}
+
+	client := httpClient()
+
+	switch os.Args[2] {
+	case "list":
+		cmdInstanceList(client)
+	case "info":
+		cmdInstanceInfo(client)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown instance command: %s\n", os.Args[2])
+		os.Exit(1)
+	}
+}
+
+func cmdInstanceList(client *http.Client) {
+	resp, err := client.Get("http://aegis/v1/instances")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "list instances: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	var instances []map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&instances)
+
+	if len(instances) == 0 {
+		fmt.Println("No instances")
+		return
+	}
+
+	fmt.Printf("%-30s %-10s %-20s %-10s\n", "ID", "STATE", "APP", "CONNS")
+	for _, inst := range instances {
+		id, _ := inst["id"].(string)
+		state, _ := inst["state"].(string)
+		appID, _ := inst["app_id"].(string)
+		conns, _ := inst["active_connections"].(float64)
+		fmt.Printf("%-30s %-10s %-20s %-10.0f\n", id, state, appID, conns)
+	}
+}
+
+func cmdInstanceInfo(client *http.Client) {
+	if len(os.Args) < 4 {
+		fmt.Fprintln(os.Stderr, "usage: aegis instance info INSTANCE_ID")
+		os.Exit(1)
+	}
+
+	instID := os.Args[3]
+
+	resp, err := client.Get(fmt.Sprintf("http://aegis/v1/instances/%s", instID))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "get instance: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "instance %q not found\n", instID)
+		os.Exit(1)
+	}
+
+	var inst map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&inst)
+
+	fmt.Printf("ID:          %s\n", inst["id"])
+	fmt.Printf("State:       %s\n", inst["state"])
+	if appID, ok := inst["app_id"].(string); ok && appID != "" {
+		fmt.Printf("App:         %s\n", appID)
+	}
+	if relID, ok := inst["release_id"].(string); ok && relID != "" {
+		fmt.Printf("Release:     %s\n", relID)
+	}
+	if cmd, ok := inst["command"].([]interface{}); ok && len(cmd) > 0 {
+		parts := make([]string, len(cmd))
+		for i, c := range cmd {
+			parts[i] = fmt.Sprint(c)
+		}
+		fmt.Printf("Command:     %s\n", strings.Join(parts, " "))
+	}
+	if ports, ok := inst["expose_ports"].([]interface{}); ok && len(ports) > 0 {
+		parts := make([]string, len(ports))
+		for i, p := range ports {
+			parts[i] = fmt.Sprint(p)
+		}
+		fmt.Printf("Ports:       %s\n", strings.Join(parts, ", "))
+	}
+	if conns, ok := inst["active_connections"].(float64); ok {
+		fmt.Printf("Connections: %.0f\n", conns)
+	}
+	if createdAt, ok := inst["created_at"].(string); ok {
+		fmt.Printf("Created:     %s\n", createdAt)
+	}
+	if lastActive, ok := inst["last_active_at"].(string); ok {
+		fmt.Printf("Last Active: %s\n", lastActive)
+	}
+}
+
+// cmdExec executes a command in a running instance.
+// aegis exec TARGET -- CMD...
+func cmdExec() {
+	args := os.Args[2:]
+
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: aegis exec TARGET -- COMMAND [args...]")
+		os.Exit(1)
+	}
+
+	if !isDaemonRunning() {
+		fmt.Fprintln(os.Stderr, "aegisd is not running. Run 'aegis up' first.")
+		os.Exit(1)
+	}
+
+	// Parse: first arg is target, then -- separator, then command
+	target := args[0]
+	var command []string
+	for i := 1; i < len(args); i++ {
+		if args[i] == "--" {
+			command = args[i+1:]
+			break
+		}
+	}
+
+	if len(command) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: aegis exec TARGET -- COMMAND [args...]")
+		os.Exit(1)
+	}
+
+	client := httpClient()
+
+	// Resolve target to instance ID
+	instID := resolveInstanceTarget(client, target)
+	if instID == "" {
+		fmt.Fprintf(os.Stderr, "could not resolve target %q to an instance\n", target)
+		os.Exit(1)
+	}
+
+	// POST exec
+	reqBody := map[string]interface{}{
+		"command": command,
+	}
+	bodyJSON, _ := json.Marshal(reqBody)
+	resp, err := client.Post(
+		fmt.Sprintf("http://aegis/v1/instances/%s/exec", instID),
+		"application/json",
+		bytes.NewReader(bodyJSON),
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "exec: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusConflict {
+		fmt.Fprintln(os.Stderr, "instance is stopped")
+		os.Exit(1)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "exec failed (%d): %s\n", resp.StatusCode, body)
+		os.Exit(1)
+	}
+
+	// Stream NDJSON response to stdout/stderr
+	decoder := json.NewDecoder(resp.Body)
+	first := true
+	for decoder.More() {
+		var entry map[string]interface{}
+		if err := decoder.Decode(&entry); err != nil {
+			break
+		}
+
+		// First line is the exec info
+		if first {
+			first = false
+			continue
+		}
+
+		line, _ := entry["line"].(string)
+		stream, _ := entry["stream"].(string)
+
+		switch stream {
+		case "stderr":
+			fmt.Fprintln(os.Stderr, line)
+		default:
+			fmt.Println(line)
+		}
+	}
+}
+
+// resolveInstanceTarget resolves a target (instance ID or app name) to an instance ID.
+func resolveInstanceTarget(client *http.Client, target string) string {
+	// Try as instance ID first
+	resp, err := client.Get(fmt.Sprintf("http://aegis/v1/instances/%s", target))
+	if err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return target
+		}
+	}
+
+	// Try as app name — find the instance for this app
+	appsResp, err := client.Get("http://aegis/v1/apps")
+	if err != nil {
+		return ""
+	}
+	defer appsResp.Body.Close()
+
+	var apps []map[string]interface{}
+	json.NewDecoder(appsResp.Body).Decode(&apps)
+
+	var appID string
+	for _, app := range apps {
+		name, _ := app["name"].(string)
+		id, _ := app["id"].(string)
+		if name == target || id == target {
+			appID = id
+			break
+		}
+	}
+	if appID == "" {
+		return ""
+	}
+
+	// Find instance with matching app_id
+	instResp, err := client.Get("http://aegis/v1/instances")
+	if err != nil {
+		return ""
+	}
+	defer instResp.Body.Close()
+
+	var instances []map[string]interface{}
+	json.NewDecoder(instResp.Body).Decode(&instances)
+
+	for _, inst := range instances {
+		if aID, _ := inst["app_id"].(string); aID == appID {
+			id, _ := inst["id"].(string)
+			return id
+		}
+	}
+	return ""
+}
+
+// cmdLogs streams logs for an app (short alias for 'aegis app logs').
+// aegis logs APP_NAME [--follow]
+func cmdLogs() {
+	if len(os.Args) < 3 {
+		fmt.Fprintln(os.Stderr, "usage: aegis logs APP_NAME [--follow]")
+		os.Exit(1)
+	}
+
+	if !isDaemonRunning() {
+		fmt.Fprintln(os.Stderr, "aegisd is not running. Run 'aegis up' first.")
+		os.Exit(1)
+	}
+
+	appName := os.Args[2]
+	follow := false
+	for _, arg := range os.Args[3:] {
+		if arg == "--follow" || arg == "-f" {
+			follow = true
+		}
+	}
+
+	client := httpClient()
+	streamAppLogs(client, appName, follow)
+}
+
+// cmdAppLogs streams instance logs for an app.
+// aegis app logs APP_NAME [--follow]
+func cmdAppLogs(client *http.Client) {
+	if len(os.Args) < 4 {
+		fmt.Fprintln(os.Stderr, "usage: aegis app logs APP_NAME [--follow]")
+		os.Exit(1)
+	}
+
+	appName := os.Args[3]
+	follow := false
+	for _, arg := range os.Args[4:] {
+		if arg == "--follow" || arg == "-f" {
+			follow = true
+		}
+	}
+
+	streamAppLogs(client, appName, follow)
+}
+
+// streamAppLogs resolves an app name to an instance and streams its logs.
+func streamAppLogs(client *http.Client, appName string, follow bool) {
+	instID := resolveInstanceTarget(client, appName)
+	if instID == "" {
+		fmt.Fprintf(os.Stderr, "no running instance found for %q\n", appName)
+		os.Exit(1)
+	}
+
+	url := fmt.Sprintf("http://aegis/v1/instances/%s/logs", instID)
+	if follow {
+		url += "?follow=1"
+	}
+
+	resp, err := client.Get(url)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "get logs: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	decoder := json.NewDecoder(resp.Body)
+	for decoder.More() {
+		var entry map[string]interface{}
+		if err := decoder.Decode(&entry); err != nil {
+			break
+		}
+
+		line, _ := entry["line"].(string)
+		stream, _ := entry["stream"].(string)
+
+		switch stream {
+		case "stderr":
+			fmt.Fprintln(os.Stderr, line)
+		default:
+			fmt.Println(line)
+		}
+	}
 }
 
 // cmdKit dispatches kit subcommands.

@@ -141,7 +141,50 @@ When you are done, stop the app:
 ./bin/aegis app stop demo
 ```
 
-## 8. Where Is My Data?
+## 8. Exec Into a Running Instance
+
+While the app is serving, you can exec commands inside the VM:
+
+```bash
+./bin/aegis exec demo -- echo "hello from inside"
+```
+
+Expected output:
+
+```
+hello from inside
+```
+
+This uses the existing ControlChannel -- no SSH, no serial console. The instance
+is auto-resumed if paused.
+
+## 9. Stream Logs
+
+View logs from a running app:
+
+```bash
+./bin/aegis logs demo --follow
+```
+
+Logs are captured from the moment the VM boots (no gap) and persisted to
+`~/.aegis/data/logs/`. Without `--follow`, all buffered logs are printed and the
+command exits. With `--follow`, new log entries stream live until Ctrl+C.
+
+## 10. Inspect Instances
+
+List all running instances:
+
+```bash
+./bin/aegis instance list
+```
+
+Get detailed info about a specific instance:
+
+```bash
+./bin/aegis instance info <instance-id>
+```
+
+## 11. Where Is My Data?
 
 All Aegis state lives under `~/.aegis/`:
 
@@ -153,10 +196,11 @@ All Aegis state lives under `~/.aegis/`:
 | `~/.aegis/data/images/` | Cached OCI image layers |
 | `~/.aegis/data/releases/` | Published release rootfs snapshots |
 | `~/.aegis/data/workspaces/{appID}/` | Per-app workspace directories (persistent across reboots) |
+| `~/.aegis/data/logs/` | Per-instance NDJSON log files |
 | `~/.aegis/master.key` | Encryption key for secrets at rest |
 | `~/.aegis/base-rootfs/` | Default Alpine rootfs built by `make base-rootfs` |
 
-## 9. Clean Up
+## 12. Clean Up
 
 ```bash
 ./bin/aegis down
@@ -186,7 +230,7 @@ To remove everything and start fresh:
 rm -rf ~/.aegis
 ```
 
-## 10. Next Steps
+## 13. Next Steps
 
 - [AGENT_CONVENTIONS.md](AGENT_CONVENTIONS.md) -- conventions for building agents that run on Aegis
 - [CLI.md](CLI.md) -- full CLI reference

@@ -13,9 +13,9 @@ Aegis is a local agent runtime platform that runs AI agent workloads inside isol
 - **Registry**: SQLite (M1+), in-memory for M0
 - **Wire Protocol**: JSON-RPC 2.0 over vsock
 
-## Current Milestone: M0
+## Current Milestone: M3b (complete)
 
-M0 = boot a VM on macOS ARM64, run a command, get output. No networking, no router, no kits, no secrets, no SQLite.
+M3b = durable per-instance logs, exec into running VMs, instance list/info APIs. M0-M3a are complete.
 
 ## Build
 

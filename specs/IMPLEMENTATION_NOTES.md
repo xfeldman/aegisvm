@@ -1146,3 +1146,232 @@ macOS (confirmed working):
 No new system dependencies.
 stdlib crypto/aes, crypto/cipher, crypto/rand for secret encryption.
 ```
+
+---
+
+## 5. M3b Implementation Notes
+
+**Documented after completing M3b. These are design choices and corrections to the M3b milestone spec, based on building durable logs, exec, and instance inspect on top of the M3 codebase.**
+
+### 5.1 Channel Demuxer — Persistent Recv Loop
+
+**Original assumption (M3b spec):** Replace the synchronous `ch.Recv()` loop in `bootInstance()` with a persistent demuxer goroutine.
+
+**Implementation:** `internal/lifecycle/demuxer.go` — a `channelDemuxer` struct that runs a single Recv goroutine for the entire instance lifetime. This is the central architectural change in M3b.
+
+```go
+type channelDemuxer struct {
+    ch      vmm.ControlChannel
+    mu      sync.Mutex                            // protects pending map AND serializes Send
+    pending map[interface{}]chan json.RawMessage   // RPC id → response waiter
+    onNotif func(method string, params json.RawMessage)
+    done    chan struct{}
+    cancel  context.CancelFunc
+}
+```
+
+**Key design decisions:**
+
+1. **Write serialization:** The `mu` mutex protects both the `pending` map AND `ch.Send()` calls, because `NetControlChannel.Send()` (in `internal/vmm/channel.go`) uses bare `conn.Write()` which is NOT thread-safe for concurrent callers. This means all RPC calls (startServer, exec, etc.) are serialized at the write level, which is correct for newline-delimited JSON over a single connection.
+
+2. **ID normalization:** JSON-decoded integer IDs arrive as `float64` (Go's `json.Unmarshal` default for `interface{}`). The `normalizeID()` helper converts `int`, `int64` to `float64` before map lookup, ensuring request IDs match response IDs regardless of how they were created.
+
+3. **Call method:** `demuxer.Call(ctx, method, params, id)` registers a pending response channel, sends the RPC request (under the same lock), and waits for either the response, context cancellation, or demuxer shutdown. This replaces the previous pattern of raw `ch.Send()` + `ch.Recv()` loops.
+
+4. **Notification routing:** The `onNotif` callback receives all JSON-RPC notifications (messages with a `method` field but no `id`). The boot sequence uses this to capture `log`, `serverReady`, `serverFailed`, and `execDone` notifications. Logs are routed to LogStore immediately — no boot-log gap.
+
+5. **Goroutine lifecycle:** The demuxer is created during `bootInstance()` and stored on the `Instance` struct as `inst.demuxer`. It runs until `Stop()` is called (on instance stop/terminate) or the channel errors (guest crash). The `logCapture` boolean on `Instance` guards against double-attach when a terminated instance is rebooted.
+
+### 5.2 LogStore — Ring Buffer + NDJSON Persistence
+
+**New package: `internal/logstore/logstore.go`**
+
+Per the spec. Implementation details:
+
+- **Ring buffer:** Fixed-size `[]LogEntry` array of `maxLines=10000`, with `head`/`count` indices. Eviction checks both line count and byte cap (`maxBytes=5MB`) — whichever limit hits first triggers eviction of the oldest entry.
+
+- **File persistence:** Each instance gets an NDJSON file at `~/.aegis/data/logs/{instanceID}.ndjson`. Entries are appended on every `Append()` call. Rotation occurs when `fileBytes > maxFileBytes` (10MB) — the current file is renamed to `.1` and a new file is opened. Only one rotated file is kept.
+
+- **Subscriber pattern:** Matches `TaskStore.subscribeLogs` exactly — `Subscribe()` returns a channel, existing entries, and an unsubscribe function. Notifications happen outside the lock to prevent deadlocks.
+
+- **Log entry fields:** `{ts, stream, line, instance_id, app_id, release_id, exec_id}`. The `exec_id` field is present only for exec output; empty string for server logs.
+
+- **Lifecycle:** `Store.Remove(instanceID)` closes the file handle, deletes both `.ndjson` and `.ndjson.1` files. Called on explicit instance deletion (`StopInstance`), not on idle termination. Terminated instances keep their logs for later retrieval.
+
+### 5.3 Boot Refactor — Demuxer Integration
+
+**Before (M3):** `bootInstance()` called `ch.Send(startServer)`, then `ch.Recv()` in a synchronous loop, checking for `serverReady`/`serverFailed` notifications and discarding `log` notifications with `continue`.
+
+**After (M3b):** `bootInstance()` creates a demuxer with an `onNotif` handler, uses `demuxer.Call()` for the `startServer` RPC, and waits on `readyCh`/`failCh` channels that are set by the notification handler. The demuxer stays alive after boot for the instance's entire lifetime.
+
+The `onNotif` handler routes four notification types:
+- `"log"` → `logStore.GetOrCreate(inst.ID, ...).Append(stream, line, execID)`
+- `"serverReady"` → send on `readyCh`
+- `"serverFailed"` → send error on `failCh`
+- `"execDone"` → log the exit code (future use for exec tracking)
+
+**StopInstance changes:** Stops the demuxer before sending the shutdown RPC on the raw channel (demuxer is already stopped, so we send directly). Calls `logStore.Remove(id)` after removing the instance from the map.
+
+**terminateInstance changes:** Stops the demuxer, sets `inst.demuxer = nil` and `inst.logCapture = false`, but does NOT remove logs — terminated instances keep logs until explicit deletion.
+
+### 5.4 Harness Exec RPC
+
+**New RPC method: `exec`** — added to `dispatch()` in `internal/harness/rpc.go`.
+
+```json
+// Request
+{"jsonrpc":"2.0","method":"exec","params":{"command":["echo","hello"],"exec_id":"exec-123"},"id":5}
+
+// Immediate response
+{"jsonrpc":"2.0","result":{"exec_id":"exec-123","started_at":"2026-02-19T10:30:00Z"},"id":5}
+
+// Async log notifications (with exec_id tag)
+{"jsonrpc":"2.0","method":"log","params":{"stream":"stdout","line":"hello","exec_id":"exec-123"}}
+
+// Async done notification
+{"jsonrpc":"2.0","method":"execDone","params":{"exec_id":"exec-123","exit_code":0}}
+```
+
+Key differences from `startServer`:
+- Returns immediately after process starts (same as `startServer`)
+- Log notifications include `exec_id` field for demuxing multiple concurrent execs
+- Sends `execDone` notification when the process exits (startServer has no equivalent — servers run forever)
+- Process is added to `serverTracker` for cleanup on shutdown
+
+**New types:** `execParams{Command, Env, Workdir, ExecID}`, `execLogParams{Stream, Line, ExecID}`, `execResult{ExecID, StartedAt}`.
+
+**New function:** `startExecProcess()` in `exec.go` — similar structure to `startServerProcess()` but with `exec_id` tagged log notifications and an `execDone` notification on completion.
+
+### 5.5 ExecInstance in Lifecycle Manager
+
+```go
+func (m *Manager) ExecInstance(ctx, id, command, env) (execID, startedAt, error)
+```
+
+State-aware exec:
+- `StateRunning` → proceed with exec via `inst.demuxer.Call()`
+- `StatePaused` → auto-resume via `resumeInstance()`, then exec
+- `StateStopped` → return `ErrInstanceStopped` (caller maps to 409)
+- `StateStarting` → `waitForRunning()` then exec
+
+The host generates the `exec_id` as `exec-{UnixNano}` and passes it in the RPC params. The demuxer's `onNotif` handler captures all `"log"` notifications (including those with `exec_id`) and routes them to LogStore — no special exec-specific capture needed.
+
+### 5.6 API Additions
+
+Four new routes:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/instances` | List all instances |
+| `GET` | `/v1/instances/{id}` | Enhanced: full detail |
+| `GET` | `/v1/instances/{id}/logs` | Stream instance logs (NDJSON) |
+| `POST` | `/v1/instances/{id}/exec` | Exec command, stream output |
+
+**`GET /v1/instances`** — returns JSON array with `id`, `state`, `app_id`, `command`, `created_at`, `last_active_at`, `active_connections` for each instance.
+
+**`GET /v1/instances/{id}`** — enhanced to return full detail including `command`, `app_id`, `release_id`, `expose_ports`, `endpoints`, `created_at`, `last_active_at`, `active_connections`. Previously returned only `id` and `state`.
+
+**`GET /v1/instances/{id}/logs`** — supports query params:
+- `follow=1` or `follow=true` — subscribe and stream live
+- `since=RFC3339` — filter entries after timestamp
+- `tail=N` — return only last N entries
+- `exec_id=X` — filter by exec ID
+
+Content-Type: `application/x-ndjson`. Uses the same `streamJSON` helper as task logs.
+
+**`POST /v1/instances/{id}/exec`** — accepts `{command: [], env: {}}`. Returns 409 if instance is stopped. On success, streams NDJSON: first line is `{exec_id, started_at}`, followed by log entries filtered by `exec_id` until client disconnect.
+
+**Task logs enhancement:** `GET /v1/tasks/{id}/logs` now supports `since` and `tail` query params (backward-compatible addition).
+
+### 5.7 CLI Additions
+
+Five new commands:
+
+| Command | Description |
+|---------|-------------|
+| `aegis instance list` | Table: ID, STATE, APP, CONNS |
+| `aegis instance info ID` | Detailed instance view |
+| `aegis exec TARGET -- CMD...` | Execute command in running instance |
+| `aegis app logs APP [--follow]` | Stream logs for an app's instance |
+| `aegis logs APP [--follow]` | Short alias for `aegis app logs` |
+
+**Target resolution:** `aegis exec` and `aegis logs` accept either an instance ID or an app name as the target. Resolution logic: try as instance ID first (`GET /v1/instances/{target}`), if 404 then look up apps and find the matching instance by `app_id`.
+
+### 5.8 Config Addition
+
+One new path in `config.Config`:
+
+```go
+LogsDir string  // ~/.aegis/data/logs — per-instance NDJSON log files
+```
+
+Created by `cfg.EnsureDirs()` at daemon startup.
+
+### 5.9 aegisd Init Sequence (M3b)
+
+```go
+cfg := config.DefaultConfig()
+backend := vmm.NewLibkrunVMM(cfg)
+reg := registry.Open(cfg.DBPath)
+imgCache := image.NewCache(cfg.ImageCacheDir)
+ov := overlay.NewCopyOverlay(cfg.ReleasesDir)
+ss := secrets.NewStore(cfg.MasterKeyPath)
+ls := logstore.NewStore(cfg.LogsDir)                              // new
+lm := lifecycle.NewManager(backend, cfg, ls)                      // new: logStore param
+rtr := router.New(lm, cfg.RouterAddr, &appResolver{reg})
+server := api.NewServer(cfg, backend, lm, reg, imgCache, ov, ss, ls) // new: logStore param
+
+rtr.Start()
+server.Start()
+// ... wait for signal ...
+lm.Shutdown()
+rtr.Stop()
+server.Stop()
+reg.Close()
+```
+
+### 5.10 Project Structure (Actual, M3b)
+
+One new package, three new files, six modified files:
+
+```
+aegis/
+├── cmd/
+│   ├── aegisd/main.go              # + logstore.NewStore, pass to NewManager + NewServer
+│   ├── aegis/main.go               # + instance, exec, logs commands; app logs subcommand
+│   ├── aegis-harness/main.go       # unchanged
+│   └── aegis-vmm-worker/main.go    # unchanged
+├── internal/
+│   ├── vmm/                        # unchanged
+│   ├── harness/
+│   │   ├── rpc.go                  # + exec RPC types, handleExec, dispatch case
+│   │   ├── exec.go                 # + startExecProcess (exec_id tagged logs + execDone)
+│   │   └── ...                     # unchanged
+│   ├── api/
+│   │   ├── server.go               # + logStore field, 4 new routes, enhanced handleGetInstance
+│   │   ├── tasks.go                # + since/tail params in handleGetTaskLogs
+│   │   └── ...                     # unchanged
+│   ├── config/config.go            # + LogsDir field
+│   ├── lifecycle/
+│   │   ├── manager.go              # + logStore field, demuxer integration, ExecInstance,
+│   │   │                           #   ListInstances, boot refactor, stop/terminate updates
+│   │   ├── demuxer.go              # NEW: channelDemuxer
+│   │   └── manager_test.go         # + logstore in newTestManager
+│   ├── logstore/                   # NEW PACKAGE
+│   │   ├── logstore.go             #   Store, InstanceLog, LogEntry, ring buffer, NDJSON
+│   │   └── logstore_test.go        #   8 unit tests
+│   └── ...                         # unchanged
+├── test/integration/
+│   ├── helpers_test.go             # unchanged
+│   ├── m3b_test.go                 # NEW: instance list/info, logs, exec, CLI tests
+│   └── ...                         # unchanged
+└── ...
+```
+
+### 5.11 M3b Dependencies (Actual)
+
+```
+No new external dependencies.
+No new system dependencies.
+All new code uses stdlib only (encoding/json, sync, os, time, etc.).
+```

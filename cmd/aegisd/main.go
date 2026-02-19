@@ -17,6 +17,7 @@ import (
 	"github.com/xfeldman/aegis/internal/config"
 	"github.com/xfeldman/aegis/internal/image"
 	"github.com/xfeldman/aegis/internal/lifecycle"
+	"github.com/xfeldman/aegis/internal/logstore"
 	"github.com/xfeldman/aegis/internal/overlay"
 	"github.com/xfeldman/aegis/internal/registry"
 	"github.com/xfeldman/aegis/internal/router"
@@ -71,8 +72,11 @@ func main() {
 	// Clean up stale task overlays and incomplete staging dirs from previous crashes
 	ov.CleanStale(1 * time.Hour)
 
+	// Create log store
+	ls := logstore.NewStore(cfg.LogsDir)
+
 	// Create lifecycle manager
-	lm := lifecycle.NewManager(backend, cfg)
+	lm := lifecycle.NewManager(backend, cfg, ls)
 	lm.OnStateChange(func(id, state string) {
 		if err := reg.UpdateState(id, state); err != nil {
 			log.Printf("registry state update: %v", err)
@@ -93,7 +97,7 @@ func main() {
 	}
 
 	// Start API server
-	server := api.NewServer(cfg, backend, lm, reg, imgCache, ov, ss)
+	server := api.NewServer(cfg, backend, lm, reg, imgCache, ov, ss, ls)
 	if err := server.Start(); err != nil {
 		log.Fatalf("start API server: %v", err)
 	}

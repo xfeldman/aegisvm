@@ -153,6 +153,94 @@ func startServerProcess(ctx context.Context, params startServerParams, conn net.
 	return cmd, nil
 }
 
+// startExecProcess starts an exec command asynchronously, streaming output as log
+// notifications with exec_id. When the process exits, it sends an execDone notification.
+func startExecProcess(ctx context.Context, params execParams, conn net.Conn) (*exec.Cmd, error) {
+	if len(params.Command) == 0 {
+		return nil, fmt.Errorf("empty command")
+	}
+
+	cmd := exec.CommandContext(ctx, params.Command[0], params.Command[1:]...)
+
+	if params.Workdir != "" {
+		cmd.Dir = params.Workdir
+	}
+
+	if len(params.Env) > 0 {
+		env := cmd.Environ()
+		for k, v := range params.Env {
+			env = append(env, k+"="+v)
+		}
+		cmd.Env = env
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stderr pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start command: %w", err)
+	}
+
+	// Stream stdout/stderr as log notifications with exec_id
+	done := make(chan struct{}, 2)
+
+	go func() {
+		defer func() { done <- struct{}{} }()
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			sendNotification(conn, "log", execLogParams{
+				Stream: "stdout",
+				Line:   scanner.Text(),
+				ExecID: params.ExecID,
+			})
+		}
+	}()
+
+	go func() {
+		defer func() { done <- struct{}{} }()
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			sendNotification(conn, "log", execLogParams{
+				Stream: "stderr",
+				Line:   scanner.Text(),
+				ExecID: params.ExecID,
+			})
+		}
+	}()
+
+	// Wait for process to finish and send execDone notification
+	go func() {
+		<-done
+		<-done
+		err := cmd.Wait()
+		exitCode := 0
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
+					exitCode = status.ExitStatus()
+				} else {
+					exitCode = 1
+				}
+			} else {
+				exitCode = -1
+			}
+		}
+		sendNotification(conn, "execDone", map[string]interface{}{
+			"exec_id":   params.ExecID,
+			"exit_code": exitCode,
+		})
+	}()
+
+	return cmd, nil
+}
+
 // waitForPort polls a TCP port until it accepts connections or the timeout expires.
 func waitForPort(port int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)

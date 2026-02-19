@@ -73,6 +73,24 @@ type logParams struct {
 	Line   string `json:"line"`
 }
 
+type execParams struct {
+	Command []string          `json:"command"`
+	Env     map[string]string `json:"env,omitempty"`
+	Workdir string            `json:"workdir,omitempty"`
+	ExecID  string            `json:"exec_id"`
+}
+
+type execLogParams struct {
+	Stream string `json:"stream"`
+	Line   string `json:"line"`
+	ExecID string `json:"exec_id,omitempty"`
+}
+
+type execResult struct {
+	ExecID    string `json:"exec_id"`
+	StartedAt string `json:"started_at"`
+}
+
 // serverTracker tracks running server processes for cleanup on shutdown.
 type serverTracker struct {
 	mu      sync.Mutex
@@ -156,6 +174,9 @@ func dispatch(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *serv
 
 	case "startServer":
 		return handleStartServer(ctx, req, conn, tracker)
+
+	case "exec":
+		return handleExec(ctx, req, conn, tracker)
 
 	case "health":
 		return &rpcResponse{
@@ -304,6 +325,69 @@ func handleStartServer(ctx context.Context, req *rpcRequest, conn net.Conn, trac
 		JSONRPC: "2.0",
 		Result:  startServerResult{PID: cmd.Process.Pid},
 		ID:      req.ID,
+	}
+}
+
+// handleExec starts a command asynchronously in the guest, streaming output as log
+// notifications with exec_id, and sending execDone when the process exits.
+func handleExec(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *serverTracker) *rpcResponse {
+	var params execParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return &rpcResponse{
+			JSONRPC: "2.0",
+			Error: &rpcError{
+				Code:    -32602,
+				Message: fmt.Sprintf("invalid params: %v", err),
+			},
+			ID: req.ID,
+		}
+	}
+
+	if len(params.Command) == 0 {
+		return &rpcResponse{
+			JSONRPC: "2.0",
+			Error: &rpcError{
+				Code:    -32602,
+				Message: "command is required",
+			},
+			ID: req.ID,
+		}
+	}
+
+	if params.ExecID == "" {
+		return &rpcResponse{
+			JSONRPC: "2.0",
+			Error: &rpcError{
+				Code:    -32602,
+				Message: "exec_id is required",
+			},
+			ID: req.ID,
+		}
+	}
+
+	log.Printf("exec: %v (exec_id=%s)", params.Command, params.ExecID)
+
+	cmd, err := startExecProcess(ctx, params, conn)
+	if err != nil {
+		return &rpcResponse{
+			JSONRPC: "2.0",
+			Error: &rpcError{
+				Code:    -32000,
+				Message: fmt.Sprintf("exec: %v", err),
+			},
+			ID: req.ID,
+		}
+	}
+
+	tracker.add(cmd)
+
+	return &rpcResponse{
+		JSONRPC: "2.0",
+		Result: execResult{
+			ExecID:    params.ExecID,
+			StartedAt: time.Now().Format(time.RFC3339),
+		},
+		ID: req.ID,
 	}
 }
 

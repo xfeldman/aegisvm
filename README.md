@@ -101,7 +101,7 @@ make base-rootfs    # requires Docker
 
 **aegis-vmm-worker** — per-VM helper process. Configures the VMM backend and hands control to the hypervisor. Separate process because `krun_start_enter()` takes over the caller.
 
-**aegis-harness** — guest PID 1. Statically linked Go binary (linux/arm64) inside every VM. Connects back to aegisd, handles JSON-RPC commands (`runTask`, `startServer`, `health`, `shutdown`).
+**aegis-harness** — guest PID 1. Statically linked Go binary (linux/arm64) inside every VM. Connects back to aegisd, handles JSON-RPC commands (`runTask`, `startServer`, `exec`, `health`, `shutdown`).
 
 **aegis** — CLI. Talks to aegisd over the unix socket.
 
@@ -121,7 +121,7 @@ make integration SHORT=1  # skip pause/resume test
 make test-m3              # M3 + conformance tests only
 ```
 
-The integration suite manages the daemon lifecycle automatically. Tests cover M0 (task mode), M1 (serve + pause/resume), M2 (images + apps + releases), and M3 (secrets + kits + conformance).
+The integration suite manages the daemon lifecycle automatically. Tests cover M0 (task mode), M1 (serve + pause/resume), M2 (images + apps + releases), M3 (secrets + kits + conformance), and M3b (logs + exec + instance inspect).
 
 Python SDK tests:
 
@@ -145,13 +145,13 @@ cd sdk/python && python3 -m venv .venv && .venv/bin/pip install pytest
 
 - [Platform spec](specs/AEGIS_PLATFORM_SPEC.md) — architecture, lifecycle, APIs, security model
 - [Implementation kickoff](specs/IMPLEMENTATION_KICKOFF.md) — engineering decisions, milestones, project structure
-- [Implementation notes](specs/IMPLEMENTATION_NOTES.md) — M0-M3 post-implementation details and corrections
+- [Implementation notes](specs/IMPLEMENTATION_NOTES.md) — M0-M3b post-implementation details and corrections
 - [Famiglia kit](specs/FAMIGLIA_KIT_SPEC.md) — team agents with chat and data integration
 - [OpenClaw kit](specs/OPENCLAW_KIT_SPEC.md) — multi-agent autonomous runtime
 
 ## Status
 
-**M3a complete.** Kits, secrets, conformance suite, agent conventions, SDK, and docs all shipped.
+**M3b complete.** Durable logs, exec into running VMs, instance inspect — full operational visibility.
 
 | Milestone | Status | Adds |
 |---|---|---|
@@ -160,5 +160,6 @@ cd sdk/python && python3 -m venv .venv && .venv/bin/pip install pytest
 | **M2** | **Done** | Releases, publishing, OCI images, overlays, workspace volumes. |
 | **M3** | **Done** | Kits, secrets, conformance test suite. |
 | **M3a** | **Done** | Agent conventions, Python SDK, CLI docs, base images, examples. |
+| **M3b** | **Done** | Durable logs, exec into running VMs, instance list/info. |
 | M4 | Next | Firecracker on Linux. Both backends pass conformance. |
 | M5 | — | Shared workspaces, network groups, warm pool, GC. |

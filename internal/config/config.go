@@ -41,6 +41,9 @@ type Config struct {
 	// WorkspacesDir is the directory for app workspace volumes.
 	WorkspacesDir string
 
+	// LogsDir is the directory for per-instance log files.
+	LogsDir string
+
 	// MasterKeyPath is the path to the AES-256 master key for secret encryption.
 	MasterKeyPath string
 
@@ -69,6 +72,7 @@ func DefaultConfig() *Config {
 		ImageCacheDir:      filepath.Join(aegisDir, "data", "images"),
 		ReleasesDir:        filepath.Join(aegisDir, "data", "releases"),
 		WorkspacesDir:      filepath.Join(aegisDir, "data", "workspaces"),
+		LogsDir:            filepath.Join(aegisDir, "data", "logs"),
 		MasterKeyPath:      filepath.Join(aegisDir, "master.key"),
 		PauseAfterIdle:     60 * time.Second,
 		TerminateAfterIdle: 20 * time.Minute,
@@ -84,6 +88,7 @@ func (c *Config) EnsureDirs() error {
 		c.ImageCacheDir,
 		c.ReleasesDir,
 		c.WorkspacesDir,
+		c.LogsDir,
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0700); err != nil {

@@ -1,10 +1,12 @@
 package lifecycle
 
 import (
+	"os"
 	"testing"
 	"time"
 
 	"github.com/xfeldman/aegis/internal/config"
+	"github.com/xfeldman/aegis/internal/logstore"
 	"github.com/xfeldman/aegis/internal/vmm"
 )
 
@@ -20,7 +22,9 @@ func newTestManager() *Manager {
 		PauseAfterIdle:     60 * time.Second,
 		TerminateAfterIdle: 20 * time.Minute,
 	}
-	return NewManager(nil, cfg)
+	dir, _ := os.MkdirTemp("", "aegis-test-logs-*")
+	ls := logstore.NewStore(dir)
+	return NewManager(nil, cfg, ls)
 }
 
 func TestCreateInstance_Basic(t *testing.T) {

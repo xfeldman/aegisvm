@@ -15,14 +15,22 @@ package lifecycle
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xfeldman/aegis/internal/config"
+	"github.com/xfeldman/aegis/internal/logstore"
 	"github.com/xfeldman/aegis/internal/vmm"
 )
+
+// ErrInstanceStopped is returned when exec is attempted on a stopped instance.
+var ErrInstanceStopped = errors.New("instance is stopped")
+
+var rpcIDCounter int64
 
 // Instance states
 const (
@@ -60,6 +68,13 @@ type Instance struct {
 	idleTimer      *time.Timer
 	terminateTimer *time.Timer
 	lastActivity   time.Time
+
+	// Demuxer for persistent channel Recv loop (nil when stopped)
+	demuxer    *channelDemuxer
+	logCapture bool // guard against double-attach
+
+	// Timestamps
+	CreatedAt time.Time
 }
 
 // FirstGuestPort returns the first exposed guest port, or 0 if none.
@@ -78,17 +93,19 @@ type Manager struct {
 	instances map[string]*Instance
 	vmm       vmm.VMM
 	cfg       *config.Config
+	logStore  *logstore.Store
 
 	// Callbacks
 	onStateChange func(id, state string)
 }
 
 // NewManager creates a lifecycle manager.
-func NewManager(v vmm.VMM, cfg *config.Config) *Manager {
+func NewManager(v vmm.VMM, cfg *config.Config, ls *logstore.Store) *Manager {
 	return &Manager{
 		instances: make(map[string]*Instance),
 		vmm:       v,
 		cfg:       cfg,
+		logStore:  ls,
 	}
 }
 
@@ -136,6 +153,7 @@ func (m *Manager) CreateInstance(id string, command []string, exposePorts []vmm.
 		State:       StateStopped,
 		Command:     command,
 		ExposePorts: exposePorts,
+		CreatedAt:   time.Now(),
 	}
 	for _, opt := range opts {
 		opt(inst)
@@ -232,105 +250,138 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 
 	endpoints, _ := m.vmm.HostEndpoints(handle)
 
-	// Send startServer RPC to harness
-	rpcReq, _ := json.Marshal(map[string]interface{}{
-		"jsonrpc": "2.0",
-		"method":  "startServer",
-		"params": map[string]interface{}{
-			"command":        inst.Command,
-			"readiness_port": inst.ExposePorts[0].GuestPort,
-			"env":            inst.Env,
-		},
-		"id": 1,
+	// Set up channels for boot coordination
+	readyCh := make(chan struct{}, 1)
+	failCh := make(chan error, 1)
+
+	// Create log store entry for this instance
+	il := m.logStore.GetOrCreate(inst.ID, inst.AppID, inst.ReleaseID)
+
+	// Create demuxer with notification handler
+	demux := newChannelDemuxer(ch, func(method string, params json.RawMessage) {
+		switch method {
+		case "log":
+			var lp struct {
+				Stream string `json:"stream"`
+				Line   string `json:"line"`
+				ExecID string `json:"exec_id,omitempty"`
+			}
+			if json.Unmarshal(params, &lp) == nil {
+				il.Append(lp.Stream, lp.Line, lp.ExecID)
+			}
+		case "serverReady":
+			select {
+			case readyCh <- struct{}{}:
+			default:
+			}
+		case "serverFailed":
+			var fp struct {
+				Error string `json:"error"`
+			}
+			json.Unmarshal(params, &fp)
+			select {
+			case failCh <- fmt.Errorf("server failed to start: %s", fp.Error):
+			default:
+			}
+		case "execDone":
+			var ep struct {
+				ExecID   string `json:"exec_id"`
+				ExitCode int    `json:"exit_code"`
+			}
+			if json.Unmarshal(params, &ep) == nil {
+				log.Printf("instance %s: exec %s done (exit_code=%d)", inst.ID, ep.ExecID, ep.ExitCode)
+			}
+		}
 	})
 
+	// Send startServer RPC via demuxer
 	rpcCtx, rpcCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer rpcCancel()
 
-	if err := ch.Send(rpcCtx, rpcReq); err != nil {
-		ch.Close()
-		m.vmm.StopVM(handle)
-		inst.mu.Lock()
-		inst.State = StateStopped
-		inst.mu.Unlock()
-		m.notifyStateChange(inst.ID, StateStopped)
-		return fmt.Errorf("send startServer RPC: %w", err)
-	}
-
-	// Read startServer response
-	msg, err := ch.Recv(rpcCtx)
+	resp, err := demux.Call(rpcCtx, "startServer", map[string]interface{}{
+		"command":        inst.Command,
+		"readiness_port": inst.ExposePorts[0].GuestPort,
+		"env":            inst.Env,
+	}, nextRPCID())
 	if err != nil {
+		demux.Stop()
 		ch.Close()
 		m.vmm.StopVM(handle)
 		inst.mu.Lock()
 		inst.State = StateStopped
 		inst.mu.Unlock()
 		m.notifyStateChange(inst.ID, StateStopped)
-		return fmt.Errorf("recv startServer response: %w", err)
+		return fmt.Errorf("startServer RPC: %w", err)
 	}
 
-	var resp map[string]interface{}
-	json.Unmarshal(msg, &resp)
-	if errObj, ok := resp["error"].(map[string]interface{}); ok {
-		errMsg, _ := errObj["message"].(string)
+	// Check for error in startServer response
+	var respObj struct {
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(resp, &respObj) == nil && respObj.Error != nil {
+		demux.Stop()
 		ch.Close()
 		m.vmm.StopVM(handle)
 		inst.mu.Lock()
 		inst.State = StateStopped
 		inst.mu.Unlock()
 		m.notifyStateChange(inst.ID, StateStopped)
-		return fmt.Errorf("startServer failed: %s", errMsg)
+		return fmt.Errorf("startServer failed: %s", respObj.Error.Message)
 	}
 
 	// Wait for serverReady notification
 	readyCtx, readyCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer readyCancel()
 
-	for {
-		msg, err := ch.Recv(readyCtx)
-		if err != nil {
-			ch.Close()
-			m.vmm.StopVM(handle)
-			inst.mu.Lock()
-			inst.State = StateStopped
-			inst.mu.Unlock()
-			m.notifyStateChange(inst.ID, StateStopped)
-			return fmt.Errorf("waiting for serverReady: %w", err)
-		}
-
-		var notif map[string]interface{}
-		json.Unmarshal(msg, &notif)
-
-		method, _ := notif["method"].(string)
-		switch method {
-		case "serverReady":
-			// Server is ready
-			inst.mu.Lock()
-			inst.Handle = handle
-			inst.Channel = ch
-			inst.Endpoints = endpoints
-			inst.State = StateRunning
-			inst.lastActivity = time.Now()
-			inst.mu.Unlock()
-			m.notifyStateChange(inst.ID, StateRunning)
-			m.startIdleTimer(inst)
-			log.Printf("instance %s: server ready (endpoints: %v)", inst.ID, endpoints)
-			return nil
-		case "serverFailed":
-			params, _ := notif["params"].(map[string]interface{})
-			errMsg, _ := params["error"].(string)
-			ch.Close()
-			m.vmm.StopVM(handle)
-			inst.mu.Lock()
-			inst.State = StateStopped
-			inst.mu.Unlock()
-			m.notifyStateChange(inst.ID, StateStopped)
-			return fmt.Errorf("server failed to start: %s", errMsg)
-		case "log":
-			// Stream logs during startup — just continue
-			continue
-		}
+	select {
+	case <-readyCh:
+		// Server is ready
+		inst.mu.Lock()
+		inst.Handle = handle
+		inst.Channel = ch
+		inst.Endpoints = endpoints
+		inst.State = StateRunning
+		inst.lastActivity = time.Now()
+		inst.demuxer = demux
+		inst.logCapture = true
+		inst.mu.Unlock()
+		m.notifyStateChange(inst.ID, StateRunning)
+		m.startIdleTimer(inst)
+		log.Printf("instance %s: server ready (endpoints: %v)", inst.ID, endpoints)
+		return nil
+	case err := <-failCh:
+		demux.Stop()
+		ch.Close()
+		m.vmm.StopVM(handle)
+		inst.mu.Lock()
+		inst.State = StateStopped
+		inst.mu.Unlock()
+		m.notifyStateChange(inst.ID, StateStopped)
+		return err
+	case <-readyCtx.Done():
+		demux.Stop()
+		ch.Close()
+		m.vmm.StopVM(handle)
+		inst.mu.Lock()
+		inst.State = StateStopped
+		inst.mu.Unlock()
+		m.notifyStateChange(inst.ID, StateStopped)
+		return fmt.Errorf("waiting for serverReady: %w", readyCtx.Err())
+	case <-demux.Done():
+		ch.Close()
+		m.vmm.StopVM(handle)
+		inst.mu.Lock()
+		inst.State = StateStopped
+		inst.mu.Unlock()
+		m.notifyStateChange(inst.ID, StateStopped)
+		return fmt.Errorf("channel closed while waiting for serverReady")
 	}
+}
+
+func nextRPCID() int64 {
+	return atomic.AddInt64(&rpcIDCounter, 1)
 }
 
 func (m *Manager) resumeInstance(inst *Instance) error {
@@ -472,18 +523,27 @@ func (m *Manager) terminateInstance(inst *Instance) {
 	}
 	handle := inst.Handle
 	ch := inst.Channel
+	demux := inst.demuxer
 	inst.State = StateStopped
 	inst.Channel = nil
 	inst.Endpoints = nil
+	inst.demuxer = nil
+	inst.logCapture = false
 	inst.mu.Unlock()
 
 	log.Printf("instance %s: stopped (extended idle)", inst.ID)
 	m.notifyStateChange(inst.ID, StateStopped)
 
+	// Stop demuxer before closing channel
+	if demux != nil {
+		demux.Stop()
+	}
 	if ch != nil {
 		ch.Close()
 	}
 	m.vmm.StopVM(handle)
+	// Note: logs are NOT removed here — terminated instances keep logs
+	// until explicit deletion via StopInstance or Shutdown.
 }
 
 // GetEndpoint returns the host endpoint for a guest port on the given instance.
@@ -555,6 +615,7 @@ func (m *Manager) StopInstance(id string) error {
 	state := inst.State
 	handle := inst.Handle
 	ch := inst.Channel
+	demux := inst.demuxer
 
 	if inst.idleTimer != nil {
 		inst.idleTimer.Stop()
@@ -563,12 +624,19 @@ func (m *Manager) StopInstance(id string) error {
 		inst.terminateTimer.Stop()
 	}
 	inst.State = StateStopped
+	inst.demuxer = nil
+	inst.logCapture = false
 	inst.mu.Unlock()
 	m.notifyStateChange(id, StateStopped)
 
 	if state == StatePaused {
 		// Resume before stopping so the process can be killed cleanly
 		m.vmm.ResumeVM(handle)
+	}
+
+	// Stop demuxer first, then send shutdown on raw channel
+	if demux != nil {
+		demux.Stop()
 	}
 
 	// Send shutdown RPC if channel available
@@ -593,6 +661,9 @@ func (m *Manager) StopInstance(id string) error {
 	delete(m.instances, id)
 	m.mu.Unlock()
 
+	// Clean up log files on explicit deletion
+	m.logStore.Remove(id)
+
 	return nil
 }
 
@@ -610,6 +681,104 @@ func (m *Manager) Shutdown() {
 			log.Printf("stop instance %s: %v", id, err)
 		}
 	}
+}
+
+// ListInstances returns all active instances.
+func (m *Manager) ListInstances() []*Instance {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([]*Instance, 0, len(m.instances))
+	for _, inst := range m.instances {
+		result = append(result, inst)
+	}
+	return result
+}
+
+// ExecInstance runs a command in a running instance via the demuxer.
+func (m *Manager) ExecInstance(ctx context.Context, id string, command []string, env map[string]string) (string, time.Time, error) {
+	m.mu.Lock()
+	inst, ok := m.instances[id]
+	m.mu.Unlock()
+	if !ok {
+		return "", time.Time{}, fmt.Errorf("instance not found")
+	}
+
+	inst.mu.Lock()
+	state := inst.State
+	inst.mu.Unlock()
+
+	switch state {
+	case StateRunning:
+		// proceed
+	case StatePaused:
+		if err := m.resumeInstance(inst); err != nil {
+			return "", time.Time{}, fmt.Errorf("resume for exec: %w", err)
+		}
+	case StateStopped:
+		return "", time.Time{}, ErrInstanceStopped
+	case StateStarting:
+		if err := m.waitForRunning(ctx, inst); err != nil {
+			return "", time.Time{}, err
+		}
+	}
+
+	inst.mu.Lock()
+	demux := inst.demuxer
+	inst.mu.Unlock()
+
+	if demux == nil {
+		return "", time.Time{}, fmt.Errorf("instance has no active channel")
+	}
+
+	execID := fmt.Sprintf("exec-%d", time.Now().UnixNano())
+	startedAt := time.Now()
+
+	resp, err := demux.Call(ctx, "exec", map[string]interface{}{
+		"command": command,
+		"env":     env,
+		"exec_id": execID,
+	}, nextRPCID())
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("exec RPC: %w", err)
+	}
+
+	// Check for error in response
+	var respObj struct {
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(resp, &respObj) == nil && respObj.Error != nil {
+		return "", time.Time{}, fmt.Errorf("exec failed: %s", respObj.Error.Message)
+	}
+
+	return execID, startedAt, nil
+}
+
+// ActiveConns returns the active connection count for an instance.
+func (m *Manager) ActiveConns(id string) int {
+	m.mu.Lock()
+	inst, ok := m.instances[id]
+	m.mu.Unlock()
+	if !ok {
+		return 0
+	}
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	return inst.activeConns
+}
+
+// LastActivity returns the last activity time for an instance.
+func (m *Manager) LastActivity(id string) time.Time {
+	m.mu.Lock()
+	inst, ok := m.instances[id]
+	m.mu.Unlock()
+	if !ok {
+		return time.Time{}
+	}
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	return inst.lastActivity
 }
 
 func (m *Manager) notifyStateChange(id, state string) {
