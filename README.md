@@ -23,7 +23,8 @@ aegis run --expose 80 -- python app.py
 aegis instance start --name myapp --expose 80 -- python3 -m http.server 80
 aegis exec myapp -- echo hello
 aegis logs myapp --follow
-aegis instance stop myapp
+aegis instance stop myapp     # VM stopped, instance stays in list
+aegis instance delete myapp   # removed entirely
 ```
 
 Port exposure is infrastructure configuration — like CPU or memory. It configures VMM port forwarding at creation time. If nothing binds the port, the router returns 503. No readiness gating in core.

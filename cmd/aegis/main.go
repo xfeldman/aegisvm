@@ -80,7 +80,7 @@ Commands:
   run        Run a command in a microVM (sugar: start + follow + delete)
   status     Show daemon status
   doctor     Print platform and backend info
-  instance   Manage instances (start, list, info, stop, pause, resume)
+  instance   Manage instances (start, list, info, stop, delete, pause, resume)
   exec       Execute a command in a running instance
   logs       Stream instance logs
   secret     Manage workspace secrets (set, list)
@@ -517,6 +517,8 @@ func cmdInstance() {
 		cmdInstanceInfo(client)
 	case "stop":
 		cmdInstanceStop(client)
+	case "delete":
+		cmdInstanceDelete(client)
 	case "pause":
 		cmdInstancePause(client)
 	case "resume":
@@ -537,9 +539,10 @@ Commands:
   start    Start a new instance
   list     List all instances
   info     Show instance details
-  stop     Stop an instance
-  pause    Pause a running instance
-  resume   Resume a paused instance
+  stop     Stop an instance (VM stopped, instance stays in list with logs)
+  delete   Delete an instance (removed entirely, logs cleaned)
+  pause    Pause a running instance (SIGSTOP)
+  resume   Resume a paused instance (SIGCONT)
 
 Examples:
   aegis instance start --name myapp --expose 80 -- python3 -m http.server 80
@@ -547,6 +550,7 @@ Examples:
   aegis instance list
   aegis instance info myapp
   aegis instance stop myapp
+  aegis instance delete myapp
   aegis instance pause myapp
   aegis instance resume myapp`)
 }
@@ -726,8 +730,7 @@ func cmdInstanceStop(client *http.Client) {
 		os.Exit(1)
 	}
 
-	req, _ := http.NewRequest("DELETE", fmt.Sprintf("http://aegis/v1/instances/%s", instID), nil)
-	resp, err := client.Do(req)
+	resp, err := client.Post(fmt.Sprintf("http://aegis/v1/instances/%s/stop", instID), "application/json", nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "stop instance: %v\n", err)
 		os.Exit(1)
@@ -741,6 +744,36 @@ func cmdInstanceStop(client *http.Client) {
 	}
 
 	fmt.Printf("Instance %s stopped\n", target)
+}
+
+func cmdInstanceDelete(client *http.Client) {
+	if len(os.Args) < 4 {
+		fmt.Fprintln(os.Stderr, "usage: aegis instance delete HANDLE_OR_ID")
+		os.Exit(1)
+	}
+
+	target := os.Args[3]
+	instID := resolveInstanceTarget(client, target)
+	if instID == "" {
+		fmt.Fprintf(os.Stderr, "instance %q not found\n", target)
+		os.Exit(1)
+	}
+
+	req, _ := http.NewRequest("DELETE", fmt.Sprintf("http://aegis/v1/instances/%s", instID), nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "delete instance: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "delete failed: %s\n", body)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Instance %s deleted\n", target)
 }
 
 func cmdInstancePause(client *http.Client) {

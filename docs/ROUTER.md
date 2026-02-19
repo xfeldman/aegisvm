@@ -69,7 +69,7 @@ When the last active connection closes, the idle timer begins:
 
 1. **Pause** (`PauseAfterIdle`, default 60s) -- The VM is paused via SIGSTOP. The process and its memory are retained. The next request triggers SIGCONT resume in under 100ms.
 
-2. **Stop** (`StopAfterIdle`, default 20min) -- The VM is stopped and resources freed. The next request triggers a cold boot.
+2. **Stop** (`StopAfterIdle`, default 20min) -- The VM is stopped and resources freed. The instance remains in the list with state STOPPED. The next request triggers a cold boot via `EnsureInstance`.
 
 Any incoming request at any point resets the idle timer and wakes the VM if needed.
 

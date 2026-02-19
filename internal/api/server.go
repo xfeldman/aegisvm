@@ -55,6 +55,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /v1/instances/{id}", s.handleGetInstance)
 	s.mux.HandleFunc("GET /v1/instances/{id}/logs", s.handleInstanceLogs)
 	s.mux.HandleFunc("POST /v1/instances/{id}/exec", s.handleExecInstance)
+	s.mux.HandleFunc("POST /v1/instances/{id}/stop", s.handleStopInstance)
 	s.mux.HandleFunc("POST /v1/instances/{id}/pause", s.handlePauseInstance)
 	s.mux.HandleFunc("POST /v1/instances/{id}/resume", s.handleResumeInstance)
 	s.mux.HandleFunc("DELETE /v1/instances/{id}", s.handleDeleteInstance)
@@ -534,9 +535,23 @@ func (s *Server) handleResumeInstance(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "running"})
 }
 
-func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleStopInstance(w http.ResponseWriter, r *http.Request) {
 	id := pathParam(r, "id")
 	if err := s.lifecycle.StopInstance(id); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	if s.registry != nil {
+		s.registry.UpdateState(id, "stopped")
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
+}
+
+func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+	if err := s.lifecycle.DeleteInstance(id); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -545,7 +560,7 @@ func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 		s.registry.DeleteInstance(id)
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // Secret handlers (workspace-scoped only)

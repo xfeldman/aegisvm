@@ -243,10 +243,22 @@ Last Active: 2026-02-19T10:35:00Z
 
 ### aegis instance stop
 
-Stop an instance and remove it.
+Stop an instance's VM. The instance remains in the list with state STOPPED and
+logs are preserved. Use `aegis instance delete` to remove entirely.
 
 ```
 aegis instance stop HANDLE_OR_ID
+```
+
+---
+
+### aegis instance delete
+
+Delete an instance entirely. Stops the VM (if running), removes from the
+instance list, and cleans up logs.
+
+```
+aegis instance delete HANDLE_OR_ID
 ```
 
 ---
@@ -407,7 +419,8 @@ Secrets:
 | `aegis instance start` | Start a new instance |
 | `aegis instance list` | List instances |
 | `aegis instance info` | Show instance details |
-| `aegis instance stop` | Stop an instance |
+| `aegis instance stop` | Stop an instance (VM stopped, stays in list) |
+| `aegis instance delete` | Delete an instance (removed entirely) |
 | `aegis instance pause` | Pause an instance |
 | `aegis instance resume` | Resume an instance |
 | `aegis exec` | Execute command in instance |

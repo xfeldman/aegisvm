@@ -706,7 +706,8 @@ func (m *Manager) ResumeInstance(id string) error {
 	return m.resumeInstance(inst)
 }
 
-// StopInstance stops an instance immediately.
+// StopInstance stops an instance's VM but keeps it in the map with state STOPPED.
+// Logs are preserved. Use DeleteInstance to remove entirely.
 func (m *Manager) StopInstance(id string) error {
 	m.mu.Lock()
 	inst, ok := m.instances[id]
@@ -717,69 +718,111 @@ func (m *Manager) StopInstance(id string) error {
 
 	inst.mu.Lock()
 	state := inst.State
+	if state == StateStopped {
+		inst.mu.Unlock()
+		return nil // already stopped
+	}
 	handle := inst.Handle
-	ch := inst.Channel
 	demux := inst.demuxer
 
 	if inst.idleTimer != nil {
 		inst.idleTimer.Stop()
+		inst.idleTimer = nil
 	}
 	if inst.stopTimer != nil {
 		inst.stopTimer.Stop()
+		inst.stopTimer = nil
 	}
-	inst.State = StateStopped
-	inst.demuxer = nil
-	inst.logCapture = false
+
 	// Close all exec waiters so handlers unblock
 	for eid, ch := range inst.execWaiters {
 		ch <- -1
 		close(ch)
 		delete(inst.execWaiters, eid)
 	}
+
+	inst.State = StateStopped
+	inst.Channel = nil
+	inst.Endpoints = nil
+	inst.demuxer = nil
+	inst.logCapture = false
 	inst.mu.Unlock()
 	m.notifyStateChange(id, StateStopped)
 
 	if state == StatePaused {
-		// Resume before stopping so the process can be killed cleanly
 		m.vmm.ResumeVM(handle)
 	}
 
-	if demux != nil {
-		// Send shutdown via demuxer (which serializes writes), then stop it.
-		// demuxer.Stop() closes the channel, so no separate ch.Close() needed.
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		demux.Call(shutCtx, "shutdown", nil, 99)
-		cancel()
-		demux.Stop()
-	} else if ch != nil {
-		// No demuxer (e.g. instance never fully booted) — send directly
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		shutdownReq, _ := json.Marshal(map[string]interface{}{
-			"jsonrpc": "2.0",
-			"method":  "shutdown",
-			"params":  nil,
-			"id":      99,
-		})
-		ch.Send(shutCtx, shutdownReq)
-		cancel()
-		ch.Close()
+	m.shutdownVM(demux, handle)
+	return nil
+}
+
+// DeleteInstance stops an instance and removes it entirely (from map, registry, logs).
+func (m *Manager) DeleteInstance(id string) error {
+	m.mu.Lock()
+	inst, ok := m.instances[id]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("instance %s not found", id)
+	}
+
+	inst.mu.Lock()
+	state := inst.State
+	handle := inst.Handle
+	demux := inst.demuxer
+
+	if inst.idleTimer != nil {
+		inst.idleTimer.Stop()
+		inst.idleTimer = nil
+	}
+	if inst.stopTimer != nil {
+		inst.stopTimer.Stop()
+		inst.stopTimer = nil
+	}
+
+	for eid, ch := range inst.execWaiters {
+		ch <- -1
+		close(ch)
+		delete(inst.execWaiters, eid)
+	}
+
+	inst.State = StateStopped
+	inst.Channel = nil
+	inst.Endpoints = nil
+	inst.demuxer = nil
+	inst.logCapture = false
+	inst.mu.Unlock()
+	m.notifyStateChange(id, StateStopped)
+
+	if state == StatePaused {
+		m.vmm.ResumeVM(handle)
 	}
 
 	if state != StateStopped {
-		m.vmm.StopVM(handle)
+		m.shutdownVM(demux, handle)
 	}
 
 	m.mu.Lock()
 	delete(m.instances, id)
 	m.mu.Unlock()
 
-	// Clean up log files on explicit deletion
 	m.logStore.Remove(id)
 
 	return nil
 }
 
-// Shutdown stops all instances.
+// shutdownVM sends shutdown RPC and stops the VM.
+func (m *Manager) shutdownVM(demux *channelDemuxer, handle vmm.Handle) {
+	if demux != nil {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		demux.Call(shutCtx, "shutdown", nil, 99)
+		cancel()
+		demux.Stop()
+	}
+	m.vmm.StopVM(handle)
+}
+
+// Shutdown deletes all instances (used on daemon exit).
 func (m *Manager) Shutdown() {
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.instances))
@@ -789,8 +832,8 @@ func (m *Manager) Shutdown() {
 	m.mu.Unlock()
 
 	for _, id := range ids {
-		if err := m.StopInstance(id); err != nil {
-			log.Printf("stop instance %s: %v", id, err)
+		if err := m.DeleteInstance(id); err != nil {
+			log.Printf("delete instance %s: %v", id, err)
 		}
 	}
 }

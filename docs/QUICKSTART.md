@@ -169,10 +169,16 @@ Get detailed info about a specific instance:
 ./bin/aegis instance info demo
 ```
 
-Stop the instance:
+Stop the instance (VM stops, instance stays in list with logs):
 
 ```bash
 ./bin/aegis instance stop demo
+```
+
+Delete the instance entirely (removes from list, cleans logs):
+
+```bash
+./bin/aegis instance delete demo
 ```
 
 ## 11. Where Is My Data?

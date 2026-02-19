@@ -55,7 +55,7 @@ make all
 ```
 aegis up / down / status / doctor
 aegis instance start [--name H] [--expose P] [--env K=V] [--image REF] -- CMD
-aegis instance list / info / stop / pause / resume
+aegis instance list / info / stop / delete / pause / resume
 aegis exec <handle|id> -- CMD
 aegis logs <handle|id> [--follow]
 aegis run [--expose P] [--env K=V] [--name H] -- CMD   (sugar: start + follow + delete)
