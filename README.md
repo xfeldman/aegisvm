@@ -144,7 +144,8 @@ cd sdk/python && python3 -m venv .venv && .venv/bin/pip install pytest
 ## Specs
 
 - [Platform spec](specs/AEGIS_PLATFORM_SPEC.md) — architecture, lifecycle, APIs, security model
-- [Implementation kickoff](specs/IMPLEMENTATION_KICKOFF.md) — engineering decisions, milestones, implementation notes
+- [Implementation kickoff](specs/IMPLEMENTATION_KICKOFF.md) — engineering decisions, milestones, project structure
+- [Implementation notes](specs/IMPLEMENTATION_NOTES.md) — M0-M3 post-implementation details and corrections
 - [Famiglia kit](specs/FAMIGLIA_KIT_SPEC.md) — team agents with chat and data integration
 - [OpenClaw kit](specs/OPENCLAW_KIT_SPEC.md) — multi-agent autonomous runtime
 
