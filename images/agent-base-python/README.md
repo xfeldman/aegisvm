@@ -20,7 +20,7 @@ docker build -t agent-base:python .
 
 ```bash
 # Long-lived instance with exposed port
-aegis run --name myapp --image agent-base:python --expose 80 -- python server.py
+aegis run --name web --image agent-base:python --expose 80 -- python server.py
 
 # One-shot command
 aegis run --image agent-base:python -- python agent.py

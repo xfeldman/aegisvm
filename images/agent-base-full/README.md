@@ -22,7 +22,7 @@ docker build -t agent-base:full .
 ## Usage
 
 ```bash
-aegis run --name myapp --image agent-base:full --expose 80 -- python server.py
+aegis run --name web --image agent-base:full --expose 80 -- python server.py
 ```
 
 This image is suitable for agents that need both Python and Node.js, or that shell out to git, jq, or other tools during execution.

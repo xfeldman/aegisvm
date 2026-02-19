@@ -2,9 +2,9 @@
 #
 # Usage:
 #   docker build -t agent-base:python .
-#   aegis app create --name myapp --image agent-base:python --expose 80 -- python server.py
+#   aegis run --name web --image agent-base:python --expose 80 -- python server.py
 #
-# Note: aegis-harness is injected automatically at publish time (aegis app publish).
+# Note: aegis-harness is injected automatically when preparing the instance rootfs.
 # You do NOT need to include it in your image. Aegis ignores ENTRYPOINT and CMD —
 # the harness is always PID 1 inside the VM.
 

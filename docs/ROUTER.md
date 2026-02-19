@@ -32,7 +32,7 @@ The router matches the URL path prefix `/{handle}/` and routes to the instance w
 Example:
 
 ```
-Request:   GET /myapp/api/data
+Request:   GET /web/api/data
 Backend:   GET /api/data
 ```
 

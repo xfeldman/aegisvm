@@ -89,11 +89,11 @@ Examples:
   aegis up
   aegis run -- echo "hello from aegis"
   aegis run --expose 80 -- python -m http.server 80
-  aegis run --name myapp --expose 80 -- python3 -m http.server 80
-  aegis instance start --name myapp --expose 80 -- python3 -m http.server 80
+  aegis run --name web --expose 80 -- python3 -m http.server 80
+  aegis instance start --name web --expose 80 -- python3 -m http.server 80
   aegis instance list
-  aegis exec myapp -- echo hello
-  aegis logs myapp --follow
+  aegis exec web -- echo hello
+  aegis logs web --follow
   aegis secret set API_KEY sk-test123
   aegis down`)
 }
@@ -545,14 +545,14 @@ Commands:
   resume   Resume a paused instance (SIGCONT)
 
 Examples:
-  aegis instance start --name myapp --expose 80 -- python3 -m http.server 80
+  aegis instance start --name web --expose 80 -- python3 -m http.server 80
   aegis instance start --image alpine:3.21 -- echo hello
   aegis instance list
-  aegis instance info myapp
-  aegis instance stop myapp
-  aegis instance delete myapp
-  aegis instance pause myapp
-  aegis instance resume myapp`)
+  aegis instance info web
+  aegis instance stop web
+  aegis instance delete web
+  aegis instance pause web
+  aegis instance resume web`)
 }
 
 // cmdInstanceStart starts a new instance.

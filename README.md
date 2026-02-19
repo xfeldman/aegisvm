@@ -20,11 +20,11 @@ aegis run -- python analyze.py
 aegis run --expose 80 -- python app.py
 
 # Long-lived instance with a handle
-aegis instance start --name myapp --expose 80 -- python3 -m http.server 80
-aegis exec myapp -- echo hello
-aegis logs myapp --follow
-aegis instance stop myapp     # VM stopped, instance stays in list
-aegis instance delete myapp   # removed entirely
+aegis instance start --name web --expose 80 -- python3 -m http.server 80
+aegis exec web -- echo hello
+aegis logs web --follow
+aegis instance stop web       # VM stopped, instance stays in list
+aegis instance delete web     # removed entirely
 ```
 
 Port exposure is infrastructure configuration — like CPU or memory. It configures VMM port forwarding at creation time. If nothing binds the port, the router returns 503. No readiness gating in core.
@@ -35,6 +35,19 @@ Measured on macOS ARM64 (M1, libkrun backend):
 |------|---------|
 | Cold boot (zero to process running) | ~500ms |
 | Resume from pause (SIGCONT) | ~35ms |
+
+## Instance lifecycle
+
+| Operation | Result | In list? | Logs kept? | VM running? |
+|-----------|--------|----------|------------|-------------|
+| Process exits naturally | STOPPED | Yes | Yes | No |
+| `aegis instance stop` | STOPPED | Yes | Yes | No |
+| Idle timeout (StopAfterIdle) | STOPPED | Yes | Yes | No |
+| `aegis instance pause` | PAUSED | Yes | Yes | Suspended |
+| `aegis instance delete` | Removed | No | No | No |
+| `aegis run` + Ctrl+C | Deleted | No | No | No |
+
+STOPPED instances can be inspected (`instance info`, `logs`) and restarted. `delete` is permanent.
 
 ## Core mechanisms
 

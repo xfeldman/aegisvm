@@ -153,7 +153,7 @@ $ aegis run --expose 80 -- python -m http.server 80
 Serving on http://127.0.0.1:8099
 
 # Named instance with env vars
-$ aegis run --name myapp --env API_KEY=sk-123 --expose 80 -- python app.py
+$ aegis run --name web --env API_KEY=sk-123 --expose 80 -- python app.py
 ```
 
 ---
@@ -185,9 +185,9 @@ aegis instance start [--name NAME] [--expose PORT] [--image IMAGE] [--env K=V] [
 **Example:**
 
 ```
-$ aegis instance start --name myapp --expose 80 -- python3 -m http.server 80
+$ aegis instance start --name web --expose 80 -- python3 -m http.server 80
 Instance started: inst-173f...
-Handle: myapp
+Handle: web
 Router: http://127.0.0.1:8099
 ```
 
@@ -208,7 +208,7 @@ Columns: ID, HANDLE, STATE, CONNS.
 ```
 $ aegis instance list
 ID                             HANDLE          STATE      CONNS
-inst-1739893456789012345       myapp           running    0
+inst-1739893456789012345       web           running    0
 ```
 
 ---
@@ -226,10 +226,10 @@ Accepts either a handle alias or instance ID.
 **Example:**
 
 ```
-$ aegis instance info myapp
+$ aegis instance info web
 ID:          inst-1739893456789012345
 State:       running
-Handle:      myapp
+Handle:      web
 Command:     python3 -m http.server 80
 Ports:       80
 Endpoints:
@@ -260,6 +260,23 @@ instance list, and cleans up logs.
 ```
 aegis instance delete HANDLE_OR_ID
 ```
+
+---
+
+### Instance Lifecycle States
+
+| Operation | Result | In list? | Logs kept? | VM running? |
+|-----------|--------|----------|------------|-------------|
+| Process exits naturally | STOPPED | Yes | Yes | No |
+| `aegis instance stop` | STOPPED | Yes | Yes | No |
+| Idle timeout (StopAfterIdle) | STOPPED | Yes | Yes | No |
+| `aegis instance pause` | PAUSED | Yes | Yes | Suspended |
+| `aegis instance delete` | Removed | No | No | No |
+| `aegis run` + Ctrl+C | Deleted | No | No | No |
+
+STOPPED instances can be inspected (`instance info`, `logs`) and will be
+rebooted on next `EnsureInstance` (e.g., router wake-on-connect). `delete` is
+permanent — the instance and its logs are gone.
 
 ---
 
@@ -309,7 +326,7 @@ Returns 409 if the instance is STOPPED.
 
 ```
 # Exec by handle
-$ aegis exec myapp -- echo hello
+$ aegis exec web -- echo hello
 hello
 
 # Exec by instance ID
@@ -349,7 +366,7 @@ primary process output has no prefix.
 **Example:**
 
 ```
-$ aegis logs myapp --follow
+$ aegis logs web --follow
 Serving HTTP on 0.0.0.0 port 80 ...
 127.0.0.1 - - [19/Feb/2026 10:35:12] "GET / HTTP/1.1" 200 -
 ```
