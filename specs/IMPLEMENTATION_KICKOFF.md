@@ -597,6 +597,49 @@ Minimal working agents that demonstrate each mode. A runnable example does more 
 
 Each example includes a `README.md` with the exact `aegis` commands to run it and a brief explanation of which conventions it uses.
 
+### M3b: Durable Logs + Exec + Instance Inspect (1-2 weeks)
+
+**Goal:** Every instance has captured, retrievable logs; operators can exec into running VMs without SSH; instance list/info provides full operational visibility.
+
+| Component | What to build |
+|---|---|
+| `internal/logstore/` | Per-instance ring buffer (10k lines / 5MB cap) + NDJSON file persistence (`~/.aegis/data/logs/`) |
+| `internal/lifecycle/manager.go` | Serve-mode log capture goroutine (currently discarded); `ListInstances()` method |
+| `internal/harness/rpc.go` | New `exec` RPC handler: receive `exec_id` from host, spawn process, include `exec_id` in every log notification for that process |
+| `internal/api/instances.go` | Instance list, enhanced info, log streaming, exec endpoint |
+| `internal/api/tasks.go` | Enhance task logs with `since`/`tail` params; migrate to LogStore |
+| `cmd/aegis/main.go` | `aegis exec`, `aegis instance list`, `aegis instance info`, `aegis app logs` |
+| `test/integration/m3b_test.go` | Log capture, exec, instance inspect tests |
+
+**Key design decisions:**
+
+1. **Log ring buffer** — 10,000 lines **or** 5MB per instance, whichever limit hits first (guards against giant stack traces). Async flush to NDJSON file at `~/.aegis/data/logs/{instanceId}.ndjson` (10MB rotation, keep 1 rotated file). Each line: `{ts, stream, line, instance_id, app_id, release_id, exec_id?}`. `exec_id` is present only for exec output; omitted for server logs. Logs removed on explicit instance deletion (API call or GC); not removed on pause/stop. `aegis down` destroys instances and their logs.
+
+2. **Serve-mode log capture** — The ControlChannel has exactly one Recv loop per instance; it begins immediately after channel establishment and runs until close. It demuxes responses (`id` present) from notifications (`method == "log"`, etc.) and routes all log notifications to LogStore regardless of readiness state. This means boot-time logs are captured from the moment the channel opens — no gap between boot and `serverReady`. **Goroutine lifecycle:** on instance stop, the goroutine exits cleanly (channel close). On resume, a new goroutine is spawned — must guard against double-attach (check `inst.logCapture` field before spawning).
+
+3. **Exec RPC** — New `exec` method on the existing ControlChannel. Reuses serve-mode connection (`inst.Channel`). Differs from `runTask`: runs concurrently with the server process. **Tagging:** host generates `exec_id` and passes it to harness in the `exec` RPC params; harness includes `exec_id` in every log notification emitted by that process. The host Recv loop routes tagged notifications to LogStore with `exec_id` set. This requires a harness-side change (new `exec` method handler). **Resume behavior:** paused instances are auto-resumed on exec; 409 only for stopped instances. Response: `{exec_id, started_at}`, then output streamed as tagged log notifications. Multiple concurrent execs supported (each gets a unique `exec_id`). **Cancellation:** exec cannot be cancelled in M3b other than VM stop; add `DELETE /v1/instances/{id}/exec/{exec_id}` with SIGTERM in a later milestone.
+
+4. **No SSH** — Aegis does not run `sshd` inside VMs. No SSH keys, no serial console. `aegis exec` is the sole mechanism for guest interaction. This is by design: the ControlChannel is always available, requires no additional daemon.
+
+**API additions:**
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/v1/instances` | List all instances (state, app, started_at, last_active_at, connections) |
+| `GET` | `/v1/instances/{id}` | Enhanced: full detail (endpoints, app, workspace, idle timers, log file path, ring buffer size) |
+| `GET` | `/v1/instances/{id}/logs?follow=1&since=TS&tail=N` | Stream instance logs (NDJSON) |
+| `POST` | `/v1/instances/{id}/exec` | Exec command, stream output (auto-resumes paused; 409 if stopped) |
+
+**CLI additions:**
+
+| Command | Description |
+|---|---|
+| `aegis instance list` | Show all instances with state, app, uptime |
+| `aegis instance info INST_ID` | Detailed instance view |
+| `aegis exec APP\|INST -- CMD...` | Execute command in running instance (auto-resumes paused) |
+| `aegis app logs APP [--follow]` | Stream logs for an app's instance |
+| `aegis logs APP [--follow]` | Short alias for `aegis app logs` |
+
 ### M4: Firecracker on Linux (2-3 weeks)
 
 **Goal:** `aegis up` works on Linux ARM64. Conformance tests pass on both backends.
