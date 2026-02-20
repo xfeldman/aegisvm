@@ -1,0 +1,692 @@
+// aegis-mcp — MCP (Model Context Protocol) server for Aegis.
+// Exposes aegisd instance/secret management as MCP tools over stdio.
+// Talks to aegisd via the same unix socket HTTP API used by the CLI.
+package main
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// --- JSON-RPC types ---
+
+type jsonRPCRequest struct {
+	JSONRPC string          `json:"jsonrpc"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params,omitempty"`
+	ID      json.RawMessage `json:"id,omitempty"` // null for notifications
+}
+
+type jsonRPCResponse struct {
+	JSONRPC string      `json:"jsonrpc"`
+	Result  interface{} `json:"result,omitempty"`
+	Error   *rpcError   `json:"error,omitempty"`
+	ID      json.RawMessage `json:"id"`
+}
+
+type rpcError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+// --- MCP types ---
+
+type mcpInitializeResult struct {
+	ProtocolVersion string          `json:"protocolVersion"`
+	ServerInfo      mcpServerInfo   `json:"serverInfo"`
+	Capabilities    mcpCapabilities `json:"capabilities"`
+}
+
+type mcpServerInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+type mcpCapabilities struct {
+	Tools *struct{} `json:"tools"`
+}
+
+type mcpTool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"inputSchema"`
+}
+
+type mcpToolsListResult struct {
+	Tools []mcpTool `json:"tools"`
+}
+
+type mcpToolCallParams struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+type mcpContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type mcpToolResult struct {
+	Content []mcpContent `json:"content"`
+	IsError bool         `json:"isError,omitempty"`
+}
+
+// --- aegisd HTTP client ---
+
+func socketPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".aegis", "aegisd.sock")
+}
+
+func newHTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return net.DialTimeout("unix", socketPath(), 5*time.Second)
+			},
+		},
+		Timeout: 2 * time.Minute, // generous timeout for exec
+	}
+}
+
+var client = newHTTPClient()
+
+func apiURL(path string) string {
+	return "http://aegis" + path
+}
+
+// doRequest performs an HTTP request and returns the response body bytes.
+// Returns the status code, body, and any error.
+func doRequest(method, path string, body interface{}) (int, []byte, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return 0, nil, err
+		}
+		bodyReader = strings.NewReader(string(b))
+	}
+	req, err := http.NewRequest(method, apiURL(path), bodyReader)
+	if err != nil {
+		return 0, nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("aegisd connection failed: %w", err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+	return resp.StatusCode, data, nil
+}
+
+// doStreamingRequest performs an HTTP request and returns the response for
+// streaming reads. Caller must close the response body.
+func doStreamingRequest(method, path string, body interface{}) (*http.Response, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		bodyReader = strings.NewReader(string(b))
+	}
+	req, err := http.NewRequest(method, apiURL(path), bodyReader)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return client.Do(req)
+}
+
+// --- Tool definitions ---
+
+var tools = []mcpTool{
+	{
+		Name:        "instance_start",
+		Description: "Start a new VM instance running a command, or restart a stopped instance by name.",
+		InputSchema: rawJSON(`{
+			"type": "object",
+			"properties": {
+				"command":   {"type": "array", "items": {"type": "string"}, "description": "Command to run in the VM"},
+				"name":      {"type": "string", "description": "Handle alias for the instance"},
+				"expose":    {"type": "array", "items": {"type": "integer"}, "description": "Ports to expose on the host"},
+				"workspace": {"type": "string", "description": "Named workspace or path to mount"},
+				"image":     {"type": "string", "description": "OCI image reference (e.g. python:3.12)"},
+				"env":       {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment variables"},
+				"secrets":   {"type": "array", "items": {"type": "string"}, "description": "Secret keys to inject"}
+			},
+			"required": ["command"]
+		}`),
+	},
+	{
+		Name:        "instance_list",
+		Description: "List VM instances. Optionally filter by state.",
+		InputSchema: rawJSON(`{
+			"type": "object",
+			"properties": {
+				"state": {"type": "string", "enum": ["running", "stopped", "paused"], "description": "Filter by instance state"}
+			}
+		}`),
+	},
+	{
+		Name:        "instance_info",
+		Description: "Get detailed information about a specific instance.",
+		InputSchema: rawJSON(`{
+			"type": "object",
+			"properties": {
+				"name": {"type": "string", "description": "Instance handle or ID"}
+			},
+			"required": ["name"]
+		}`),
+	},
+	{
+		Name:        "instance_stop",
+		Description: "Stop a running instance. The instance record is preserved and can be restarted.",
+		InputSchema: rawJSON(`{
+			"type": "object",
+			"properties": {
+				"name": {"type": "string", "description": "Instance handle or ID"}
+			},
+			"required": ["name"]
+		}`),
+	},
+	{
+		Name:        "instance_delete",
+		Description: "Delete an instance entirely, removing its record.",
+		InputSchema: rawJSON(`{
+			"type": "object",
+			"properties": {
+				"name": {"type": "string", "description": "Instance handle or ID"}
+			},
+			"required": ["name"]
+		}`),
+	},
+	{
+		Name:        "exec",
+		Description: "Execute a command inside a running instance and return its output.",
+		InputSchema: rawJSON(`{
+			"type": "object",
+			"properties": {
+				"name":    {"type": "string", "description": "Instance handle or ID"},
+				"command": {"type": "array", "items": {"type": "string"}, "description": "Command to execute"}
+			},
+			"required": ["name", "command"]
+		}`),
+	},
+	{
+		Name:        "logs",
+		Description: "Get recent logs from an instance (not streaming).",
+		InputSchema: rawJSON(`{
+			"type": "object",
+			"properties": {
+				"name": {"type": "string", "description": "Instance handle or ID"},
+				"tail": {"type": "integer", "description": "Number of lines to return (default 50)"}
+			},
+			"required": ["name"]
+		}`),
+	},
+	{
+		Name:        "secret_set",
+		Description: "Set a secret key-value pair. Secrets can be injected into instances.",
+		InputSchema: rawJSON(`{
+			"type": "object",
+			"properties": {
+				"key":   {"type": "string", "description": "Secret name"},
+				"value": {"type": "string", "description": "Secret value"}
+			},
+			"required": ["key", "value"]
+		}`),
+	},
+	{
+		Name:        "secret_list",
+		Description: "List all secret names (values are not returned).",
+		InputSchema: rawJSON(`{
+			"type": "object",
+			"properties": {}
+		}`),
+	},
+	{
+		Name:        "secret_delete",
+		Description: "Delete a secret by name.",
+		InputSchema: rawJSON(`{
+			"type": "object",
+			"properties": {
+				"key": {"type": "string", "description": "Secret name to delete"}
+			},
+			"required": ["key"]
+		}`),
+	},
+}
+
+func rawJSON(s string) json.RawMessage {
+	return json.RawMessage(s)
+}
+
+// --- Tool handlers ---
+
+func handleInstanceStart(args json.RawMessage) *mcpToolResult {
+	var params struct {
+		Command   []string          `json:"command"`
+		Name      string            `json:"name"`
+		Expose    []int             `json:"expose"`
+		Workspace string            `json:"workspace"`
+		Image     string            `json:"image"`
+		Env       map[string]string `json:"env"`
+		Secrets   []string          `json:"secrets"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return errorResult("invalid arguments: " + err.Error())
+	}
+
+	// If no command but name is given, this is a restart of a stopped instance
+	if len(params.Command) == 0 && params.Name != "" {
+		// Restart: POST /v1/instances with just the handle
+		body := map[string]interface{}{"handle": params.Name}
+		status, data, err := doRequest("POST", "/v1/instances", body)
+		if err != nil {
+			return errorResult(err.Error())
+		}
+		if status >= 400 {
+			return errorResult(fmt.Sprintf("HTTP %d: %s", status, string(data)))
+		}
+		return textResult(string(data))
+	}
+
+	if len(params.Command) == 0 {
+		return errorResult("command is required")
+	}
+
+	body := map[string]interface{}{
+		"command": params.Command,
+	}
+	if params.Name != "" {
+		body["handle"] = params.Name
+	}
+	if len(params.Expose) > 0 {
+		exposes := make([]map[string]interface{}, len(params.Expose))
+		for i, p := range params.Expose {
+			exposes[i] = map[string]interface{}{"port": p}
+		}
+		body["exposes"] = exposes
+	}
+	if params.Workspace != "" {
+		body["workspace"] = params.Workspace
+	}
+	if params.Image != "" {
+		body["image_ref"] = params.Image
+	}
+	if len(params.Env) > 0 {
+		body["env"] = params.Env
+	}
+	if len(params.Secrets) > 0 {
+		body["secrets"] = params.Secrets
+	}
+
+	status, data, err := doRequest("POST", "/v1/instances", body)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	if status >= 400 {
+		return errorResult(fmt.Sprintf("HTTP %d: %s", status, string(data)))
+	}
+	return textResult(string(data))
+}
+
+func handleInstanceList(args json.RawMessage) *mcpToolResult {
+	var params struct {
+		State string `json:"state"`
+	}
+	if args != nil {
+		json.Unmarshal(args, &params)
+	}
+
+	path := "/v1/instances"
+	if params.State != "" {
+		path += "?state=" + params.State
+	}
+
+	status, data, err := doRequest("GET", path, nil)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	if status >= 400 {
+		return errorResult(fmt.Sprintf("HTTP %d: %s", status, string(data)))
+	}
+	return textResult(string(data))
+}
+
+func handleInstanceInfo(args json.RawMessage) *mcpToolResult {
+	var params struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil || params.Name == "" {
+		return errorResult("name is required")
+	}
+
+	status, data, err := doRequest("GET", "/v1/instances/"+params.Name, nil)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	if status >= 400 {
+		return errorResult(fmt.Sprintf("HTTP %d: %s", status, string(data)))
+	}
+	return textResult(string(data))
+}
+
+func handleInstanceStop(args json.RawMessage) *mcpToolResult {
+	var params struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil || params.Name == "" {
+		return errorResult("name is required")
+	}
+
+	status, data, err := doRequest("POST", "/v1/instances/"+params.Name+"/stop", nil)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	if status >= 400 {
+		return errorResult(fmt.Sprintf("HTTP %d: %s", status, string(data)))
+	}
+	return textResult("instance stopped")
+}
+
+func handleInstanceDelete(args json.RawMessage) *mcpToolResult {
+	var params struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil || params.Name == "" {
+		return errorResult("name is required")
+	}
+
+	status, data, err := doRequest("DELETE", "/v1/instances/"+params.Name, nil)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	if status >= 400 {
+		return errorResult(fmt.Sprintf("HTTP %d: %s", status, string(data)))
+	}
+	return textResult("instance deleted")
+}
+
+func handleExec(args json.RawMessage) *mcpToolResult {
+	var params struct {
+		Name    string   `json:"name"`
+		Command []string `json:"command"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return errorResult("invalid arguments: " + err.Error())
+	}
+	if params.Name == "" || len(params.Command) == 0 {
+		return errorResult("name and command are required")
+	}
+
+	body := map[string]interface{}{
+		"command": params.Command,
+	}
+
+	resp, err := doStreamingRequest("POST", "/v1/instances/"+params.Name+"/exec", body)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		data, _ := io.ReadAll(resp.Body)
+		return errorResult(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(data)))
+	}
+
+	// Read NDJSON stream: collect output lines, wait for done marker
+	var lines []string
+	exitCode := -1
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		var entry map[string]interface{}
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			continue
+		}
+		// Done marker
+		if done, ok := entry["done"].(bool); ok && done {
+			if code, ok := entry["exit_code"].(float64); ok {
+				exitCode = int(code)
+			}
+			break
+		}
+		// Log line
+		if line, ok := entry["line"].(string); ok {
+			lines = append(lines, line)
+		}
+	}
+
+	output := strings.Join(lines, "\n")
+	if exitCode != 0 {
+		output += fmt.Sprintf("\n[exit code: %d]", exitCode)
+	}
+	if output == "" {
+		output = fmt.Sprintf("[no output, exit code: %d]", exitCode)
+	}
+	return textResult(output)
+}
+
+func handleLogs(args json.RawMessage) *mcpToolResult {
+	var params struct {
+		Name string `json:"name"`
+		Tail int    `json:"tail"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil || params.Name == "" {
+		return errorResult("name is required")
+	}
+	if params.Tail <= 0 {
+		params.Tail = 50
+	}
+
+	path := fmt.Sprintf("/v1/instances/%s/logs?tail=%d", params.Name, params.Tail)
+	resp, err := doStreamingRequest("GET", path, nil)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		data, _ := io.ReadAll(resp.Body)
+		return errorResult(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(data)))
+	}
+
+	// Read NDJSON log entries
+	var lines []string
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		var entry struct {
+			Stream string `json:"stream"`
+			Line   string `json:"line"`
+			Source string `json:"source"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			continue
+		}
+		prefix := ""
+		if entry.Stream == "stderr" {
+			prefix = "[stderr] "
+		}
+		lines = append(lines, prefix+entry.Line)
+	}
+
+	if len(lines) == 0 {
+		return textResult("[no logs]")
+	}
+	return textResult(strings.Join(lines, "\n"))
+}
+
+func handleSecretSet(args json.RawMessage) *mcpToolResult {
+	var params struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return errorResult("invalid arguments: " + err.Error())
+	}
+	if params.Key == "" || params.Value == "" {
+		return errorResult("key and value are required")
+	}
+
+	body := map[string]string{"value": params.Value}
+	status, data, err := doRequest("PUT", "/v1/secrets/"+params.Key, body)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	if status >= 400 {
+		return errorResult(fmt.Sprintf("HTTP %d: %s", status, string(data)))
+	}
+	return textResult(fmt.Sprintf("secret %q set", params.Key))
+}
+
+func handleSecretList(args json.RawMessage) *mcpToolResult {
+	status, data, err := doRequest("GET", "/v1/secrets", nil)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	if status >= 400 {
+		return errorResult(fmt.Sprintf("HTTP %d: %s", status, string(data)))
+	}
+	return textResult(string(data))
+}
+
+func handleSecretDelete(args json.RawMessage) *mcpToolResult {
+	var params struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil || params.Key == "" {
+		return errorResult("key is required")
+	}
+
+	status, data, err := doRequest("DELETE", "/v1/secrets/"+params.Key, nil)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	if status >= 400 {
+		return errorResult(fmt.Sprintf("HTTP %d: %s", status, string(data)))
+	}
+	return textResult(fmt.Sprintf("secret %q deleted", params.Key))
+}
+
+// --- Result helpers ---
+
+func textResult(text string) *mcpToolResult {
+	return &mcpToolResult{
+		Content: []mcpContent{{Type: "text", Text: text}},
+	}
+}
+
+func errorResult(msg string) *mcpToolResult {
+	return &mcpToolResult{
+		Content: []mcpContent{{Type: "text", Text: msg}},
+		IsError: true,
+	}
+}
+
+// --- Tool dispatch ---
+
+var toolHandlers = map[string]func(json.RawMessage) *mcpToolResult{
+	"instance_start":  handleInstanceStart,
+	"instance_list":   handleInstanceList,
+	"instance_info":   handleInstanceInfo,
+	"instance_stop":   handleInstanceStop,
+	"instance_delete": handleInstanceDelete,
+	"exec":            handleExec,
+	"logs":            handleLogs,
+	"secret_set":      handleSecretSet,
+	"secret_list":     handleSecretList,
+	"secret_delete":   handleSecretDelete,
+}
+
+// --- Main loop ---
+
+func main() {
+	enc := json.NewEncoder(os.Stdout)
+	scanner := bufio.NewScanner(os.Stdin)
+	// Allow large messages (16MB)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var req jsonRPCRequest
+		if err := json.Unmarshal(line, &req); err != nil {
+			// Write parse error only if we can extract an ID
+			enc.Encode(jsonRPCResponse{
+				JSONRPC: "2.0",
+				Error:   &rpcError{Code: -32700, Message: "parse error"},
+				ID:      nil,
+			})
+			continue
+		}
+
+		// Notifications (no id) — just acknowledge silently
+		if req.ID == nil {
+			continue
+		}
+
+		var result interface{}
+		var rpcErr *rpcError
+
+		switch req.Method {
+		case "initialize":
+			result = mcpInitializeResult{
+				ProtocolVersion: "2024-11-05",
+				ServerInfo: mcpServerInfo{
+					Name:    "aegis",
+					Version: "1.0.0",
+				},
+				Capabilities: mcpCapabilities{
+					Tools: &struct{}{},
+				},
+			}
+
+		case "tools/list":
+			result = mcpToolsListResult{Tools: tools}
+
+		case "tools/call":
+			var callParams mcpToolCallParams
+			if err := json.Unmarshal(req.Params, &callParams); err != nil {
+				rpcErr = &rpcError{Code: -32602, Message: "invalid params: " + err.Error()}
+			} else {
+				handler, ok := toolHandlers[callParams.Name]
+				if !ok {
+					rpcErr = &rpcError{Code: -32602, Message: "unknown tool: " + callParams.Name}
+				} else {
+					result = handler(callParams.Arguments)
+				}
+			}
+
+		default:
+			rpcErr = &rpcError{Code: -32601, Message: "method not found: " + req.Method}
+		}
+
+		enc.Encode(jsonRPCResponse{
+			JSONRPC: "2.0",
+			Result:  result,
+			Error:   rpcErr,
+			ID:      req.ID,
+		})
+	}
+}
