@@ -45,7 +45,7 @@ brew install libkrun e2fsprogs
 make all
 ./bin/aegisd &
 ./bin/aegis run -- echo hello
-./bin/aegis run --expose 80 -- python3 -m http.server 80
+./bin/aegis run --expose 8080:80 -- python3 -m http.server 80
 ./bin/aegis instance list
 ./bin/aegis exec <handle> -- echo hello
 ./bin/aegis logs <handle>
@@ -56,8 +56,8 @@ make all
 
 ```
 aegis up / down / status / doctor
-aegis run [--expose P[:proto]] [--env K=V] [--secret KEY] [--name H] [--workspace W] -- CMD   (ephemeral: start + follow + delete)
-aegis instance start [--name H] [--expose P[:proto]] [--env K=V] [--secret KEY] [--workspace W] [--image REF] -- CMD
+aegis run [--expose [PUB:]GUEST[/proto]] [--env K=V] [--secret KEY] [--name H] [--workspace W] -- CMD   (ephemeral: start + follow + delete)
+aegis instance start [--name H] [--expose [PUB:]GUEST[/proto]] [--env K=V] [--secret KEY] [--workspace W] [--image REF] -- CMD
 aegis instance start --name H                              (restart stopped instance)
 aegis instance list [--stopped | --running] / info / stop / delete / pause / resume
 aegis instance prune --stopped-older-than <dur>

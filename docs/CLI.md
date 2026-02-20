@@ -22,7 +22,7 @@ these differences matter:
 | `ENTRYPOINT` | Ignored. PID 1 is always `aegis-harness`. |
 | `CMD` | Ignored. The command comes from `aegis run -- CMD` or `aegis instance start -- CMD`. |
 | `ENV` | Ignored. Environment is set by secrets + RPC params. |
-| `EXPOSE` | Ignored. Ports are declared via `--expose` flag (Docker-style static mapping). |
+| `EXPOSE` | Ignored. Ports are declared via `--expose` flag (Docker-style port mapping). |
 | `VOLUME` | Ignored. Writable paths are fixed (`/workspace`, `/tmp`, `/run`, `/var`). |
 
 One process per VM. No `docker compose`. No restart supervisor -- if your
@@ -125,7 +125,7 @@ the instance. If `--workspace` is omitted, a temporary workspace is allocated
 and deleted after. If `--workspace` is provided, that workspace is preserved.
 
 ```
-aegis run [--expose PORT[:PROTO]] [--name NAME] [--image IMAGE] [--env K=V] [--secret KEY] [--workspace NAME_OR_PATH] -- COMMAND [ARGS...]
+aegis run [--expose [PUBLIC:]GUEST[/PROTO]] [--name NAME] [--image IMAGE] [--env K=V] [--secret KEY] [--workspace NAME_OR_PATH] -- COMMAND [ARGS...]
 ```
 
 **Flags:**
@@ -133,7 +133,7 @@ aegis run [--expose PORT[:PROTO]] [--name NAME] [--image IMAGE] [--env K=V] [--s
 | Flag | Description |
 |---|---|
 | `--image IMAGE` | OCI image reference (e.g., `alpine:3.21`). Without this, the base rootfs is used. |
-| `--expose PORT[:PROTO]` | Port to expose, with optional protocol (`http`, `tcp`). Default: `http`. May be specified multiple times. |
+| `--expose [PUBLIC:]GUEST[/PROTO]` | Port to expose. `8080:80` maps public 8080 to guest 80. `80` assigns a random public port. Optional `/tcp` or `/http` protocol hint. May be specified multiple times. |
 | `--name NAME` | Handle alias for the instance. |
 | `--env K=V` | Environment variable to inject. May be specified multiple times. |
 | `--secret KEY` | Secret to inject (by name). May be specified multiple times. Use `--secret '*'` for all. Default: none. |
@@ -149,19 +149,18 @@ an instance receives via `--secret`. This prevents accidental leakage.
 **Examples:**
 
 ```
-# Run a one-shot command (no secrets)
-$ aegis run -- echo "hello from aegis"
-hello from aegis
+# Run a one-shot command
+$ aegis run -- echo "hello from aegisvm"
+hello from aegisvm
 
-# Run with specific secrets
-$ aegis run --secret API_KEY --expose 80 -- python app.py
+# Run with deterministic port (public 8080 → guest 80)
+$ aegis run --expose 8080:80 -- python3 -m http.server 80
 
-# Run with all secrets
-$ aegis run --secret '*' -- python agent.py
+# Run with random public port
+$ aegis run --expose 80 -- python3 -m http.server 80
 
-# Run with exposed ports (no secrets needed)
-$ aegis run --expose 80 -- python -m http.server 80
-Serving on http://127.0.0.1:8099
+# Run with secrets
+$ aegis run --secret API_KEY --expose 8080:80 -- python app.py
 ```
 
 ---
@@ -177,7 +176,7 @@ Run `aegis instance help` to print subcommand usage.
 Start a new instance, or restart a stopped instance by handle.
 
 ```
-aegis instance start [--name NAME] [--expose PORT[:PROTO]] [--image IMAGE] [--env K=V] [--secret KEY] [--workspace NAME_OR_PATH] -- COMMAND [ARGS...]
+aegis instance start [--name NAME] [--expose [PUBLIC:]GUEST[/PROTO]] [--image IMAGE] [--env K=V] [--secret KEY] [--workspace NAME_OR_PATH] -- COMMAND [ARGS...]
 aegis instance start --name NAME                          (restart stopped instance)
 ```
 
@@ -190,7 +189,7 @@ not found, creates a new instance.
 | Flag | Description |
 |---|---|
 | `--name NAME` | Handle alias (used for routing, exec, logs, restart). |
-| `--expose PORT[:PROTO]` | Port to expose with optional protocol. Default: `http`. May be specified multiple times. |
+| `--expose [PUBLIC:]GUEST[/PROTO]` | Port to expose. `8080:80` maps public 8080 to guest 80. `80` assigns random. May be specified multiple times. |
 | `--image IMAGE` | OCI image reference. |
 | `--env K=V` | Environment variable. May be specified multiple times. |
 | `--secret KEY` | Secret to inject. May be specified multiple times. `'*'` for all. Default: none. |
@@ -199,7 +198,7 @@ not found, creates a new instance.
 **Examples:**
 
 ```
-$ aegis instance start --name web --expose 80 --workspace myapp -- python3 -m http.server 80
+$ aegis instance start --name web --expose 8080:80 --workspace myapp -- python3 -m http.server 80
 Instance started: inst-173f...
 Handle: web
 Router: http://127.0.0.1:8099
