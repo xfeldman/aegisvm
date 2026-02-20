@@ -236,9 +236,26 @@ func (r *Router) handlePortConn(ctx context.Context, clientConn net.Conn, pp *po
 	r.relay(clientConn, backend)
 }
 
+// dialBackend connects to the backend with retries.
+// After EnsureInstance the VM is running, but the app may not have bound
+// its port yet. Retry with short backoff to avoid dropping the client.
+func (r *Router) dialBackend(backend string, timeout time.Duration) (net.Conn, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		conn, err := net.DialTimeout("tcp", backend, 1*time.Second)
+		if err == nil {
+			return conn, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // relay does bidirectional TCP copy between client and backend.
 func (r *Router) relay(clientConn net.Conn, backend string) {
-	backendConn, err := net.DialTimeout("tcp", backend, 5*time.Second)
+	backendConn, err := r.dialBackend(backend, 10*time.Second)
 	if err != nil {
 		log.Printf("router: dial backend %s: %v", backend, err)
 		return
@@ -300,9 +317,14 @@ func (r *Router) handleRequest(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Standard HTTP reverse proxy
+	// Standard HTTP reverse proxy with retry dial
 	targetURL, _ := url.Parse("http://" + target)
 	proxy := &httputil.ReverseProxy{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return r.dialBackend(addr, 10*time.Second)
+			},
+		},
 		Director: func(r *http.Request) {
 			r.URL.Scheme = targetURL.Scheme
 			r.URL.Host = targetURL.Host
@@ -319,8 +341,8 @@ func (r *Router) handleRequest(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) handleWebSocket(w http.ResponseWriter, req *http.Request, target string) {
-	// Dial backend
-	backendConn, err := net.DialTimeout("tcp", target, 5*time.Second)
+	// Dial backend with retries (app may not have bound port yet after wake)
+	backendConn, err := r.dialBackend(target, 10*time.Second)
 	if err != nil {
 		http.Error(w, "WebSocket backend connection failed", http.StatusBadGateway)
 		return

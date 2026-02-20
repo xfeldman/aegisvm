@@ -200,30 +200,6 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	// Create in lifecycle manager
 	s.lifecycle.CreateInstance(id, req.Command, exposePorts, opts...)
 
-	// Persist to registry
-	if s.registry != nil {
-		portInts := make([]int, len(exposePorts))
-		for i, p := range exposePorts {
-			portInts[i] = p.GuestPort
-		}
-		regInst := &registry.Instance{
-			ID:          id,
-			State:       "stopped",
-			Command:     req.Command,
-			ExposePorts: portInts,
-			Handle:      req.Handle,
-			ImageRef:    req.ImageRef,
-			Workspace:   req.Workspace,
-			Env:         env,
-			SecretKeys:  req.Secrets,
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
-		}
-		if err := s.registry.SaveInstance(regInst); err != nil {
-			log.Printf("save instance to registry: %v", err)
-		}
-	}
-
 	// Allocate public ports via router
 	var publicEndpoints []router.PublicEndpoint
 	if s.router != nil && len(req.Exposes) > 0 {
@@ -242,6 +218,35 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 				PublicPort: publicPort,
 				Protocol:   proto,
 			})
+		}
+	}
+
+	// Persist to registry (after port allocation so we can save public ports)
+	if s.registry != nil {
+		portInts := make([]int, len(exposePorts))
+		for i, p := range exposePorts {
+			portInts[i] = p.GuestPort
+		}
+		publicPorts := make(map[int]int)
+		for _, ep := range publicEndpoints {
+			publicPorts[ep.GuestPort] = ep.PublicPort
+		}
+		regInst := &registry.Instance{
+			ID:          id,
+			State:       "stopped",
+			Command:     req.Command,
+			ExposePorts: portInts,
+			Handle:      req.Handle,
+			ImageRef:    req.ImageRef,
+			Workspace:   req.Workspace,
+			Env:         env,
+			SecretKeys:  req.Secrets,
+			PublicPorts: publicPorts,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+		}
+		if err := s.registry.SaveInstance(regInst); err != nil {
+			log.Printf("save instance to registry: %v", err)
 		}
 	}
 

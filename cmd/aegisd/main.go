@@ -96,6 +96,58 @@ func main() {
 		log.Fatalf("start router: %v", err)
 	}
 
+	// Restore instances from registry (they all come back as stopped — VMs are gone)
+	if instances, err := reg.ListInstances(); err == nil && len(instances) > 0 {
+		restored := 0
+		for _, ri := range instances {
+			// Build expose ports
+			var exposePorts []vmm.PortExpose
+			for _, p := range ri.ExposePorts {
+				exposePorts = append(exposePorts, vmm.PortExpose{GuestPort: p, Protocol: "http"})
+			}
+
+			// Build options
+			var opts []lifecycle.InstanceOption
+			if ri.Handle != "" {
+				opts = append(opts, lifecycle.WithHandle(ri.Handle))
+			}
+			if ri.ImageRef != "" {
+				opts = append(opts, lifecycle.WithImageRef(ri.ImageRef))
+			}
+			if ri.Workspace != "" {
+				opts = append(opts, lifecycle.WithWorkspace(ri.Workspace))
+			}
+			if len(ri.Env) > 0 {
+				opts = append(opts, lifecycle.WithEnv(ri.Env))
+			}
+
+			// Re-create in lifecycle manager (state = stopped)
+			lm.CreateInstance(ri.ID, ri.Command, exposePorts, opts...)
+
+			// Re-allocate public ports via router (use saved ports for stability)
+			for _, guestPort := range ri.ExposePorts {
+				requestedPort := 0
+				if ri.PublicPorts != nil {
+					requestedPort = ri.PublicPorts[guestPort]
+				}
+				if _, err := rtr.AllocatePort(ri.ID, guestPort, requestedPort, "http"); err != nil {
+					// Port may be taken — fall back to random
+					if requestedPort > 0 {
+						log.Printf("restore port :%d for %s failed, allocating random: %v", requestedPort, ri.ID, err)
+						if _, err := rtr.AllocatePort(ri.ID, guestPort, 0, "http"); err != nil {
+							log.Printf("restore port for %s: %v", ri.ID, err)
+						}
+					} else {
+						log.Printf("restore port for %s: %v", ri.ID, err)
+					}
+				}
+			}
+
+			restored++
+		}
+		log.Printf("restored %d instance(s) from registry (all stopped)", restored)
+	}
+
 	// Start API server
 	server := api.NewServer(cfg, backend, lm, reg, ss, ls, rtr)
 	if err := server.Start(); err != nil {

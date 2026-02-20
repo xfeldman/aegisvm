@@ -80,6 +80,7 @@ func (d *DB) migrate() error {
 		`ALTER TABLE instances ADD COLUMN workspace TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE instances ADD COLUMN env TEXT NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE instances ADD COLUMN secret_keys TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE instances ADD COLUMN public_ports TEXT NOT NULL DEFAULT '{}'`,
 	}
 	for _, stmt := range migrations {
 		d.db.Exec(stmt)
