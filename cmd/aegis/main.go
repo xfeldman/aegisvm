@@ -162,9 +162,20 @@ func cmdUp() {
 		os.Exit(1)
 	}
 
+	// Redirect daemon output to log file instead of terminal
+	home, _ := os.UserHomeDir()
+	logDir := filepath.Join(home, ".aegis", "data")
+	os.MkdirAll(logDir, 0755)
+	logFile, err := os.OpenFile(filepath.Join(logDir, "aegisd.log"),
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create log file: %v\n", err)
+		os.Exit(1)
+	}
+
 	cmd := exec.Command(aegisdBin)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "start aegisd: %v\n", err)
