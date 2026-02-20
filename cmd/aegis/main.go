@@ -798,11 +798,18 @@ func cmdInstanceInfo(client *http.Client) {
 		}
 		fmt.Printf("Ports:       %s\n", strings.Join(parts, ", "))
 	}
+	if ra, ok := inst["router_addr"].(string); ok && ra != "" {
+		fmt.Printf("Router:      http://%s\n", ra)
+	}
 	if eps, ok := inst["endpoints"].([]interface{}); ok && len(eps) > 0 {
 		fmt.Println("Endpoints:")
 		for _, ep := range eps {
 			if epm, ok := ep.(map[string]interface{}); ok {
-				fmt.Printf("  :%v → :%v (%v)\n", epm["guest_port"], epm["host_port"], epm["protocol"])
+				publicPort := epm["public_port"]
+				if publicPort == nil {
+					publicPort = epm["host_port"] // backward compat
+				}
+				fmt.Printf("  :%v → :%v (%v)\n", epm["guest_port"], publicPort, epm["protocol"])
 			}
 		}
 	}

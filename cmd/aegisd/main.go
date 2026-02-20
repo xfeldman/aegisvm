@@ -97,7 +97,7 @@ func main() {
 	}
 
 	// Start API server
-	server := api.NewServer(cfg, backend, lm, reg, ss, ls)
+	server := api.NewServer(cfg, backend, lm, reg, ss, ls, rtr)
 	if err := server.Start(); err != nil {
 		log.Fatalf("start API server: %v", err)
 	}

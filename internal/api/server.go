@@ -16,6 +16,7 @@ import (
 	"github.com/xfeldman/aegisvm/internal/lifecycle"
 	"github.com/xfeldman/aegisvm/internal/logstore"
 	"github.com/xfeldman/aegisvm/internal/registry"
+	"github.com/xfeldman/aegisvm/internal/router"
 	"github.com/xfeldman/aegisvm/internal/secrets"
 	"github.com/xfeldman/aegisvm/internal/vmm"
 )
@@ -28,13 +29,14 @@ type Server struct {
 	registry    *registry.DB
 	secretStore *secrets.Store
 	logStore    *logstore.Store
+	router      *router.Router
 	mux         *http.ServeMux
 	server      *http.Server
 	ln          net.Listener
 }
 
 // NewServer creates a new API server.
-func NewServer(cfg *config.Config, v vmm.VMM, lm *lifecycle.Manager, reg *registry.DB, ss *secrets.Store, ls *logstore.Store) *Server {
+func NewServer(cfg *config.Config, v vmm.VMM, lm *lifecycle.Manager, reg *registry.DB, ss *secrets.Store, ls *logstore.Store, rtr *router.Router) *Server {
 	s := &Server{
 		cfg:         cfg,
 		vmm:         v,
@@ -42,6 +44,7 @@ func NewServer(cfg *config.Config, v vmm.VMM, lm *lifecycle.Manager, reg *regist
 		registry:    reg,
 		secretStore: ss,
 		logStore:    ls,
+		router:      rtr,
 		mux:         http.NewServeMux(),
 	}
 	s.registerRoutes()
@@ -220,6 +223,26 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Allocate public ports via router
+	var publicEndpoints []router.PublicEndpoint
+	if s.router != nil && len(exposePorts) > 0 {
+		for _, ep := range exposePorts {
+			publicPort, err := s.router.AllocatePort(id, ep.GuestPort, ep.Protocol)
+			if err != nil {
+				log.Printf("allocate public port for guest %d: %v", ep.GuestPort, err)
+				s.router.FreeAllPorts(id)
+				s.lifecycle.DeleteInstance(id)
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("port allocation failed: %v", err))
+				return
+			}
+			publicEndpoints = append(publicEndpoints, router.PublicEndpoint{
+				GuestPort:  ep.GuestPort,
+				PublicPort: publicPort,
+				Protocol:   ep.Protocol,
+			})
+		}
+	}
+
 	// Boot the instance
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -230,9 +253,9 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	resp := map[string]interface{}{
-		"id":         id,
-		"state":      "starting",
-		"command":    req.Command,
+		"id":          id,
+		"state":       "starting",
+		"command":     req.Command,
 		"router_addr": s.cfg.RouterAddr,
 	}
 	if req.Handle != "" {
@@ -240,6 +263,17 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ImageRef != "" {
 		resp["image_ref"] = req.ImageRef
+	}
+	if len(publicEndpoints) > 0 {
+		eps := make([]map[string]interface{}, len(publicEndpoints))
+		for i, ep := range publicEndpoints {
+			eps[i] = map[string]interface{}{
+				"guest_port":  ep.GuestPort,
+				"public_port": ep.PublicPort,
+				"protocol":    ep.Protocol,
+			}
+		}
+		resp["endpoints"] = eps
 	}
 	if len(exposePorts) > 0 {
 		ports := make([]int, len(exposePorts))
@@ -322,17 +356,22 @@ func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 		}
 		resp["expose_ports"] = ports
 	}
+	resp["router_addr"] = s.cfg.RouterAddr
 
-	if len(inst.Endpoints) > 0 {
-		eps := make([]map[string]interface{}, len(inst.Endpoints))
-		for i, ep := range inst.Endpoints {
-			eps[i] = map[string]interface{}{
-				"guest_port": ep.GuestPort,
-				"host_port":  ep.HostPort,
-				"protocol":   ep.Protocol,
+	// Show public (router-owned) endpoints
+	if s.router != nil {
+		publicEps := s.router.GetAllPublicPorts(inst.ID)
+		if len(publicEps) > 0 {
+			eps := make([]map[string]interface{}, len(publicEps))
+			for i, ep := range publicEps {
+				eps[i] = map[string]interface{}{
+					"guest_port":  ep.GuestPort,
+					"public_port": ep.PublicPort,
+					"protocol":    ep.Protocol,
+				}
 			}
+			resp["endpoints"] = eps
 		}
-		resp["endpoints"] = eps
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -590,6 +629,12 @@ func (s *Server) handleStopInstance(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 	id := pathParam(r, "id")
+
+	// Free public port listeners before deleting instance
+	if s.router != nil {
+		s.router.FreeAllPorts(id)
+	}
+
 	if err := s.lifecycle.DeleteInstance(id); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -621,6 +666,9 @@ func (s *Server) handlePruneInstances(w http.ResponseWriter, r *http.Request) {
 
 	for _, inst := range instances {
 		if inst.State == lifecycle.StateStopped && !inst.StoppedAt.IsZero() && inst.StoppedAt.Before(cutoff) {
+			if s.router != nil {
+				s.router.FreeAllPorts(inst.ID)
+			}
 			if err := s.lifecycle.DeleteInstance(inst.ID); err == nil {
 				if s.registry != nil {
 					s.registry.DeleteInstance(inst.ID)

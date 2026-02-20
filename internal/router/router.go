@@ -1,7 +1,12 @@
-// Package router provides the HTTP reverse proxy that fronts instances.
-// It listens on a local port (default 127.0.0.1:8099) and proxies incoming
-// requests to the VM's mapped host port. It handles wake-on-connect (resuming
-// paused VMs), connection tracking, and WebSocket upgrades.
+// Package router provides ingress for instances.
+//
+// Two ingress paths:
+//   - Main HTTP router (:8099) for handle-based routing with HTTP reverse proxy
+//   - Per-port TCP proxies for --expose ports with L4 relay and wake-on-connect
+//
+// Both paths share the same "ensure instance + dial backend + relay" core.
+// Public ports (router-owned) are stable across pause/resume/stop/restart.
+// They are freed only on instance delete or daemon shutdown.
 package router
 
 import (
@@ -20,19 +25,38 @@ import (
 	"github.com/xfeldman/aegisvm/internal/lifecycle"
 )
 
-// Router is the HTTP reverse proxy for instances.
+// PublicEndpoint describes a router-owned public port mapping.
+type PublicEndpoint struct {
+	GuestPort  int
+	PublicPort int
+	Protocol   string
+}
+
+// portProxy represents a single per-port TCP listener owned by the router.
+type portProxy struct {
+	instanceID string
+	guestPort  int
+	publicPort int
+	protocol   string
+	listener   net.Listener
+	cancel     context.CancelFunc
+}
+
+// Router is the ingress proxy for instances.
 type Router struct {
-	lm     *lifecycle.Manager
-	addr   string
-	server *http.Server
-	mu     sync.Mutex
+	lm          *lifecycle.Manager
+	addr        string
+	server      *http.Server
+	mu          sync.Mutex
+	portProxies map[string][]*portProxy // instanceID → proxies
 }
 
 // New creates a new router.
 func New(lm *lifecycle.Manager, addr string) *Router {
 	r := &Router{
-		lm:   lm,
-		addr: addr,
+		lm:          lm,
+		addr:        addr,
+		portProxies: make(map[string][]*portProxy),
 	}
 	r.server = &http.Server{
 		Addr:    addr,
@@ -41,7 +65,7 @@ func New(lm *lifecycle.Manager, addr string) *Router {
 	return r
 }
 
-// Start begins listening and serving.
+// Start begins listening and serving the main HTTP router.
 func (r *Router) Start() error {
 	ln, err := net.Listen("tcp", r.addr)
 	if err != nil {
@@ -59,8 +83,19 @@ func (r *Router) Start() error {
 	return nil
 }
 
-// Stop gracefully shuts down the router.
+// Stop gracefully shuts down the router and all port proxies.
 func (r *Router) Stop(ctx context.Context) error {
+	// Close all port proxy listeners
+	r.mu.Lock()
+	allIDs := make([]string, 0, len(r.portProxies))
+	for id := range r.portProxies {
+		allIDs = append(allIDs, id)
+	}
+	r.mu.Unlock()
+	for _, id := range allIDs {
+		r.FreeAllPorts(id)
+	}
+
 	return r.server.Shutdown(ctx)
 }
 
@@ -69,12 +104,166 @@ func (r *Router) Addr() string {
 	return r.addr
 }
 
+// --- Per-port proxy management ---
+
+// AllocatePort creates a public TCP listener for a guest port.
+// The listener handles wake-on-connect and L4 relay to the VMM backend.
+// Returns the allocated host port.
+func (r *Router) AllocatePort(instanceID string, guestPort int, protocol string) (int, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, fmt.Errorf("allocate public port for guest %d: %w", guestPort, err)
+	}
+	publicPort := ln.Addr().(*net.TCPAddr).Port
+
+	ctx, cancel := context.WithCancel(context.Background())
+	pp := &portProxy{
+		instanceID: instanceID,
+		guestPort:  guestPort,
+		publicPort: publicPort,
+		protocol:   protocol,
+		listener:   ln,
+		cancel:     cancel,
+	}
+
+	r.mu.Lock()
+	r.portProxies[instanceID] = append(r.portProxies[instanceID], pp)
+	r.mu.Unlock()
+
+	go r.acceptLoop(ctx, pp)
+
+	log.Printf("router: public port :%d → instance %s guest :%d (%s)",
+		publicPort, instanceID, guestPort, protocol)
+	return publicPort, nil
+}
+
+// FreeAllPorts closes all public port listeners for an instance.
+// Called on instance delete (NOT on stop/pause — listeners survive state transitions).
+func (r *Router) FreeAllPorts(instanceID string) {
+	r.mu.Lock()
+	proxies, ok := r.portProxies[instanceID]
+	if ok {
+		delete(r.portProxies, instanceID)
+	}
+	r.mu.Unlock()
+
+	if !ok {
+		return
+	}
+
+	for _, pp := range proxies {
+		pp.cancel()
+		pp.listener.Close()
+		log.Printf("router: freed public port :%d for instance %s", pp.publicPort, instanceID)
+	}
+}
+
+// GetPublicPort returns the public host port for a guest port.
+func (r *Router) GetPublicPort(instanceID string, guestPort int) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, pp := range r.portProxies[instanceID] {
+		if pp.guestPort == guestPort {
+			return pp.publicPort, nil
+		}
+	}
+	return 0, fmt.Errorf("no public port for instance %s guest port %d", instanceID, guestPort)
+}
+
+// GetAllPublicPorts returns all public endpoints for an instance.
+func (r *Router) GetAllPublicPorts(instanceID string) []PublicEndpoint {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	proxies := r.portProxies[instanceID]
+	eps := make([]PublicEndpoint, len(proxies))
+	for i, pp := range proxies {
+		eps[i] = PublicEndpoint{
+			GuestPort:  pp.guestPort,
+			PublicPort: pp.publicPort,
+			Protocol:   pp.protocol,
+		}
+	}
+	return eps
+}
+
+// --- Per-port TCP proxy ---
+
+func (r *Router) acceptLoop(ctx context.Context, pp *portProxy) {
+	for {
+		conn, err := pp.listener.Accept()
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return // clean shutdown
+			default:
+				// Listener closed
+				return
+			}
+		}
+		go r.handlePortConn(ctx, conn, pp)
+	}
+}
+
+func (r *Router) handlePortConn(ctx context.Context, clientConn net.Conn, pp *portProxy) {
+	defer clientConn.Close()
+
+	// Track connection BEFORE ensure to prevent idle timer race
+	r.lm.ResetActivity(pp.instanceID)
+	defer r.lm.OnConnectionClose(pp.instanceID)
+
+	// Ensure instance is running (wake/boot)
+	ensureCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	if err := r.lm.EnsureInstance(ensureCtx, pp.instanceID); err != nil {
+		log.Printf("router: port :%d ensure instance %s: %v", pp.publicPort, pp.instanceID, err)
+		return
+	}
+
+	// Get VMM backend endpoint
+	backend, err := r.lm.GetEndpoint(pp.instanceID, pp.guestPort)
+	if err != nil {
+		log.Printf("router: port :%d no backend for guest :%d: %v", pp.publicPort, pp.guestPort, err)
+		return
+	}
+
+	// L4 TCP relay to backend
+	r.relay(clientConn, backend)
+}
+
+// relay does bidirectional TCP copy between client and backend.
+func (r *Router) relay(clientConn net.Conn, backend string) {
+	backendConn, err := net.DialTimeout("tcp", backend, 5*time.Second)
+	if err != nil {
+		log.Printf("router: dial backend %s: %v", backend, err)
+		return
+	}
+	defer backendConn.Close()
+
+	done := make(chan struct{}, 2)
+	go func() {
+		io.Copy(backendConn, clientConn)
+		done <- struct{}{}
+	}()
+	go func() {
+		io.Copy(clientConn, backendConn)
+		done <- struct{}{}
+	}()
+	<-done
+}
+
+// --- Main HTTP router (handle-based routing on :8099) ---
+
 func (r *Router) handleRequest(w http.ResponseWriter, req *http.Request) {
 	inst := r.resolveInstance(req)
 	if inst == nil {
 		http.Error(w, "No active instance", http.StatusServiceUnavailable)
 		return
 	}
+
+	// Track connection BEFORE ensure to prevent idle timer race
+	r.lm.ResetActivity(inst.ID)
+	defer r.lm.OnConnectionClose(inst.ID)
 
 	// Ensure instance is running (wake if paused, boot if stopped)
 	ctx, cancel := context.WithTimeout(req.Context(), 30*time.Second)
@@ -99,10 +288,6 @@ func (r *Router) handleRequest(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, fmt.Sprintf("endpoint not found: %v", err), http.StatusBadGateway)
 		return
 	}
-
-	// Track connection
-	r.lm.ResetActivity(inst.ID)
-	defer r.lm.OnConnectionClose(inst.ID)
 
 	// Check for WebSocket upgrade
 	if isWebSocketUpgrade(req) {
