@@ -730,7 +730,6 @@ func cmdInstanceStart(client *http.Client) {
 
 	id, _ := inst["id"].(string)
 	handle, _ := inst["handle"].(string)
-	routerAddr, _ := inst["router_addr"].(string)
 
 	if resp.StatusCode == http.StatusOK {
 		fmt.Printf("Instance restarted: %s\n", id)
@@ -740,8 +739,19 @@ func cmdInstanceStart(client *http.Client) {
 	if handle != "" {
 		fmt.Printf("Handle: %s\n", handle)
 	}
-	if routerAddr != "" {
-		fmt.Printf("Router: http://%s\n", routerAddr)
+
+	// Show endpoints
+	if eps, ok := inst["endpoints"].([]interface{}); ok {
+		for _, ep := range eps {
+			if epm, ok := ep.(map[string]interface{}); ok {
+				publicPort := epm["public_port"]
+				protocol, _ := epm["protocol"].(string)
+				if protocol == "" {
+					protocol = "http"
+				}
+				fmt.Printf("URL:    %s://127.0.0.1:%v\n", protocol, publicPort)
+			}
+		}
 	}
 }
 
@@ -842,18 +852,37 @@ func cmdInstanceInfo(client *http.Client) {
 	var inst map[string]interface{}
 	json.NewDecoder(resp.Body).Decode(&inst)
 
-	fmt.Printf("ID:          %s\n", inst["id"])
-	fmt.Printf("State:       %s\n", inst["state"])
-	if enabled, ok := inst["enabled"].(bool); ok {
-		if enabled {
-			fmt.Printf("Enabled:     true\n")
-		} else {
-			fmt.Printf("Enabled:     false\n")
-		}
+	// State with color
+	state, _ := inst["state"].(string)
+	var stateStr string
+	switch state {
+	case "running":
+		stateStr = colorGreen + state + colorReset
+	case "paused":
+		stateStr = colorYellow + state + colorReset
+	case "stopped":
+		stateStr = colorGray + state + colorReset
+	case "starting":
+		stateStr = colorCyan + state + colorReset
+	default:
+		stateStr = state
 	}
+
+	// Enabled with color
+	enabled, _ := inst["enabled"].(bool)
+	var enabledStr string
+	if enabled {
+		enabledStr = colorGreen + "true" + colorReset
+	} else {
+		enabledStr = colorRed + "false" + colorReset
+	}
+
 	if handle, ok := inst["handle"].(string); ok && handle != "" {
 		fmt.Printf("Handle:      %s\n", handle)
 	}
+	fmt.Printf("ID:          %s\n", inst["id"])
+	fmt.Printf("State:       %s\n", stateStr)
+	fmt.Printf("Enabled:     %s\n", enabledStr)
 	if imageRef, ok := inst["image_ref"].(string); ok && imageRef != "" {
 		fmt.Printf("Image:       %s\n", imageRef)
 	}
@@ -864,16 +893,6 @@ func cmdInstanceInfo(client *http.Client) {
 		}
 		fmt.Printf("Command:     %s\n", strings.Join(parts, " "))
 	}
-	if ports, ok := inst["expose_ports"].([]interface{}); ok && len(ports) > 0 {
-		parts := make([]string, len(ports))
-		for i, p := range ports {
-			parts[i] = fmt.Sprint(p)
-		}
-		fmt.Printf("Ports:       %s\n", strings.Join(parts, ", "))
-	}
-	if ra, ok := inst["router_addr"].(string); ok && ra != "" {
-		fmt.Printf("Router:      http://%s\n", ra)
-	}
 	if eps, ok := inst["endpoints"].([]interface{}); ok && len(eps) > 0 {
 		fmt.Println("Endpoints:")
 		for _, ep := range eps {
@@ -882,7 +901,12 @@ func cmdInstanceInfo(client *http.Client) {
 				if publicPort == nil {
 					publicPort = epm["host_port"] // backward compat
 				}
-				fmt.Printf("  :%v → :%v (%v)\n", epm["guest_port"], publicPort, epm["protocol"])
+				guestPort := epm["guest_port"]
+				protocol, _ := epm["protocol"].(string)
+				if protocol == "" {
+					protocol = "http"
+				}
+				fmt.Printf("  %s://127.0.0.1:%v → vm:%v\n", protocol, publicPort, guestPort)
 			}
 		}
 	}
@@ -894,6 +918,9 @@ func cmdInstanceInfo(client *http.Client) {
 	}
 	if lastActive, ok := inst["last_active_at"].(string); ok {
 		fmt.Printf("Last Active: %s\n", lastActive)
+	}
+	if stoppedAt, ok := inst["stopped_at"].(string); ok && stoppedAt != "" {
+		fmt.Printf("Stopped At:  %s\n", stoppedAt)
 	}
 }
 

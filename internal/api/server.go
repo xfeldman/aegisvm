@@ -262,10 +262,9 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	resp := map[string]interface{}{
-		"id":          id,
-		"state":       "starting",
-		"command":     req.Command,
-		"router_addr": s.cfg.RouterAddr,
+		"id":      id,
+		"state":   "starting",
+		"command": req.Command,
 	}
 	if req.Handle != "" {
 		resp["handle"] = req.Handle
@@ -320,10 +319,9 @@ func (s *Server) handleRestartOrConflict(w http.ResponseWriter, inst *lifecycle.
 	}
 
 	resp := map[string]interface{}{
-		"id":          inst.ID,
-		"state":       "starting",
-		"command":     inst.Command,
-		"router_addr": s.cfg.RouterAddr,
+		"id":      inst.ID,
+		"state":   "starting",
+		"command": inst.Command,
 	}
 	if inst.HandleAlias != "" {
 		resp["handle"] = inst.HandleAlias
@@ -372,8 +370,6 @@ func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 		}
 		resp["expose_ports"] = ports
 	}
-	resp["router_addr"] = s.cfg.RouterAddr
-
 	// Show public (router-owned) endpoints
 	if s.router != nil {
 		publicEps := s.router.GetAllPublicPorts(inst.ID)
