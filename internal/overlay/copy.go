@@ -25,6 +25,12 @@ func NewCopyOverlay(baseDir string) *CopyOverlay {
 
 func (o *CopyOverlay) Create(ctx context.Context, sourceDir, destID string) (string, error) {
 	dest := filepath.Join(o.baseDir, destID)
+
+	// Reuse existing overlay if present (e.g. after daemon restart)
+	if _, err := os.Stat(dest); err == nil {
+		return dest, nil
+	}
+
 	staging := dest + ".tmp"
 
 	// Clean up any leftover staging dir from a previous crash

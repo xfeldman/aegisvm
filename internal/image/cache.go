@@ -13,25 +13,56 @@ import (
 
 // Cache provides digest-keyed caching for unpacked OCI image rootfs directories.
 // Cache layout: {cacheDir}/sha256_{digest}/  — unpacked rootfs.
+//
+// A local ref→digest index avoids hitting the registry on every boot.
+// The index is populated on first pull and reused for subsequent lookups.
 type Cache struct {
 	mu       sync.Mutex
 	cacheDir string
+	refIndex map[string]string // imageRef → digest (in-memory, rebuilt from disk on miss)
 }
 
 // NewCache creates a new image cache.
 func NewCache(cacheDir string) *Cache {
-	return &Cache{cacheDir: cacheDir}
+	return &Cache{
+		cacheDir: cacheDir,
+		refIndex: make(map[string]string),
+	}
 }
 
 // GetOrPull returns the path to the unpacked rootfs for the given image reference.
-// If the image is already cached (by digest), the cached path is returned.
-// Otherwise, the image is pulled, unpacked, and cached.
+// If the image is already cached (by digest), the cached path is returned
+// without any network calls. Otherwise, the image is pulled, unpacked, and cached.
 func (c *Cache) GetOrPull(ctx context.Context, imageRef string) (rootfsDir string, digest string, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Pull to get the digest (this is a remote HEAD + manifest fetch, not full pull if cached)
-	log.Printf("image: resolving %s", imageRef)
+	// Fast path: check ref→digest index (no network)
+	if d, ok := c.refIndex[imageRef]; ok {
+		cachedDir := filepath.Join(c.cacheDir, digestToDirName(d))
+		if _, err := os.Stat(cachedDir); err == nil {
+			log.Printf("image: local cache hit for %s (%s)", imageRef, d)
+			return cachedDir, d, nil
+		}
+		// Index entry stale (dir deleted), fall through to pull
+		delete(c.refIndex, imageRef)
+	}
+
+	// Scan disk for existing cache entries if index is empty
+	// (handles daemon restart where in-memory index is lost)
+	if len(c.refIndex) == 0 {
+		c.rebuildIndex()
+		if d, ok := c.refIndex[imageRef]; ok {
+			cachedDir := filepath.Join(c.cacheDir, digestToDirName(d))
+			if _, err := os.Stat(cachedDir); err == nil {
+				log.Printf("image: disk cache hit for %s (%s)", imageRef, d)
+				return cachedDir, d, nil
+			}
+		}
+	}
+
+	// Pull to get the digest (remote HEAD + manifest fetch)
+	log.Printf("image: resolving %s (network)", imageRef)
 	result, err := Pull(ctx, imageRef)
 	if err != nil {
 		return "", "", fmt.Errorf("pull %s: %w", imageRef, err)
@@ -41,9 +72,14 @@ func (c *Cache) GetOrPull(ctx context.Context, imageRef string) (rootfsDir strin
 	dirName := digestToDirName(digest)
 	cachedDir := filepath.Join(c.cacheDir, dirName)
 
-	// Check if already cached
+	// Update index
+	c.refIndex[imageRef] = digest
+
+	// Check if already cached (by digest)
 	if _, err := os.Stat(cachedDir); err == nil {
 		log.Printf("image: cache hit for %s (%s)", imageRef, digest)
+		// Write ref file for future index rebuilds
+		c.writeRefFile(cachedDir, imageRef)
 		return cachedDir, digest, nil
 	}
 
@@ -66,8 +102,40 @@ func (c *Cache) GetOrPull(ctx context.Context, imageRef string) (rootfsDir strin
 		return "", "", fmt.Errorf("rename cache dir: %w", err)
 	}
 
+	// Write ref file for future index rebuilds
+	c.writeRefFile(cachedDir, imageRef)
+
 	log.Printf("image: cached %s at %s", imageRef, cachedDir)
 	return cachedDir, digest, nil
+}
+
+// writeRefFile stores the imageRef inside the cached dir so rebuildIndex can map it back.
+func (c *Cache) writeRefFile(cachedDir, imageRef string) {
+	os.WriteFile(filepath.Join(cachedDir, ".image-ref"), []byte(imageRef), 0644)
+}
+
+// rebuildIndex scans the cache directory and rebuilds ref→digest from .image-ref files.
+func (c *Cache) rebuildIndex() {
+	entries, err := os.ReadDir(c.cacheDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasSuffix(e.Name(), ".tmp") {
+			continue
+		}
+		refFile := filepath.Join(c.cacheDir, e.Name(), ".image-ref")
+		data, err := os.ReadFile(refFile)
+		if err != nil {
+			continue
+		}
+		ref := strings.TrimSpace(string(data))
+		digest := strings.Replace(e.Name(), "_", ":", 1) // sha256_abc → sha256:abc
+		c.refIndex[ref] = digest
+	}
+	if len(c.refIndex) > 0 {
+		log.Printf("image: rebuilt index from disk (%d entries)", len(c.refIndex))
+	}
 }
 
 // InjectHarness copies the harness binary into the rootfs at /usr/bin/aegis-harness.
