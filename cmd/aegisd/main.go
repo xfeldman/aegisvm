@@ -120,25 +120,29 @@ func main() {
 			if len(ri.Env) > 0 {
 				opts = append(opts, lifecycle.WithEnv(ri.Env))
 			}
+			opts = append(opts, lifecycle.WithEnabled(ri.Enabled))
 
 			// Re-create in lifecycle manager (state = stopped)
 			lm.CreateInstance(ri.ID, ri.Command, exposePorts, opts...)
 
-			// Re-allocate public ports via router (use saved ports for stability)
-			for _, guestPort := range ri.ExposePorts {
-				requestedPort := 0
-				if ri.PublicPorts != nil {
-					requestedPort = ri.PublicPorts[guestPort]
-				}
-				if _, err := rtr.AllocatePort(ri.ID, guestPort, requestedPort, "http"); err != nil {
-					// Port may be taken — fall back to random
-					if requestedPort > 0 {
-						log.Printf("restore port :%d for %s failed, allocating random: %v", requestedPort, ri.ID, err)
-						if _, err := rtr.AllocatePort(ri.ID, guestPort, 0, "http"); err != nil {
+			// Re-allocate public ports via router only if enabled
+			// Disabled instances are unreachable — no listeners allocated
+			if ri.Enabled {
+				for _, guestPort := range ri.ExposePorts {
+					requestedPort := 0
+					if ri.PublicPorts != nil {
+						requestedPort = ri.PublicPorts[guestPort]
+					}
+					if _, err := rtr.AllocatePort(ri.ID, guestPort, requestedPort, "http"); err != nil {
+						// Port may be taken — fall back to random
+						if requestedPort > 0 {
+							log.Printf("restore port :%d for %s failed, allocating random: %v", requestedPort, ri.ID, err)
+							if _, err := rtr.AllocatePort(ri.ID, guestPort, 0, "http"); err != nil {
+								log.Printf("restore port for %s: %v", ri.ID, err)
+							}
+						} else {
 							log.Printf("restore port for %s: %v", ri.ID, err)
 						}
-					} else {
-						log.Printf("restore port for %s: %v", ri.ID, err)
 					}
 				}
 			}

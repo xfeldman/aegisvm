@@ -59,7 +59,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /v1/instances/{id}", s.handleGetInstance)
 	s.mux.HandleFunc("GET /v1/instances/{id}/logs", s.handleInstanceLogs)
 	s.mux.HandleFunc("POST /v1/instances/{id}/exec", s.handleExecInstance)
-	s.mux.HandleFunc("POST /v1/instances/{id}/stop", s.handleStopInstance)
+	s.mux.HandleFunc("POST /v1/instances/{id}/start", s.handleStartInstance)
+	s.mux.HandleFunc("POST /v1/instances/{id}/disable", s.handleDisableInstance)
 	s.mux.HandleFunc("POST /v1/instances/{id}/pause", s.handlePauseInstance)
 	s.mux.HandleFunc("POST /v1/instances/{id}/resume", s.handleResumeInstance)
 	s.mux.HandleFunc("DELETE /v1/instances/{id}", s.handleDeleteInstance)
@@ -242,6 +243,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 			Env:         env,
 			SecretKeys:  req.Secrets,
 			PublicPorts: publicPorts,
+			Enabled:     true,
 			CreatedAt:   time.Now(),
 			UpdatedAt:   time.Now(),
 		}
@@ -302,14 +304,18 @@ func (s *Server) handleRestartOrConflict(w http.ResponseWriter, inst *lifecycle.
 		return
 	}
 
-	// Restart uses stored config. EnsureInstance handles STOPPED → boot.
+	// Re-enable and boot via StartInstance (sets Enabled=true + boots).
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
-		if err := s.lifecycle.EnsureInstance(ctx, inst.ID); err != nil {
+		if err := s.lifecycle.StartInstance(ctx, inst.ID); err != nil {
 			log.Printf("instance %s restart failed: %v", inst.ID, err)
 		}
 	}()
+
+	if s.registry != nil {
+		s.registry.UpdateEnabled(inst.ID, true)
+	}
 
 	resp := map[string]interface{}{
 		"id":          inst.ID,
@@ -340,6 +346,7 @@ func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]interface{}{
 		"id":                inst.ID,
 		"state":             inst.State,
+		"enabled":           inst.Enabled,
 		"command":           inst.Command,
 		"created_at":        inst.CreatedAt.Format(time.RFC3339),
 		"last_active_at":    s.lifecycle.LastActivity(inst.ID).Format(time.RFC3339),
@@ -398,6 +405,7 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 		entry := map[string]interface{}{
 			"id":                inst.ID,
 			"state":             inst.State,
+			"enabled":           inst.Enabled,
 			"command":           inst.Command,
 			"created_at":        inst.CreatedAt.Format(time.RFC3339),
 			"last_active_at":    s.lifecycle.LastActivity(inst.ID).Format(time.RFC3339),
@@ -428,6 +436,11 @@ func (s *Server) handleInstanceLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	if inst == nil {
 		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	if !inst.Enabled {
+		writeError(w, http.StatusConflict, "instance is disabled")
 		return
 	}
 
@@ -527,6 +540,10 @@ func (s *Server) handleExecInstance(w http.ResponseWriter, r *http.Request) {
 
 	execID, startedAt, doneCh, err := s.lifecycle.ExecInstance(r.Context(), inst.ID, req.Command, req.Env)
 	if err != nil {
+		if err == lifecycle.ErrInstanceDisabled {
+			writeError(w, http.StatusConflict, "instance is disabled")
+			return
+		}
 		if err == lifecycle.ErrInstanceStopped {
 			writeError(w, http.StatusConflict, "instance is stopped")
 			return
@@ -620,18 +637,89 @@ func (s *Server) handleResumeInstance(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "running"})
 }
 
-func (s *Server) handleStopInstance(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleStartInstance(w http.ResponseWriter, r *http.Request) {
 	id := pathParam(r, "id")
-	if err := s.lifecycle.StopInstance(id); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+
+	// Resolve by ID or handle
+	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	// Re-allocate port listeners if they were freed by disable
+	if s.router != nil {
+		existing := s.router.GetAllPublicPorts(inst.ID)
+		if len(existing) == 0 && len(inst.ExposePorts) > 0 {
+			// Look up saved public ports from registry
+			var savedPorts map[int]int
+			if s.registry != nil {
+				if ri, err := s.registry.GetInstance(inst.ID); err == nil && ri != nil {
+					savedPorts = ri.PublicPorts
+				}
+			}
+			for _, ep := range inst.ExposePorts {
+				requestedPort := 0
+				if savedPorts != nil {
+					requestedPort = savedPorts[ep.GuestPort]
+				}
+				if _, err := s.router.AllocatePort(inst.ID, ep.GuestPort, requestedPort, ep.Protocol); err != nil {
+					if requestedPort > 0 {
+						s.router.AllocatePort(inst.ID, ep.GuestPort, 0, ep.Protocol)
+					}
+				}
+			}
+		}
+	}
+
+	// StartInstance sets Enabled=true and boots
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		if err := s.lifecycle.StartInstance(ctx, inst.ID); err != nil {
+			log.Printf("instance %s start failed: %v", inst.ID, err)
+		}
+	}()
+
+	if s.registry != nil {
+		s.registry.UpdateEnabled(inst.ID, true)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "starting"})
+}
+
+func (s *Server) handleDisableInstance(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+
+	// Resolve by ID or handle
+	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	// Free port listeners immediately (no new connections)
+	if s.router != nil {
+		s.router.FreeAllPorts(inst.ID)
+	}
+
+	if err := s.lifecycle.DisableInstance(inst.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	if s.registry != nil {
-		s.registry.UpdateState(id, "stopped")
+		s.registry.UpdateEnabled(inst.ID, false)
+		s.registry.UpdateState(inst.ID, "stopped")
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "disabled"})
 }
 
 func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {

@@ -11,6 +11,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -221,7 +222,11 @@ func (r *Router) handlePortConn(ctx context.Context, clientConn net.Conn, pp *po
 	defer cancel()
 
 	if err := r.lm.EnsureInstance(ensureCtx, pp.instanceID); err != nil {
-		log.Printf("router: port :%d ensure instance %s: %v", pp.publicPort, pp.instanceID, err)
+		if errors.Is(err, lifecycle.ErrInstanceDisabled) {
+			log.Printf("router: instance %s disabled, rejecting connection on port :%d", pp.instanceID, pp.publicPort)
+		} else {
+			log.Printf("router: port :%d ensure instance %s: %v", pp.publicPort, pp.instanceID, err)
+		}
 		return
 	}
 
@@ -292,9 +297,13 @@ func (r *Router) handleRequest(w http.ResponseWriter, req *http.Request) {
 	defer cancel()
 
 	if err := r.lm.EnsureInstance(ctx, inst.ID); err != nil {
-		log.Printf("router: ensure instance %s: %v", inst.ID, err)
-		w.Header().Set("Retry-After", "3")
-		http.Error(w, fmt.Sprintf("Service unavailable: %v", err), http.StatusServiceUnavailable)
+		if errors.Is(err, lifecycle.ErrInstanceDisabled) {
+			http.Error(w, "instance disabled", http.StatusServiceUnavailable)
+		} else {
+			log.Printf("router: ensure instance %s: %v", inst.ID, err)
+			w.Header().Set("Retry-After", "3")
+			http.Error(w, fmt.Sprintf("Service unavailable: %v", err), http.StatusServiceUnavailable)
+		}
 		return
 	}
 

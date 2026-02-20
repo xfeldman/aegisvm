@@ -189,7 +189,7 @@ The harness handles `SIGTERM` and `SIGINT` for its own graceful shutdown. What
 your agent receives depends on the execution mode:
 
 Your process runs as a child of the harness. When the VM shuts down (via
-`aegis instance stop` or daemon shutdown), the harness kills all child processes.
+`aegis instance disable` or daemon shutdown), the harness kills all child processes.
 Currently this is `SIGKILL` (immediate termination). Future versions will send
 `SIGTERM` with a 5-second grace period before `SIGKILL`.
 

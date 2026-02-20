@@ -238,3 +238,152 @@ func TestSaveInstance_EmptyOptionalFields(t *testing.T) {
 		t.Errorf("SecretKeys = %v, want empty", got.SecretKeys)
 	}
 }
+
+func TestSaveAndGetInstance_EnabledTrue(t *testing.T) {
+	db := openTestDB(t)
+
+	db.SaveInstance(&Instance{
+		ID:      "inst-1",
+		State:   "stopped",
+		Command: []string{"echo"},
+		Enabled: true,
+	})
+
+	got, err := db.GetInstance("inst-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Enabled {
+		t.Error("Enabled = false, want true")
+	}
+}
+
+func TestSaveAndGetInstance_EnabledFalse(t *testing.T) {
+	db := openTestDB(t)
+
+	db.SaveInstance(&Instance{
+		ID:      "inst-1",
+		State:   "stopped",
+		Command: []string{"echo"},
+		Enabled: false,
+	})
+
+	got, err := db.GetInstance("inst-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Enabled {
+		t.Error("Enabled = true, want false")
+	}
+}
+
+func TestSaveInstance_EnabledDefaultTrue(t *testing.T) {
+	db := openTestDB(t)
+
+	// Migration default is 1 (enabled). Insert without setting Enabled
+	// explicitly — the zero value (false) should be saved as 0.
+	db.SaveInstance(&Instance{
+		ID:      "inst-1",
+		State:   "stopped",
+		Command: []string{"echo"},
+		Enabled: true,
+	})
+
+	got, _ := db.GetInstance("inst-1")
+	if !got.Enabled {
+		t.Error("Enabled should be true when saved as true")
+	}
+}
+
+func TestUpdateEnabled(t *testing.T) {
+	db := openTestDB(t)
+
+	db.SaveInstance(&Instance{
+		ID:      "inst-1",
+		State:   "running",
+		Command: []string{"echo"},
+		Enabled: true,
+	})
+
+	// Disable
+	if err := db.UpdateEnabled("inst-1", false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.GetInstance("inst-1")
+	if got.Enabled {
+		t.Error("Enabled = true after UpdateEnabled(false)")
+	}
+
+	// Re-enable
+	if err := db.UpdateEnabled("inst-1", true); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = db.GetInstance("inst-1")
+	if !got.Enabled {
+		t.Error("Enabled = false after UpdateEnabled(true)")
+	}
+}
+
+func TestUpdateEnabled_NotFound(t *testing.T) {
+	db := openTestDB(t)
+
+	err := db.UpdateEnabled("nonexistent", false)
+	if err == nil {
+		t.Fatal("expected error for nonexistent instance")
+	}
+}
+
+func TestListInstances_EnabledField(t *testing.T) {
+	db := openTestDB(t)
+
+	db.SaveInstance(&Instance{
+		ID:        "inst-1",
+		State:     "running",
+		Command:   []string{"echo"},
+		Enabled:   true,
+		CreatedAt: time.Now().Add(-2 * time.Hour),
+	})
+	db.SaveInstance(&Instance{
+		ID:        "inst-2",
+		State:     "stopped",
+		Command:   []string{"echo"},
+		Enabled:   false,
+		CreatedAt: time.Now().Add(-1 * time.Hour),
+	})
+
+	list, err := db.ListInstances()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("expected 2, got %d", len(list))
+	}
+
+	// Ordered DESC by created_at: inst-2 first
+	if list[0].ID != "inst-2" || list[0].Enabled {
+		t.Errorf("inst-2: Enabled = %v, want false", list[0].Enabled)
+	}
+	if list[1].ID != "inst-1" || !list[1].Enabled {
+		t.Errorf("inst-1: Enabled = %v, want true", list[1].Enabled)
+	}
+}
+
+func TestGetInstanceByHandle_EnabledField(t *testing.T) {
+	db := openTestDB(t)
+
+	db.SaveInstance(&Instance{
+		ID:      "inst-1",
+		State:   "stopped",
+		Command: []string{"echo"},
+		Handle:  "web",
+		Enabled: false,
+	})
+
+	got, err := db.GetInstanceByHandle("web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Enabled {
+		t.Error("Enabled = true, want false")
+	}
+}

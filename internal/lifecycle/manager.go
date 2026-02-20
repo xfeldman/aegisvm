@@ -33,6 +33,9 @@ import (
 // ErrInstanceStopped is returned when exec is attempted on a stopped instance.
 var ErrInstanceStopped = errors.New("instance is stopped")
 
+// ErrInstanceDisabled is returned when an operation is attempted on a disabled instance.
+var ErrInstanceDisabled = errors.New("instance is disabled")
+
 var rpcIDCounter int64
 
 // Instance states
@@ -49,6 +52,7 @@ type Instance struct {
 
 	ID          string
 	State       string
+	Enabled     bool // policy flag: true = wake-on-connect allowed, false = unreachable
 	Command     []string
 	ExposePorts []vmm.PortExpose
 	Handle      vmm.Handle
@@ -168,11 +172,19 @@ func WithEnv(env map[string]string) InstanceOption {
 	}
 }
 
+// WithEnabled sets the enabled policy flag.
+func WithEnabled(enabled bool) InstanceOption {
+	return func(inst *Instance) {
+		inst.Enabled = enabled
+	}
+}
+
 // CreateInstance creates a new instance definition without starting it.
 func (m *Manager) CreateInstance(id string, command []string, exposePorts []vmm.PortExpose, opts ...InstanceOption) *Instance {
 	inst := &Instance{
 		ID:          id,
 		State:       StateStopped,
+		Enabled:     true,
 		Command:     command,
 		ExposePorts: exposePorts,
 		CreatedAt:   time.Now(),
@@ -212,8 +224,13 @@ func (m *Manager) EnsureInstance(ctx context.Context, id string) error {
 	}
 
 	inst.mu.Lock()
+	enabled := inst.Enabled
 	state := inst.State
 	inst.mu.Unlock()
+
+	if !enabled {
+		return ErrInstanceDisabled
+	}
 
 	switch state {
 	case StateRunning:
@@ -771,6 +788,97 @@ func (m *Manager) StopInstance(id string) error {
 	return nil
 }
 
+// StartInstance sets Enabled=true and boots the instance.
+// This is the explicit start path (CLI/API) — distinct from EnsureInstance (auto-wake).
+func (m *Manager) StartInstance(ctx context.Context, id string) error {
+	m.mu.Lock()
+	inst, ok := m.instances[id]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("instance %s not found", id)
+	}
+
+	inst.mu.Lock()
+	inst.Enabled = true
+	state := inst.State
+	inst.mu.Unlock()
+
+	switch state {
+	case StateRunning:
+		return nil
+	case StatePaused:
+		return m.resumeInstance(inst)
+	case StateStopped:
+		return m.bootInstance(ctx, inst)
+	case StateStarting:
+		return m.waitForRunning(ctx, inst)
+	default:
+		return fmt.Errorf("instance %s in unexpected state: %s", id, state)
+	}
+}
+
+// DisableInstance makes an instance a pure registry object:
+// sets Enabled=false, closes exec waiters, cancels timers, tears down demuxer, stops VM.
+func (m *Manager) DisableInstance(id string) error {
+	m.mu.Lock()
+	inst, ok := m.instances[id]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("instance %s not found", id)
+	}
+
+	inst.mu.Lock()
+	// Set disabled first so router/EnsureInstance stops waking immediately
+	inst.Enabled = false
+
+	state := inst.State
+	if state == StateStopped {
+		// Already stopped — just ensure disabled flag is set
+		inst.mu.Unlock()
+		return nil
+	}
+
+	handle := inst.Handle
+	demux := inst.demuxer
+
+	// Cancel timers
+	if inst.idleTimer != nil {
+		inst.idleTimer.Stop()
+		inst.idleTimer = nil
+	}
+	if inst.stopTimer != nil {
+		inst.stopTimer.Stop()
+		inst.stopTimer = nil
+	}
+
+	// Close all exec waiters so handlers unblock
+	for eid, ch := range inst.execWaiters {
+		ch <- -1
+		close(ch)
+		delete(inst.execWaiters, eid)
+	}
+
+	inst.State = StateStopped
+	inst.StoppedAt = time.Now()
+	inst.Channel = nil
+	inst.Endpoints = nil
+	inst.demuxer = nil
+	inst.logCapture = false
+	inst.mu.Unlock()
+
+	m.notifyStateChange(id, StateStopped)
+
+	if state == StatePaused {
+		m.vmm.ResumeVM(handle)
+	}
+
+	if demux != nil {
+		demux.Stop()
+	}
+	m.vmm.StopVM(handle)
+	return nil
+}
+
 // DeleteInstance stops an instance and removes it entirely (from map, registry, logs).
 func (m *Manager) DeleteInstance(id string) error {
 	m.mu.Lock()
@@ -875,8 +983,13 @@ func (m *Manager) ExecInstance(ctx context.Context, id string, command []string,
 	}
 
 	inst.mu.Lock()
+	enabled := inst.Enabled
 	state := inst.State
 	inst.mu.Unlock()
+
+	if !enabled {
+		return "", time.Time{}, nil, ErrInstanceDisabled
+	}
 
 	switch state {
 	case StateRunning:

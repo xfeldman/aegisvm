@@ -180,9 +180,9 @@ aegis instance start [--name NAME] [--expose [PUBLIC:]GUEST[/PROTO]] [--image IM
 aegis instance start --name NAME                          (restart stopped instance)
 ```
 
-Idempotent on `--name`: if the named instance exists and is STOPPED, it is
-restarted using stored config. If it is RUNNING or STARTING, returns 409. If
-not found, creates a new instance.
+Idempotent on `--name`: if the named instance exists and is STOPPED (whether
+enabled or disabled), it is re-enabled and restarted using stored config. If it
+is RUNNING or STARTING, returns 409. If not found, creates a new instance.
 
 **Flags:**
 
@@ -203,7 +203,7 @@ Instance started: inst-173f...
 Handle: web
 Router: http://127.0.0.1:8099
 
-$ aegis instance stop web
+$ aegis instance disable web
 $ aegis instance start --name web
 Instance restarted: inst-173f...
 ```
@@ -218,19 +218,21 @@ List instances, optionally filtered by state.
 aegis instance list [--stopped | --running]
 ```
 
-Columns: ID, HANDLE, STATE, STOPPED AT.
+Columns: ID, HANDLE, STATUS (enabled/disabled), STATE, STOPPED AT. Output is
+color-coded: enabled/running in green, disabled in red, paused in yellow,
+stopped in gray.
 
 **Examples:**
 
 ```
 $ aegis instance list
-ID                             HANDLE          STATE      STOPPED AT
-inst-1739893456789012345       web             running    -
-inst-1739893456789054321       worker          stopped    2026-02-19T10:30:00Z
+ID                             HANDLE          STATUS       STATE      STOPPED AT
+inst-1739893456789012345       web             enabled      running    -
+inst-1739893456789054321       worker          disabled     stopped    2026-02-19T10:30:00Z
 
 $ aegis instance list --stopped
-ID                             HANDLE          STATE      STOPPED AT
-inst-1739893456789054321       worker          stopped    2026-02-19T10:30:00Z
+ID                             HANDLE          STATUS       STATE      STOPPED AT
+inst-1739893456789054321       worker          disabled     stopped    2026-02-19T10:30:00Z
 ```
 
 ---
@@ -251,6 +253,7 @@ Accepts either a handle alias or instance ID.
 $ aegis instance info web
 ID:          inst-1739893456789012345
 State:       running
+Enabled:     true
 Handle:      web
 Command:     python3 -m http.server 80
 Ports:       80
@@ -263,13 +266,18 @@ Last Active: 2026-02-19T10:35:00Z
 
 ---
 
-### aegis instance stop
+### aegis instance disable
 
-Stop an instance's VM. The instance remains in the list with state STOPPED and
-logs are preserved. Use `aegis instance delete` to remove entirely.
+Disable an instance. Sets Enabled=false, stops the VM, closes all port
+listeners, and prevents wake-on-connect. The instance remains in the list with
+state STOPPED and logs are preserved. Use `aegis instance start --name` to
+re-enable, or `aegis instance delete` to remove entirely.
+
+A disabled instance is completely unreachable — no ingress, no auto-wake, no
+exec, no log streaming.
 
 ```
-aegis instance stop HANDLE_OR_ID
+aegis instance disable HANDLE_OR_ID
 ```
 
 ---
@@ -287,19 +295,20 @@ aegis instance delete HANDLE_OR_ID
 
 ### Instance Lifecycle States
 
-| Operation | Result | In list? | Logs kept? | VM running? |
-|-----------|--------|----------|------------|-------------|
-| Process exits naturally | STOPPED | Yes | Yes | No |
-| `aegis instance stop` | STOPPED | Yes | Yes | No |
-| Idle timeout (StopAfterIdle) | STOPPED | Yes | Yes | No |
-| `aegis instance pause` | PAUSED | Yes | Yes | Suspended |
-| `aegis instance delete` | Removed | No | No | No |
-| `aegis run` + Ctrl+C | Deleted | No | No | No |
+| Operation | Result | Enabled? | In list? | Logs kept? | VM running? |
+|-----------|--------|----------|----------|------------|-------------|
+| Process exits naturally | STOPPED | Yes | Yes | Yes | No |
+| Idle timeout (StopAfterIdle) | STOPPED | Yes | Yes | Yes | No |
+| `aegis instance disable` | STOPPED | **No** | Yes | Yes | No |
+| `aegis instance pause` | PAUSED | Yes | Yes | Yes | Suspended |
+| `aegis instance delete` | Removed | - | No | No | No |
+| `aegis run` + Ctrl+C | Deleted | - | No | No | No |
 
-STOPPED instances retain their config and can be restarted via
-`aegis instance start --name <handle>` or router wake-on-connect. Use
-`aegis instance prune` to clean up old stopped instances. `delete` is
-permanent — the instance and its logs are gone.
+**Enabled** instances retain their config and auto-wake on incoming connections
+(wake-on-connect). **Disabled** instances are unreachable — no ingress, no
+auto-wake, no exec, no logs. Use `aegis instance start --name <handle>` to
+re-enable a disabled instance. Use `aegis instance prune` to clean up old
+stopped instances. `delete` is permanent — the instance and its logs are gone.
 
 ---
 
@@ -363,7 +372,7 @@ aegis exec HANDLE_OR_ID -- COMMAND [ARGS...]
 Everything after `--` is the command to execute inside the VM.
 
 Valid in RUNNING, PAUSED (auto-resume), and STARTING (waits for ready).
-Returns 409 if the instance is STOPPED.
+Returns 409 if the instance is STOPPED or DISABLED.
 
 **Examples:**
 
@@ -527,10 +536,10 @@ aegis mcp uninstall
 | `aegis status` | Show daemon status |
 | `aegis doctor` | Diagnose environment |
 | `aegis run [...] -- CMD` | Ephemeral: start + follow + delete |
-| `aegis instance start` | Start new or restart stopped instance |
+| `aegis instance start` | Start new or re-enable stopped/disabled instance |
 | `aegis instance list` | List instances (`--stopped`, `--running`) |
 | `aegis instance info` | Show instance details |
-| `aegis instance stop` | Stop an instance (record kept for restart) |
+| `aegis instance disable` | Disable an instance (stop VM, close listeners, prevent auto-wake) |
 | `aegis instance delete` | Delete an instance (removed entirely) |
 | `aegis instance pause` | Pause an instance |
 | `aegis instance resume` | Resume an instance |

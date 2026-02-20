@@ -30,10 +30,10 @@ Two port layers:
 
 | Layer | Owner | Lifetime | Visible to user |
 |-------|-------|----------|-----------------|
-| **Public port** | Router | Instance create → instance delete | Yes |
+| **Public port** | Router | Instance create → instance disable/delete | Yes |
 | **Backend port** | VMM (TSI) | VM boot → VM stop | No |
 
-Public ports are stable across pause/resume/stop/restart. They are freed only when the instance is deleted (or the daemon shuts down). Backend ports are ephemeral — reallocated on each VM boot.
+Public ports are stable across pause/resume/stop/restart. They are freed when the instance is **disabled** (closed immediately, preventing all ingress) or **deleted** (or the daemon shuts down). On re-enable (`instance start`), port listeners are re-allocated using saved ports. Backend ports are ephemeral — reallocated on each VM boot.
 
 ## 2. Per-Port TCP Proxy
 
@@ -73,7 +73,7 @@ Random ports are allocated with `net.Listen("tcp", "127.0.0.1:0")`. Deterministi
 
 **Stability policy:**
 - Deterministic ports (`8080:80`): stable always (same port every time)
-- Random ports (`80`): stable across pause/resume/stop/restart within a daemon session. NOT stable across daemon restart.
+- Random ports (`80`): stable across pause/resume/stop/restart within a daemon session. Freed on disable (re-allocated on re-enable). NOT stable across daemon restart.
 
 ## 3. Main HTTP Router
 

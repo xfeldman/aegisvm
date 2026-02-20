@@ -77,9 +77,9 @@ aegis instance start --name web --workspace myapp --expose 8080:80 -- python3 -m
 aegis exec web -- echo hello
 aegis logs web --follow
 
-# Stop (keep record for restart) and restart
-aegis instance stop web
-aegis instance start --name web       # restarts from stored config
+# Disable — instance becomes unmanaged (no auto-wake, no listeners, VM off)
+aegis instance disable web
+aegis instance start --name web       # re-enables and boots from stored config
 
 # Delete (remove entirely)
 aegis instance delete web
@@ -98,16 +98,16 @@ Measured on macOS ARM64 (M1, libkrun backend):
 STOPPED → STARTING → RUNNING ↔ PAUSED → STOPPED
 ```
 
-| Operation | Result | In list? | Logs? | VM? |
-|-----------|--------|----------|-------|-----|
-| Process exits naturally | STOPPED | Yes | Yes | No |
-| `aegis instance stop` | STOPPED | Yes | Yes | No |
-| Idle timeout | STOPPED | Yes | Yes | No |
-| `aegis instance pause` | PAUSED | Yes | Yes | Suspended |
-| `aegis instance delete` | Removed | No | No | No |
-| `aegis run` exit/Ctrl+C | Deleted | No | No | No |
+| Operation | Result | Enabled? | In list? | Logs? | VM? |
+|-----------|--------|----------|----------|-------|-----|
+| Process exits naturally | STOPPED | Yes | Yes | Yes | No |
+| Idle timeout | STOPPED | Yes | Yes | Yes | No |
+| `aegis instance disable` | STOPPED | **No** | Yes | Yes | No |
+| `aegis instance pause` | PAUSED | Yes | Yes | Yes | Suspended |
+| `aegis instance delete` | Removed | - | No | No | No |
+| `aegis run` exit/Ctrl+C | Deleted | - | No | No | No |
 
-STOPPED instances retain their config (command, ports, workspace, env) and can be restarted via `instance start --name` or router wake-on-connect. Use `instance prune` to clean up old stopped instances.
+**Enabled** (default) means the instance is managed by aegisd: it auto-wakes on incoming connections, pauses when idle, and reboots from disk on demand. **Disabled** means the instance is a pure registry record — no listeners, no auto-wake, no implicit boot. Aegisd will not start a disabled instance under any circumstance. Only an explicit `instance start` re-enables it. Use `instance prune` to clean up old stopped instances.
 
 ## CLI
 
@@ -121,10 +121,10 @@ Runtime:
 
 ```bash
 aegis run [options] -- <cmd>                        Ephemeral: start + follow + delete
-aegis instance start [options] -- <cmd>             Start new or restart stopped instance
+aegis instance start [options] -- <cmd>             Start new or re-enable stopped/disabled instance
 aegis instance list [--stopped|--running]            List instances
 aegis instance info <name|id>                       Instance detail
-aegis instance stop <name|id>                       Stop VM (keep record)
+aegis instance disable <name|id>                    Disable instance (stop VM, close listeners)
 aegis instance delete <name|id>                     Remove instance + cleanup
 aegis instance pause/resume <name|id>               SIGSTOP / SIGCONT
 aegis instance prune --stopped-older-than <dur>     Remove stale stopped instances

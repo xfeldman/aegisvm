@@ -350,6 +350,28 @@ func TestListInstances_Empty(t *testing.T) {
 	}
 }
 
+func TestCreateInstance_WithEnabledOption(t *testing.T) {
+	m := newTestManager()
+
+	inst := m.CreateInstance("inst-1", []string{"echo"}, nil,
+		WithEnabled(false),
+	)
+
+	if inst.Enabled {
+		t.Error("Enabled = true, want false with WithEnabled(false)")
+	}
+}
+
+func TestCreateInstance_EnabledDefaultWithoutOption(t *testing.T) {
+	m := newTestManager()
+
+	inst := m.CreateInstance("inst-1", []string{"echo"}, nil)
+
+	if !inst.Enabled {
+		t.Error("Enabled = false, want true (default)")
+	}
+}
+
 func TestGetEndpoint_MatchingPort(t *testing.T) {
 	m := newTestManager()
 

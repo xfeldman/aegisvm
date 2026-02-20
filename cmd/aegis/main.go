@@ -8,7 +8,7 @@
 //	aegis instance start       Start new or restart stopped instance
 //	aegis instance list        List instances (--stopped, --running)
 //	aegis instance info        Show instance details
-//	aegis instance stop        Stop an instance (keep record)
+//	aegis instance disable     Disable an instance (stop VM, close listeners, prevent auto-wake)
 //	aegis instance delete      Delete an instance (remove entirely)
 //	aegis instance pause       Pause an instance
 //	aegis instance resume      Resume a paused instance
@@ -88,7 +88,7 @@ Commands:
   run        Run a command in an ephemeral microVM (start + follow + delete)
   status     Show daemon status
   doctor     Print platform and backend info
-  instance   Manage instances (start, list, info, stop, delete, pause, resume, prune)
+  instance   Manage instances (start, list, info, disable, delete, pause, resume, prune)
   exec       Execute a command in a running instance
   logs       Stream instance logs
   secret     Manage secrets (set, list, delete)
@@ -101,8 +101,8 @@ Examples:
   aegis run --expose 8080:80 -- python3 -m http.server 80
   aegis run --workspace ./myapp --expose 80 -- python3 /workspace/app.py
   aegis instance start --name web --expose 8080:80 --workspace myapp -- python3 -m http.server 80
-  aegis instance stop web
-  aegis instance start --name web                                    (restart stopped)
+  aegis instance disable web
+  aegis instance start --name web                                    (restart stopped/disabled)
   aegis instance list --stopped
   aegis instance prune --stopped-older-than 7d
   aegis exec web -- echo hello
@@ -618,8 +618,8 @@ func cmdInstance() {
 		cmdInstanceList(client)
 	case "info":
 		cmdInstanceInfo(client)
-	case "stop":
-		cmdInstanceStop(client)
+	case "disable":
+		cmdInstanceDisable(client)
 	case "delete":
 		cmdInstanceDelete(client)
 	case "pause":
@@ -641,10 +641,10 @@ func instanceUsage() {
 	fmt.Println(`Usage: aegis instance <command> [options]
 
 Commands:
-  start    Start a new instance (or restart a stopped instance by --name)
+  start    Start a new instance (or restart a stopped/disabled instance by --name)
   list     List instances (--stopped, --running to filter)
   info     Show instance details
-  stop     Stop an instance (VM stopped, record kept for restart)
+  disable  Disable an instance (stop VM, close listeners, prevent auto-wake)
   delete   Delete an instance (removed entirely, logs cleaned)
   pause    Pause a running instance (SIGSTOP)
   resume   Resume a paused instance (SIGCONT)
@@ -652,11 +652,11 @@ Commands:
 
 Examples:
   aegis instance start --name web --secret API_KEY --expose 80 -- python3 -m http.server 80
-  aegis instance start --name web                                (restart stopped instance)
+  aegis instance start --name web                                (restart stopped/disabled)
   aegis instance list
   aegis instance list --stopped
   aegis instance info web
-  aegis instance stop web
+  aegis instance disable web
   aegis instance delete web
   aegis instance prune --stopped-older-than 7d`)
 }
@@ -772,19 +772,45 @@ func cmdInstanceList(client *http.Client) {
 		return
 	}
 
-	fmt.Printf("%-30s %-15s %-10s %-20s\n", "ID", "HANDLE", "STATE", "STOPPED AT")
+	fmt.Printf("%-30s %-15s %-12s %-10s %-20s\n", "ID", "HANDLE", "STATUS", "STATE", "STOPPED AT")
 	for _, inst := range instances {
 		id, _ := inst["id"].(string)
 		state, _ := inst["state"].(string)
 		handle, _ := inst["handle"].(string)
 		stoppedAt, _ := inst["stopped_at"].(string)
+		enabled, _ := inst["enabled"].(bool)
 		if handle == "" {
 			handle = "-"
 		}
 		if stoppedAt == "" {
 			stoppedAt = "-"
 		}
-		fmt.Printf("%-30s %-15s %-10s %-20s\n", id, handle, state, stoppedAt)
+
+		var statusStr, stateStr string
+		if enabled {
+			statusStr = colorGreen + "enabled" + colorReset
+		} else {
+			statusStr = colorRed + "disabled" + colorReset
+		}
+		switch state {
+		case "running":
+			stateStr = colorGreen + state + colorReset
+		case "paused":
+			stateStr = colorYellow + state + colorReset
+		case "stopped":
+			stateStr = colorGray + state + colorReset
+		default:
+			stateStr = state
+		}
+
+		// ANSI escapes are invisible but shift padding; pad manually
+		statusPad := 12 + len(statusStr) - len("enabled")
+		if !enabled {
+			statusPad = 12 + len(statusStr) - len("disabled")
+		}
+		statePad := 10 + len(stateStr) - len(state)
+
+		fmt.Printf("%-30s %-15s %-*s %-*s %-20s\n", id, handle, statusPad, statusStr, statePad, stateStr, stoppedAt)
 	}
 }
 
@@ -818,6 +844,13 @@ func cmdInstanceInfo(client *http.Client) {
 
 	fmt.Printf("ID:          %s\n", inst["id"])
 	fmt.Printf("State:       %s\n", inst["state"])
+	if enabled, ok := inst["enabled"].(bool); ok {
+		if enabled {
+			fmt.Printf("Enabled:     true\n")
+		} else {
+			fmt.Printf("Enabled:     false\n")
+		}
+	}
 	if handle, ok := inst["handle"].(string); ok && handle != "" {
 		fmt.Printf("Handle:      %s\n", handle)
 	}
@@ -864,9 +897,9 @@ func cmdInstanceInfo(client *http.Client) {
 	}
 }
 
-func cmdInstanceStop(client *http.Client) {
+func cmdInstanceDisable(client *http.Client) {
 	if len(os.Args) < 4 {
-		fmt.Fprintln(os.Stderr, "usage: aegis instance stop HANDLE_OR_ID")
+		fmt.Fprintln(os.Stderr, "usage: aegis instance disable HANDLE_OR_ID")
 		os.Exit(1)
 	}
 
@@ -877,20 +910,20 @@ func cmdInstanceStop(client *http.Client) {
 		os.Exit(1)
 	}
 
-	resp, err := client.Post(fmt.Sprintf("http://aegis/v1/instances/%s/stop", instID), "application/json", nil)
+	resp, err := client.Post(fmt.Sprintf("http://aegis/v1/instances/%s/disable", instID), "application/json", nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "stop instance: %v\n", err)
+		fmt.Fprintf(os.Stderr, "disable instance: %v\n", err)
 		os.Exit(1)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		fmt.Fprintf(os.Stderr, "stop failed: %s\n", body)
+		fmt.Fprintf(os.Stderr, "disable failed: %s\n", body)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Instance %s stopped\n", target)
+	fmt.Printf("Instance %s disabled\n", target)
 }
 
 func cmdInstanceDelete(client *http.Client) {
@@ -1186,12 +1219,14 @@ func cmdLogs() {
 	}
 }
 
-// ANSI color codes for log sources.
+// ANSI color codes.
 const (
 	colorReset  = "\033[0m"
-	colorCyan   = "\033[36m"   // exec: cyan
-	colorYellow = "\033[33m"   // system: yellow
-	// server: no color (default terminal color)
+	colorRed    = "\033[31m"
+	colorGreen  = "\033[32m"
+	colorYellow = "\033[33m"
+	colorCyan   = "\033[36m"
+	colorGray   = "\033[90m"
 )
 
 // printLogEntry formats and prints a log entry with color-coded [source] prefix.

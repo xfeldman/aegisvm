@@ -162,7 +162,7 @@ func doStreamingRequest(method, path string, body interface{}) (*http.Response, 
 var tools = []mcpTool{
 	{
 		Name:        "instance_start",
-		Description: "Start a new isolated Linux microVM running a command. The VM is a fresh Alpine Linux environment — host files are NOT available unless mapped via workspace. To restart a stopped instance, pass just the name without a command.",
+		Description: "Start a new isolated Linux microVM running a command. The VM is a fresh Alpine Linux environment — host files are NOT available unless mapped via workspace. To restart a stopped or disabled instance, pass just the name without a command.",
 		InputSchema: rawJSON(`{
 			"type": "object",
 			"properties": {
@@ -199,8 +199,8 @@ var tools = []mcpTool{
 		}`),
 	},
 	{
-		Name:        "instance_stop",
-		Description: "Stop a running instance. The instance record is preserved and can be restarted.",
+		Name:        "instance_disable",
+		Description: "Disable an instance. Closes all port listeners, stops the VM, and prevents auto-wake. The instance record is preserved and can be re-enabled with instance_start.",
 		InputSchema: rawJSON(`{
 			"type": "object",
 			"properties": {
@@ -404,7 +404,7 @@ func handleInstanceInfo(args json.RawMessage) *mcpToolResult {
 	return textResult(string(data))
 }
 
-func handleInstanceStop(args json.RawMessage) *mcpToolResult {
+func handleInstanceDisable(args json.RawMessage) *mcpToolResult {
 	var params struct {
 		Name string `json:"name"`
 	}
@@ -412,14 +412,14 @@ func handleInstanceStop(args json.RawMessage) *mcpToolResult {
 		return errorResult("name is required")
 	}
 
-	status, data, err := doRequest("POST", "/v1/instances/"+params.Name+"/stop", nil)
+	status, data, err := doRequest("POST", "/v1/instances/"+params.Name+"/disable", nil)
 	if err != nil {
 		return errorResult(err.Error())
 	}
 	if status >= 400 {
 		return errorResult(fmt.Sprintf("HTTP %d: %s", status, string(data)))
 	}
-	return textResult("instance stopped")
+	return textResult("instance disabled")
 }
 
 func handleInstanceDelete(args json.RawMessage) *mcpToolResult {
@@ -621,7 +621,7 @@ var toolHandlers = map[string]func(json.RawMessage) *mcpToolResult{
 	"instance_start":  handleInstanceStart,
 	"instance_list":   handleInstanceList,
 	"instance_info":   handleInstanceInfo,
-	"instance_stop":   handleInstanceStop,
+	"instance_disable": handleInstanceDisable,
 	"instance_delete": handleInstanceDelete,
 	"exec":            handleExec,
 	"logs":            handleLogs,

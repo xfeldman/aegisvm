@@ -222,11 +222,16 @@ Get detailed info about a specific instance:
 aegis instance info demo
 ```
 
-Stop the instance (VM stops, instance stays in list with logs):
+Disable the instance — the instance becomes unmanaged. The VM is stopped, port
+listeners are closed, and aegisd will not auto-start it for any reason (no
+wake-on-connect, no implicit boot). The instance stays in the list as a registry
+record with logs preserved:
 
 ```bash
-aegis instance stop demo
+aegis instance disable demo
 ```
+
+The only way to bring it back is an explicit `aegis instance start --name demo`.
 
 Delete the instance entirely (removes from list, cleans logs):
 

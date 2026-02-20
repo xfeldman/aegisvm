@@ -38,7 +38,7 @@ Searchable FAQ for common Aegis issues. Each entry states the problem, explains 
 **Why:** Secrets are injected at instance boot time. If you set a secret after starting an instance, the running instance doesn't get it.
 
 **Fix:**
-- Stop and restart the instance to pick up new secrets.
+- Disable and restart the instance to pick up new secrets: `aegis instance disable <name>` then `aegis instance start --name <name>`.
 - Check secrets exist: `aegis secret list`
 
 ---

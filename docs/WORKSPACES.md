@@ -25,9 +25,9 @@ You can inspect workspace contents directly on the host.
 ## Lifecycle
 
 - **Created**: when an instance is started with `--workspace` flag.
-- **Persists**: across VM pause/resume, stop/restart, and daemon restart.
+- **Persists**: across VM pause/resume, disable/re-enable, and daemon restart.
 - **Deleted**: only when explicitly removed by the user.
-- **NOT deleted**: on `aegis down` (daemon stop) or on VM stop (idle timeout).
+- **NOT deleted**: on `aegis down` (daemon shutdown), `aegis instance disable`, or VM stop (idle timeout).
 
 ## When No Workspace Exists
 

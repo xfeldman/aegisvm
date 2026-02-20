@@ -487,3 +487,313 @@ func TestStateChangeCallback_BootStopRestart(t *testing.T) {
 		t.Errorf("states[3] = %q, want starting", states[3])
 	}
 }
+
+// --- Enabled / Disabled tests ---
+
+func TestCreateInstance_DefaultEnabled(t *testing.T) {
+	m := newTestManager()
+	inst := m.CreateInstance("inst-1", []string{"echo"}, nil)
+
+	if !inst.Enabled {
+		t.Error("new instance should be Enabled by default")
+	}
+}
+
+func TestCreateInstance_WithEnabledFalse(t *testing.T) {
+	m := newTestManager()
+	inst := m.CreateInstance("inst-1", []string{"echo"}, nil, WithEnabled(false))
+
+	if inst.Enabled {
+		t.Error("WithEnabled(false) should set Enabled = false")
+	}
+}
+
+func TestEnsureInstance_RejectsDisabled(t *testing.T) {
+	mv := newMockVMM()
+	m := newTestManagerWithVMM(mv)
+
+	m.CreateInstance("inst-1", []string{"echo"}, nil, WithEnabled(false))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := m.EnsureInstance(ctx, "inst-1")
+	if err != ErrInstanceDisabled {
+		t.Fatalf("EnsureInstance on disabled: got %v, want ErrInstanceDisabled", err)
+	}
+
+	// VM should NOT have been created
+	if len(mv.created) > 0 {
+		t.Error("disabled instance should not trigger VM creation")
+	}
+}
+
+func TestDisableInstance_StopsRunning(t *testing.T) {
+	mv := newMockVMM()
+	m := newTestManagerWithVMM(mv)
+
+	inst := m.CreateInstance("inst-1", []string{"echo"}, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := m.EnsureInstance(ctx, "inst-1"); err != nil {
+		t.Fatalf("boot: %v", err)
+	}
+	if inst.State != StateRunning {
+		t.Fatalf("state = %q, want running", inst.State)
+	}
+
+	if err := m.DisableInstance("inst-1"); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+
+	if inst.Enabled {
+		t.Error("Enabled should be false after disable")
+	}
+	if inst.State != StateStopped {
+		t.Errorf("State = %q, want stopped", inst.State)
+	}
+	if inst.Channel != nil {
+		t.Error("Channel should be nil after disable")
+	}
+	if inst.StoppedAt.IsZero() {
+		t.Error("StoppedAt should be set after disable")
+	}
+}
+
+func TestDisableInstance_AlreadyStopped(t *testing.T) {
+	mv := newMockVMM()
+	m := newTestManagerWithVMM(mv)
+
+	inst := m.CreateInstance("inst-1", []string{"echo"}, nil)
+
+	// Disable without booting — already stopped
+	if err := m.DisableInstance("inst-1"); err != nil {
+		t.Fatalf("disable already-stopped: %v", err)
+	}
+
+	if inst.Enabled {
+		t.Error("Enabled should be false")
+	}
+}
+
+func TestDisableInstance_NotFound(t *testing.T) {
+	mv := newMockVMM()
+	m := newTestManagerWithVMM(mv)
+
+	err := m.DisableInstance("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent instance")
+	}
+}
+
+func TestDisableInstance_EnsureRejectsAfter(t *testing.T) {
+	mv := newMockVMM()
+	m := newTestManagerWithVMM(mv)
+
+	m.CreateInstance("inst-1", []string{"echo"}, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Boot, disable, then try EnsureInstance
+	m.EnsureInstance(ctx, "inst-1")
+	m.DisableInstance("inst-1")
+
+	err := m.EnsureInstance(ctx, "inst-1")
+	if err != ErrInstanceDisabled {
+		t.Fatalf("EnsureInstance after disable: got %v, want ErrInstanceDisabled", err)
+	}
+}
+
+func TestStartInstance_ReEnablesDisabled(t *testing.T) {
+	mv := newMockVMM()
+	m := newTestManagerWithVMM(mv)
+
+	inst := m.CreateInstance("inst-1", []string{"echo"}, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Boot, disable, then StartInstance
+	m.EnsureInstance(ctx, "inst-1")
+	m.DisableInstance("inst-1")
+
+	if inst.Enabled {
+		t.Fatal("should be disabled before StartInstance")
+	}
+
+	if err := m.StartInstance(ctx, "inst-1"); err != nil {
+		t.Fatalf("StartInstance: %v", err)
+	}
+
+	if !inst.Enabled {
+		t.Error("Enabled should be true after StartInstance")
+	}
+	if inst.State != StateRunning {
+		t.Errorf("State = %q, want running", inst.State)
+	}
+}
+
+func TestStartInstance_NotFound(t *testing.T) {
+	mv := newMockVMM()
+	m := newTestManagerWithVMM(mv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := m.StartInstance(ctx, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent instance")
+	}
+}
+
+func TestStartInstance_AlreadyRunning(t *testing.T) {
+	mv := newMockVMM()
+	m := newTestManagerWithVMM(mv)
+
+	m.CreateInstance("inst-1", []string{"echo"}, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	m.EnsureInstance(ctx, "inst-1")
+
+	// StartInstance on running — should be a noop
+	err := m.StartInstance(ctx, "inst-1")
+	if err != nil {
+		t.Fatalf("StartInstance on running: %v", err)
+	}
+}
+
+func TestExecInstance_RejectsDisabled(t *testing.T) {
+	mv := newMockVMM()
+	m := newTestManagerWithVMM(mv)
+
+	m.CreateInstance("inst-1", []string{"echo"}, nil, WithEnabled(false))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, _, _, err := m.ExecInstance(ctx, "inst-1", []string{"echo"}, nil)
+	if err != ErrInstanceDisabled {
+		t.Fatalf("ExecInstance on disabled: got %v, want ErrInstanceDisabled", err)
+	}
+}
+
+func TestDisableInstance_PreservesConfig(t *testing.T) {
+	mv := newMockVMM()
+	m := newTestManagerWithVMM(mv)
+
+	env := map[string]string{"KEY": "value"}
+	inst := m.CreateInstance("inst-1", []string{"python", "app.py"}, []vmm.PortExpose{
+		{GuestPort: 80, Protocol: "http"},
+	},
+		WithHandle("web"),
+		WithWorkspace("/data/myapp"),
+		WithEnv(env),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	m.EnsureInstance(ctx, "inst-1")
+	m.DisableInstance("inst-1")
+
+	// Config must survive disable
+	if inst.HandleAlias != "web" {
+		t.Errorf("HandleAlias = %q, want web", inst.HandleAlias)
+	}
+	if inst.WorkspacePath != "/data/myapp" {
+		t.Errorf("WorkspacePath = %q", inst.WorkspacePath)
+	}
+	if inst.Env["KEY"] != "value" {
+		t.Errorf("Env lost: %v", inst.Env)
+	}
+	if len(inst.Command) != 2 || inst.Command[0] != "python" {
+		t.Errorf("Command lost: %v", inst.Command)
+	}
+
+	// Still in the map
+	if m.GetInstance("inst-1") == nil {
+		t.Error("instance should remain in map after disable")
+	}
+}
+
+func TestDisableInstance_ClosesExecWaiters(t *testing.T) {
+	mv := newMockVMM()
+	m := newTestManagerWithVMM(mv)
+
+	inst := m.CreateInstance("inst-1", []string{"echo"}, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	m.EnsureInstance(ctx, "inst-1")
+
+	// Register a fake exec waiter
+	doneCh := make(chan int, 1)
+	inst.mu.Lock()
+	if inst.execWaiters == nil {
+		inst.execWaiters = make(map[string]chan int)
+	}
+	inst.execWaiters["exec-fake"] = doneCh
+	inst.mu.Unlock()
+
+	m.DisableInstance("inst-1")
+
+	// The waiter should have been signaled with -1
+	select {
+	case code := <-doneCh:
+		if code != -1 {
+			t.Errorf("exec waiter got %d, want -1", code)
+		}
+	default:
+		t.Error("exec waiter was not signaled on disable")
+	}
+}
+
+func TestFullCycle_EnableDisableReEnable(t *testing.T) {
+	mv := newMockVMM()
+	m := newTestManagerWithVMM(mv)
+
+	inst := m.CreateInstance("inst-1", []string{"echo"}, nil, WithHandle("web"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 1. Boot
+	if err := m.EnsureInstance(ctx, "inst-1"); err != nil {
+		t.Fatalf("boot: %v", err)
+	}
+	if inst.State != StateRunning || !inst.Enabled {
+		t.Fatalf("after boot: state=%s enabled=%v", inst.State, inst.Enabled)
+	}
+
+	// 2. Disable
+	if err := m.DisableInstance("inst-1"); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if inst.State != StateStopped || inst.Enabled {
+		t.Fatalf("after disable: state=%s enabled=%v", inst.State, inst.Enabled)
+	}
+
+	// 3. EnsureInstance must fail
+	if err := m.EnsureInstance(ctx, "inst-1"); err != ErrInstanceDisabled {
+		t.Fatalf("ensure after disable: %v", err)
+	}
+
+	// 4. StartInstance re-enables
+	if err := m.StartInstance(ctx, "inst-1"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if inst.State != StateRunning || !inst.Enabled {
+		t.Fatalf("after re-enable: state=%s enabled=%v", inst.State, inst.Enabled)
+	}
+
+	// 5. EnsureInstance succeeds again
+	if err := m.EnsureInstance(ctx, "inst-1"); err != nil {
+		t.Fatalf("ensure after re-enable: %v", err)
+	}
+}
