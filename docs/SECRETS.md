@@ -14,7 +14,7 @@ Secret values are never exposed in API responses. List endpoints return names on
 
 ## Model
 
-Secrets are a flat key-value store. No scoping, no naming conventions, no rotation policy. Core provides dumb infrastructure plumbing: store, encrypt, inject. Kits may declare which secrets they require and validate their presence, but Aegis remains unaware of kit semantics.
+Secrets are a flat key-value store. No scoping, no naming conventions, no rotation policy. Core provides dumb infrastructure plumbing: store, encrypt, inject.
 
 ## Injection
 

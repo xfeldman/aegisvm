@@ -28,7 +28,6 @@ It is NOT:
 - A release registry
 - A workflow engine
 - An orchestrator
-- A kit runtime
 
 If it can be implemented in userland inside the VM, it does not belong in Aegis core.
 
@@ -78,11 +77,10 @@ Harness is a process supervisor only.
 - What a version is
 - What publish means
 - What a release is
-- What a kit is
 - What an agent does
 - Business semantics
 
-Those belong to SDKs or kits.
+Those belong to userland inside the VM.
 
 ---
 
@@ -356,11 +354,10 @@ Not part of Aegis v3:
 - Versioning
 - Publishing
 - Release overlays
-- Kit manifests
 - Routing schemes
 - Agent orchestration
 
-Belongs to SDK or kit layer.
+Belongs to userland inside the VM or external tooling.
 
 ---
 
@@ -374,8 +371,7 @@ Belongs to SDK or kit layer.
 6. Instance is the only runtime object.
 7. Control plane exists only on host.
 8. Guest logic is workload.
-9. Kits are optional.
-10. Simplicity over feature density.
+9. Simplicity over feature density.
 
 ---
 

@@ -1,77 +1,10 @@
 # Aegis
 
-A local, scale-to-zero microVM runtime for autonomous agent workloads.
+Lightweight MicroVM sandbox runtime for agents.
 
-Aegis runs agent code inside isolated microVMs that boot in under a second, pause when idle, and wake on demand. It handles the hard infrastructure — VMs, networking, routing, lifecycle — so agent platforms don't have to.
+Aegis runs isolated processes inside microVMs that boot in under a second, pause when idle, and wake on demand. It handles VMs, networking, routing, and lifecycle so agent platforms don't have to.
 
-## Why
-
-Agent workloads don't fit containers or serverless. They run for minutes or hours, need real isolation (not just namespaces), maintain long-lived connections, expose HTTP and TCP services, and sit idle most of the time. Aegis is built for exactly this shape of work.
-
-## Instances
-
-Aegis manages **instances** — a VM running a command with optional port exposure. Everything is scale-to-zero by default.
-
-```bash
-# Run a command, collect output, done
-aegis run -- python analyze.py
-
-# Run with exposed ports (Docker-style static mapping)
-aegis run --expose 80 -- python app.py
-
-# Long-lived instance with a handle
-aegis instance start --name web --expose 80 -- python3 -m http.server 80
-aegis exec web -- echo hello
-aegis logs web --follow
-aegis instance stop web       # VM stopped, instance stays in list
-aegis instance delete web     # removed entirely
-```
-
-Port exposure is infrastructure configuration — like CPU or memory. It configures VMM port forwarding at creation time. If nothing binds the port, the router returns 503. No readiness gating in core.
-
-Measured on macOS ARM64 (M1, libkrun backend):
-
-| Path | Latency |
-|------|---------|
-| Cold boot (zero to process running) | ~500ms |
-| Resume from pause (SIGCONT) | ~35ms |
-
-## Instance lifecycle
-
-| Operation | Result | In list? | Logs kept? | VM running? |
-|-----------|--------|----------|------------|-------------|
-| Process exits naturally | STOPPED | Yes | Yes | No |
-| `aegis instance stop` | STOPPED | Yes | Yes | No |
-| Idle timeout (StopAfterIdle) | STOPPED | Yes | Yes | No |
-| `aegis instance pause` | PAUSED | Yes | Yes | Suspended |
-| `aegis instance delete` | Removed | No | No | No |
-| `aegis run` + Ctrl+C | Deleted | No | No | No |
-
-STOPPED instances can be inspected (`instance info`, `logs`) and restarted. `delete` is permanent.
-
-## Core mechanisms
-
-**Docker-style static port mapping** is the ingress model. `--expose` configures port forwarding at instance creation. It does not enable a "mode," imply readiness, or affect lifecycle. The router proxies traffic, resumes paused instances on ingress, and returns 503 if the backend is unreachable.
-
-**Disk is canonical.** Stop terminates the VM and restores from disk layers on next boot. Pause (SIGSTOP) retains RAM for fast resume (~35ms) but is never treated as durable state. Memory is ephemeral, workspace is persistent.
-
-**Two-layer control model.** The infrastructure control plane (aegisd) manages VMs, port mapping, secrets, and images. The guest control agent (harness) manages the process inside the VM. Serving semantics, readiness, and versioning belong to the kit layer outside core.
-
-**Firecracker and libkrun** are the microVM backbone. Firecracker on Linux (KVM), libkrun on macOS (Apple Hypervisor.framework). Same daemon, same harness, same CLI. The VMM is an implementation detail behind a narrow interface.
-
-**Workspace volumes** give agents durable storage that survives VM termination.
-
-## What Aegis is not
-
-**Not a generic hypervisor.** Fixed base image, opinionated lifecycle, one kind of workload.
-
-**Not a container replacement.** Containers share the host kernel. Aegis VMs don't.
-
-**Not a cloud platform.** Single-host, local-first. No regions, no load balancers, no multi-tenancy.
-
-**Not a workflow engine.** No DAGs, no step definitions, no retry policies.
-
-**Not an agent framework.** No prompt templates, no tool definitions, no LLM abstractions.
+Aegis is not a PaaS, not a publish system, and not an agent framework. It is a clean sandbox substrate.
 
 ## Quick start
 
@@ -89,6 +22,94 @@ make base-rootfs    # requires Docker
 ./bin/aegis run --expose 80 -- python3 -m http.server 80
 ./bin/aegis down
 ```
+
+## Instances
+
+The only runtime object in Aegis is an **instance** — a VM running a command with optional port exposure, workspace mount, and secret injection. No apps, no releases, no publish lifecycle.
+
+```bash
+# Ephemeral: run a command, collect output, instance deleted after
+aegis run -- python analyze.py
+
+# Ephemeral with exposed ports
+aegis run --expose 80 -- python app.py
+
+# Persistent instance with a handle
+aegis instance start --name web --workspace myapp --expose 80 -- python3 -m http.server 80
+aegis exec web -- echo hello
+aegis logs web --follow
+
+# Stop (keep record for restart) and restart
+aegis instance stop web
+aegis instance start --name web       # restarts from stored config
+
+# Delete (remove entirely)
+aegis instance delete web
+```
+
+Measured on macOS ARM64 (M1, libkrun backend):
+
+| Path | Latency |
+|------|---------|
+| Cold boot (zero to process running) | ~500ms |
+| Resume from pause (SIGCONT) | ~35ms |
+
+## Lifecycle
+
+```
+STOPPED → STARTING → RUNNING ↔ PAUSED → STOPPED
+```
+
+| Operation | Result | In list? | Logs? | VM? |
+|-----------|--------|----------|-------|-----|
+| Process exits naturally | STOPPED | Yes | Yes | No |
+| `aegis instance stop` | STOPPED | Yes | Yes | No |
+| Idle timeout | STOPPED | Yes | Yes | No |
+| `aegis instance pause` | PAUSED | Yes | Yes | Suspended |
+| `aegis instance delete` | Removed | No | No | No |
+| `aegis run` exit/Ctrl+C | Deleted | No | No | No |
+
+STOPPED instances retain their config (command, ports, workspace, env) and can be restarted via `instance start --name` or router wake-on-connect. Use `instance prune` to clean up old stopped instances.
+
+## CLI
+
+Daemon management:
+
+```bash
+aegis up / down / status / doctor
+```
+
+Runtime:
+
+```bash
+aegis run [options] -- <cmd>                        Ephemeral: start + follow + delete
+aegis instance start [options] -- <cmd>             Start new or restart stopped instance
+aegis instance list [--stopped|--running]            List instances
+aegis instance info <name|id>                       Instance detail
+aegis instance stop <name|id>                       Stop VM (keep record)
+aegis instance delete <name|id>                     Remove instance + cleanup
+aegis instance pause/resume <name|id>               SIGSTOP / SIGCONT
+aegis instance prune --stopped-older-than <dur>     Remove stale stopped instances
+aegis exec <name|id> -- <cmd>                       Execute in running instance
+aegis logs <name|id> [--follow]                     Stream logs
+aegis secret set/list/delete                        Manage secrets
+```
+
+Common flags: `--name`, `--expose PORT[:proto]`, `--env K=V`, `--secret KEY`, `--workspace NAME_OR_PATH`, `--image REF`.
+
+## Core mechanisms
+
+**Docker-style static port mapping.** `--expose 80` or `--expose 8080:tcp` configures VMM port forwarding at creation time. The router proxies traffic, resumes paused instances on ingress, and returns 503 if the backend is unreachable. No readiness gating in core.
+
+**Disk is canonical.** Stop terminates the VM and restores from disk layers on next boot. Pause (SIGSTOP) retains RAM for fast resume but is never treated as durable state. Memory is ephemeral, workspace is persistent.
+
+**Workspace volumes** give agents durable storage that survives VM termination. Named workspaces (`--workspace claw` resolves to `~/.aegis/data/workspaces/claw`) or host paths (`--workspace ./myapp`). Always RW, mounted at `/workspace`.
+
+**Secrets** are a flat AES-256-GCM encrypted store. Injection is explicit (`--secret API_KEY` or `--secret '*'`). Default: inject nothing.
+
+**Two-layer control model.** The infrastructure control plane (aegisd) manages VMs, port mapping, secrets, and images. The guest control agent (harness) manages the process inside the VM. Serving semantics, readiness, and versioning belong to userland inside the VM.
+
+**Firecracker and libkrun** are the microVM backbone. Firecracker on Linux (KVM), libkrun on macOS (Apple Hypervisor.framework). Same daemon, same harness, same CLI.
 
 ## Architecture
 
@@ -114,60 +135,50 @@ make base-rootfs    # requires Docker
 
 **aegisd** — infrastructure control plane. Manages instance lifecycle, serves the HTTP API on a unix socket, runs the router.
 
-**aegis-vmm-worker** — per-VM helper process. Configures the VMM backend and hands control to the hypervisor.
-
-**aegis-harness** — guest control agent. PID 1 inside every VM. Handles JSON-RPC commands (`run`, `exec`, `health`, `shutdown`). Sends `processExited` and `log` notifications.
+**aegis-harness** — guest control agent. PID 1 inside every VM. Handles JSON-RPC commands (`run`, `exec`, `health`, `shutdown`).
 
 **aegis** — CLI. Talks to aegisd over the unix socket.
 
+## What Aegis is not
+
+- **Not a generic hypervisor.** Fixed base image, opinionated lifecycle, one kind of workload.
+- **Not a container replacement.** Containers share the host kernel. Aegis VMs don't.
+- **Not a cloud platform.** Single-host, local-first. No regions, no load balancers, no multi-tenancy.
+- **Not a workflow engine.** No DAGs, no step definitions, no retry policies.
+- **Not an agent framework.** No prompt templates, no tool definitions, no LLM abstractions.
+
+## Design principles
+
+1. Disk is canonical.
+2. Memory is ephemeral.
+3. Workspace is separate from rootfs.
+4. Secrets never persist in the VM.
+5. Expose is static.
+6. Instance is the only runtime object.
+7. Control plane lives on the host only.
+8. Guest logic is workload, not platform.
+9. Simplicity over feature density.
+
 ## Tests
 
-Unit tests (no VM, fast):
-
 ```bash
-make test
-```
-
-Integration tests (boots real VMs, requires built binaries + base rootfs at `~/.aegis/base-rootfs`):
-
-```bash
-make integration          # full suite (includes pause/resume)
+make test                 # unit tests (no VM, fast)
+make integration          # boots real VMs, full suite
 make integration SHORT=1  # skip pause/resume test
 ```
-
-The integration suite manages the daemon lifecycle automatically. Tests cover instance lifecycle (boot, run, exec, logs, pause/resume, stop) and backend conformance.
 
 ## Documentation
 
 - [Quickstart](docs/QUICKSTART.md) — zero to running agent in 5 minutes
-- [Agent Conventions](docs/AGENT_CONVENTIONS.md) — guest environment contract (filesystem, secrets, logging, signals)
 - [CLI Reference](docs/CLI.md) — complete command reference
+- [Agent Conventions](docs/AGENT_CONVENTIONS.md) — guest environment contract
 - [Router](docs/ROUTER.md) — handle-based routing, wake-on-connect, idle behavior
-- [Workspaces](docs/WORKSPACES.md) — persistent volumes, host paths, lifecycle
+- [Workspaces](docs/WORKSPACES.md) — persistent volumes, lifecycle
 - [Secrets](docs/SECRETS.md) — encryption, injection, threat model
-- [Kits](docs/KITS.md) — kit boundary, what kits control vs what core owns
 - [Troubleshooting](docs/TROUBLESHOOTING.md) — common issues and fixes
 
 ## Specs
 
-- [Platform spec](specs/AEGIS_PLATFORM_SPEC.md) — architecture, lifecycle, APIs, security model
-- [Implementation kickoff](specs/IMPLEMENTATION_KICKOFF.md) — engineering decisions, milestones, project structure
-- [Implementation notes](specs/IMPLEMENTATION_NOTES.md) — M0-M3b post-implementation details and corrections
-- [Architectural pivot](specs/aegis_architectural_pivot_spec.md) — instance-centric architecture
-- [Expose model](specs/aegis_docker_style_expose_model.md) — Docker-style static port mapping
-- [Kit boundary](specs/KIT_BOUNDARY_SPEC.md) — responsibility split between core and kits
-
-## Status
-
-**Post-pivot.** Instance-centric architecture. No app/task/kit objects in core.
-
-| Milestone | Status | Adds |
-|---|---|---|
-| **M0** | **Done** | Boot + run. libkrun backend, VMM interface, harness, CLI. |
-| **M1** | **Done** | Router with wake-on-connect, SIGSTOP/SIGCONT pause/resume, SQLite registry. |
-| **M2** | **Done** | OCI images, overlays, workspace volumes. |
-| **M3** | **Done** | Secrets, conformance test suite. |
-| **M3b** | **Done** | Durable logs, exec into running VMs, instance list/info. |
-| **Pivot** | **Done** | Instance-centric architecture. Removed app/task/kit from core. |
-| M4 | Next | Firecracker on Linux. Both backends pass conformance. |
-| M5 | — | Shared workspaces, network groups, warm pool, GC. |
+- [v3 Platform Spec](specs/AEGIS_v3_PLATFORM_SPEC.md) — current spec (instance-centric, post-pivot)
+- [Architectural Pivot](specs/aegis_architectural_pivot_spec.md) — pivot from app-centric to instance-centric
+- [Platform Spec (pre-pivot)](specs/AEGIS_PLATFORM_SPEC.md) — original architecture

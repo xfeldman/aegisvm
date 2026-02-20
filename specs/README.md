@@ -87,7 +87,8 @@ aegis instance start   --name web   --workspace ./app   --expose 80   --secret A
 5. Expose is static.
 6. Instance is the only runtime object.
 7. Control plane lives on the host only.
-8. Kits are optional and external to core.
+8. Guest logic is workload, not platform.
+9. Simplicity over feature density.
 
 ---
 

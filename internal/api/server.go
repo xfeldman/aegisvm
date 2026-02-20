@@ -652,7 +652,7 @@ func parseDuration(s string) (time.Duration, error) {
 }
 
 // Secret handlers — dumb key-value store with encryption.
-// No scoping, no naming rules, no rotation, no kit semantics.
+// No scoping, no naming rules, no rotation.
 
 type setSecretRequest struct {
 	Value string `json:"value"`

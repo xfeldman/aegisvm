@@ -10,7 +10,7 @@ Two-layer control model:
 
 - **Infrastructure control plane (aegisd)**: VM lifecycle, port mapping, secrets, images, registry
 - **Guest control agent (aegis-harness)**: PID 1 inside VMs, process management, exec, log streaming
-- **Application control plane**: kit layer (versioning, readiness, routing policy) — lives outside core
+- **Userland**: serving semantics, readiness, versioning — lives inside the VM
 
 Components:
 
@@ -24,7 +24,7 @@ Components:
 
 ## Current State: Instance-centric (post-pivot)
 
-After the architectural pivot, Aegis manages **instances** — a VM running a command with optional port exposure. No app, release, task, or kit objects in core. The harness uses a single `run` RPC for all workloads. The `run` RPC is the handoff point — infrastructure hands off to guest control.
+After the architectural pivot, Aegis manages **instances** — a VM running a command with optional port exposure. No app, release, or task objects in core. The harness uses a single `run` RPC for all workloads. The `run` RPC is the handoff point — infrastructure hands off to guest control.
 
 ## Build
 
@@ -76,7 +76,6 @@ aegis secret set KEY VALUE / list / delete KEY
 ## Specs
 
 Full specs live in the famiglia repo at `specs/aegis/`:
-- AEGIS_PLATFORM_SPEC.md — platform spec
-- IMPLEMENTATION_KICKOFF.md — engineering decisions + milestones
+- AEGIS_v3_PLATFORM_SPEC.md — current platform spec (instance-centric, post-pivot)
 - aegis_architectural_pivot_spec.md — pivot spec (instance-centric)
-- KIT_BOUNDARY_SPEC.md — kit boundary
+- AEGIS_PLATFORM_SPEC.md — original platform spec (pre-pivot, historical)
