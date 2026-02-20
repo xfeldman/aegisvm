@@ -81,6 +81,11 @@ func main() {
 		if err := reg.UpdateState(id, state); err != nil {
 			log.Printf("registry state update: %v", err)
 		}
+		if state == "stopped" {
+			reg.UpdateStoppedAt(id, time.Now())
+		} else {
+			reg.UpdateStoppedAt(id, time.Time{})
+		}
 	})
 
 	// Initialize secret store
@@ -123,7 +128,12 @@ func main() {
 			opts = append(opts, lifecycle.WithEnabled(ri.Enabled))
 
 			// Re-create in lifecycle manager (state = stopped)
-			lm.CreateInstance(ri.ID, ri.Command, exposePorts, opts...)
+			inst := lm.CreateInstance(ri.ID, ri.Command, exposePorts, opts...)
+
+			// Restore stopped_at from registry
+			if !ri.StoppedAt.IsZero() {
+				inst.StoppedAt = ri.StoppedAt
+			}
 
 			// Re-allocate public ports via router only if enabled
 			// Disabled instances are unreachable — no listeners allocated
