@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main, v3]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: macos-14  # M-series ARM64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Install dependencies
+        run: brew install libkrun e2fsprogs
+
+      - name: Build all binaries
+        run: make all
+
+      - name: Run unit tests
+        run: make test
+
+      - name: Verify MCP handshake
+        run: |
+          echo '{"jsonrpc":"2.0","method":"initialize","params":{"capabilities":{}},"id":1}' \
+            | ./bin/aegis-mcp \
+            | python3 -c "import sys,json; r=json.load(sys.stdin)['result']; assert r['serverInfo']['name']=='aegis', 'bad name'; assert 'tools' in r['capabilities'], 'no tools'; print('MCP handshake OK')"

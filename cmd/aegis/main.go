@@ -18,6 +18,8 @@
 //	aegis secret set           Set a secret
 //	aegis secret list          List secrets
 //	aegis secret delete        Delete a secret
+//	aegis mcp install          Register aegis-mcp in Claude Code
+//	aegis mcp uninstall        Remove aegis-mcp from Claude Code
 //	aegis status               Show daemon status
 //	aegis doctor               Print platform and backend info
 package main
@@ -66,6 +68,8 @@ func main() {
 		cmdLogs()
 	case "secret":
 		cmdSecret()
+	case "mcp":
+		cmdMCP()
 	case "help", "--help", "-h":
 		usage()
 	default:
@@ -88,6 +92,7 @@ Commands:
   exec       Execute a command in a running instance
   logs       Stream instance logs
   secret     Manage secrets (set, list, delete)
+  mcp        MCP server management (install)
 
 Examples:
   aegis up
@@ -1268,4 +1273,97 @@ func cmdSecretDelete(client *http.Client) {
 	}
 
 	fmt.Printf("Secret %s deleted\n", key)
+}
+
+// --- MCP ---
+
+func cmdMCP() {
+	if len(os.Args) < 3 {
+		fmt.Println(`Usage: aegis mcp <command>
+
+Commands:
+  install    Register aegis-mcp as an MCP server in Claude Code
+  uninstall  Remove aegis-mcp from Claude Code`)
+		os.Exit(1)
+	}
+
+	switch os.Args[2] {
+	case "install":
+		cmdMCPInstall()
+	case "uninstall":
+		cmdMCPUninstall()
+	default:
+		fmt.Fprintf(os.Stderr, "unknown mcp command: %s\n", os.Args[2])
+		os.Exit(1)
+	}
+}
+
+func findMCPBinary() string {
+	// Look next to our own binary first
+	exe, _ := os.Executable()
+	candidate := filepath.Join(filepath.Dir(exe), "aegis-mcp")
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate
+	}
+
+	// Fall back to PATH
+	if p, err := exec.LookPath("aegis-mcp"); err == nil {
+		return p
+	}
+
+	return ""
+}
+
+func cmdMCPInstall() {
+	mcpBin := findMCPBinary()
+	if mcpBin == "" {
+		fmt.Fprintln(os.Stderr, "aegis-mcp binary not found (not next to aegis and not in PATH)")
+		os.Exit(1)
+	}
+
+	// Check that claude CLI exists
+	claudeBin, err := exec.LookPath("claude")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "claude CLI not found in PATH — install Claude Code first")
+		fmt.Fprintln(os.Stderr, "  https://docs.anthropic.com/en/docs/claude-code")
+		os.Exit(1)
+	}
+
+	// Determine scope
+	scope := "user"
+	for _, arg := range os.Args[3:] {
+		if arg == "--project" {
+			scope = "project"
+		}
+	}
+
+	cmd := exec.Command(claudeBin, "mcp", "add", "--transport", "stdio", "--scope", scope, "aegis", "--", mcpBin)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to register MCP server: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("aegis MCP server registered in Claude Code")
+	fmt.Printf("  binary: %s\n", mcpBin)
+	fmt.Printf("  scope:  %s\n", scope)
+}
+
+func cmdMCPUninstall() {
+	claudeBin, err := exec.LookPath("claude")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "claude CLI not found in PATH")
+		os.Exit(1)
+	}
+
+	cmd := exec.Command(claudeBin, "mcp", "remove", "aegis")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to remove MCP server: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("aegis MCP server removed from Claude Code")
 }

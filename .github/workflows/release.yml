@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14  # M-series ARM64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Install dependencies
+        run: brew install libkrun e2fsprogs
+
+      - name: Build all binaries
+        run: make all
+
+      - name: Run tests
+        run: make test
+
+      - name: Package release tarball
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          TARBALL="aegis-${VERSION}-darwin-arm64.tar.gz"
+          tar czf "${TARBALL}" -C bin aegis aegisd aegis-mcp aegis-vmm-worker aegis-harness
+          echo "TARBALL=${TARBALL}" >> $GITHUB_ENV
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          shasum -a 256 "${TARBALL}" | awk '{print $1}' > "${TARBALL}.sha256"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${VERSION}" \
+            --title "Aegis ${VERSION}" \
+            --generate-notes \
+            "${TARBALL}" \
+            "${TARBALL}.sha256"
+
+      - name: Update Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+        if: env.TAP_TOKEN != ''
+        run: |
+          SHA256=$(cat "${TARBALL}.sha256")
+          DOWNLOAD_URL="https://github.com/xfeldman/aegis/releases/download/${VERSION}/${TARBALL}"
+
+          # Clone tap repo, update formula, push
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/xfeldman/homebrew-aegis.git" /tmp/homebrew-aegis
+          cd /tmp/homebrew-aegis
+
+          sed -i '' "s|url \".*\"|url \"${DOWNLOAD_URL}\"|" Formula/aegis.rb
+          sed -i '' "s|sha256 \".*\"|sha256 \"${SHA256}\"|" Formula/aegis.rb
+          sed -i '' "s|version \".*\"|version \"${VERSION#v}\"|" Formula/aegis.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/aegis.rb
+          git commit -m "aegis ${VERSION}"
+          git push

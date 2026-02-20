@@ -6,22 +6,57 @@ Aegis runs isolated processes inside microVMs that boot in under a second, pause
 
 Aegis is not a PaaS, not a publish system, and not an agent framework. It is a clean sandbox substrate.
 
+## Install
+
+```bash
+brew tap xfeldman/aegis
+brew install aegis
+```
+
+Requires macOS ARM64 (Apple Silicon M1+). The formula installs all binaries and handles hypervisor entitlement signing automatically.
+
+### From source
+
+```bash
+brew install libkrun e2fsprogs
+git clone https://github.com/xfeldman/aegis.git && cd aegis
+make all
+```
+
+Binaries are placed in `./bin/`.
+
 ## Quick start
 
 ```bash
-# Dependencies (macOS ARM64)
-brew tap slp/krun && brew install libkrun
+# Start the daemon
+aegis up
 
-# Build
-make all
-make base-rootfs    # requires Docker
+# Run a command in an ephemeral VM
+aegis run -- echo "hello from aegis"
 
-# Run
-./bin/aegisd &
-./bin/aegis run -- echo "hello from aegis"
-./bin/aegis run --expose 80 -- python3 -m http.server 80
-./bin/aegis down
+# Run a Python HTTP server with port exposed
+aegis run --expose 80 -- python3 -m http.server 80
+
+# Run a script from your host directory (mounted at /workspace/ in the VM)
+aegis run --workspace ./myapp -- python3 /workspace/server.py
+
+# Stop the daemon
+aegis down
 ```
+
+## MCP (Claude Code integration)
+
+Aegis ships an MCP server (`aegis-mcp`) that lets LLMs drive sandboxed instances — start VMs, exec commands, read logs, manage secrets.
+
+```bash
+# Register with Claude Code (one-time setup)
+aegis mcp install
+
+# Or manually:
+claude mcp add --transport stdio aegis -- aegis-mcp
+```
+
+Once registered, Claude can use tools like `instance_start`, `exec`, `logs`, `secret_set` to manage VMs directly.
 
 ## Instances
 
@@ -93,6 +128,7 @@ aegis instance prune --stopped-older-than <dur>     Remove stale stopped instanc
 aegis exec <name|id> -- <cmd>                       Execute in running instance
 aegis logs <name|id> [--follow]                     Stream logs
 aegis secret set/list/delete                        Manage secrets
+aegis mcp install/uninstall                         Claude Code MCP integration
 ```
 
 Common flags: `--name`, `--expose PORT[:proto]`, `--env K=V`, `--secret KEY`, `--workspace NAME_OR_PATH`, `--image REF`.
@@ -121,7 +157,7 @@ Common flags: `--name`, `--expose PORT[:proto]`, `--env K=V`, `--secret KEY`, `-
 │    ├── API server        ├── up / down       │
 │    ├── lifecycle mgr     ├── run / instance  │
 │    ├── router            ├── exec / logs     │
-│    └── VMM backend       └── secret          │
+│    └── VMM backend       └── secret / mcp    │
 │         │                                    │
 │    ┌────┴────────────────────────────┐       │
 │    │  VMM (libkrun / Firecracker)    │       │
@@ -138,6 +174,8 @@ Common flags: `--name`, `--expose PORT[:proto]`, `--env K=V`, `--secret KEY`, `-
 **aegis-harness** — guest control agent. PID 1 inside every VM. Handles JSON-RPC commands (`run`, `exec`, `health`, `shutdown`).
 
 **aegis** — CLI. Talks to aegisd over the unix socket.
+
+**aegis-mcp** — MCP server. Exposes aegisd as tools for LLMs over stdio JSON-RPC.
 
 ## What Aegis is not
 
