@@ -64,6 +64,7 @@ aegis instance prune --stopped-older-than <dur>
 aegis exec <handle|id> -- CMD
 aegis logs <handle|id> [--follow]
 aegis secret set KEY VALUE / list / delete KEY
+aegis mcp install / uninstall                                        (Claude Code MCP integration)
 ```
 
 ## Conventions

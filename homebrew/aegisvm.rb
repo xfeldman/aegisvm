@@ -13,7 +13,7 @@ class Aegisvm < Formula
   version "0.1.0"
   license "Apache-2.0"
 
-  depends_on "libkrun"
+  depends_on "slp/krun/libkrun"
   depends_on arch: :arm64
   depends_on :macos
 

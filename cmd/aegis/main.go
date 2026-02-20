@@ -96,9 +96,9 @@ Commands:
 
 Examples:
   aegis up
-  aegis run -- echo "hello from aegis"
+  aegis run -- echo "hello from aegisvm"
   aegis run --expose 80 -- python -m http.server 80
-  aegis run --workspace ./myapp --expose 80 -- python3 app.py
+  aegis run --workspace ./myapp --expose 80 -- python3 /workspace/app.py
   aegis instance start --name web --expose 80:http --workspace myapp -- python3 -m http.server 80
   aegis instance stop web
   aegis instance start --name web                                    (restart stopped)
@@ -107,6 +107,7 @@ Examples:
   aegis exec web -- echo hello
   aegis logs web --follow
   aegis secret set API_KEY sk-test123
+  aegis mcp install
   aegis down`)
 }
 
@@ -318,6 +319,13 @@ func cmdRun() {
 	if !isDaemonRunning() {
 		fmt.Fprintln(os.Stderr, "aegisd is not running. Run 'aegis up' first.")
 		os.Exit(1)
+	}
+
+	// Default to python:3.12-alpine if no --image and no base-rootfs
+	if imageRef == "" {
+		if _, err := os.Stat(baseRootfsPath()); os.IsNotExist(err) {
+			imageRef = defaultImage
+		}
 	}
 
 	// If no workspace provided, allocate a temporary named workspace
@@ -616,6 +624,13 @@ func cmdInstanceStart(client *http.Client) {
 		fmt.Fprintln(os.Stderr, "usage: aegis instance start [--name NAME] [--expose PORT] [--env K=V] [--secret KEY] [--image IMAGE] -- COMMAND [args...]")
 		fmt.Fprintln(os.Stderr, "       aegis instance start --name NAME   (restart stopped instance)")
 		os.Exit(1)
+	}
+
+	// Default to python:3.12-alpine if no --image and no base-rootfs
+	if imageRef == "" && len(command) > 0 {
+		if _, err := os.Stat(baseRootfsPath()); os.IsNotExist(err) {
+			imageRef = defaultImage
+		}
 	}
 
 	reqBody := map[string]interface{}{}
@@ -1366,4 +1381,18 @@ func cmdMCPUninstall() {
 	}
 
 	fmt.Println("aegis MCP server removed from Claude Code")
+}
+
+// --- Default image ---
+//
+// When no --image is specified and no base-rootfs exists, the CLI
+// automatically sets image_ref to defaultImage. aegisd's existing
+// OCI pull/cache mechanism handles the rest — no separate rootfs
+// download infrastructure needed.
+
+const defaultImage = "python:3.12-alpine"
+
+func baseRootfsPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".aegis", "base-rootfs")
 }

@@ -18,7 +18,7 @@ Requires macOS ARM64 (Apple Silicon M1+). The formula installs all binaries and 
 ### From source
 
 ```bash
-brew install libkrun e2fsprogs
+brew tap slp/krun && brew install libkrun e2fsprogs
 git clone https://github.com/xfeldman/aegisvm.git && cd aegisvm
 make all
 ```

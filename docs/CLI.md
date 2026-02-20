@@ -1,6 +1,6 @@
-# Aegis CLI Reference
+# AegisVM CLI Reference
 
-The `aegis` command is the primary interface to the Aegis agent runtime platform.
+The `aegis` command is the primary interface to the AegisVM agent runtime platform.
 All commands communicate with the `aegisd` daemon over a Unix socket at
 `~/.aegis/aegisd.sock`. The daemon PID file is stored at `~/.aegis/data/aegisd.pid`.
 
@@ -12,12 +12,12 @@ Run `aegis help` to print top-level usage.
 
 ---
 
-## Aegis Is Not Docker
+## AegisVM Is Not Docker
 
-Aegis uses OCI images for the **filesystem only**. If you are coming from Docker,
+AegisVM uses OCI images for the **filesystem only**. If you are coming from Docker,
 these differences matter:
 
-| Docker concept | Aegis behavior |
+| Docker concept | AegisVM behavior |
 |----------------|----------------|
 | `ENTRYPOINT` | Ignored. PID 1 is always `aegis-harness`. |
 | `CMD` | Ignored. The command comes from `aegis run -- CMD` or `aegis instance start -- CMD`. |
@@ -44,6 +44,10 @@ aegis up
 Locates the `aegisd` binary next to the `aegis` binary, starts it as a
 subprocess, and waits up to 2 seconds for the PID file to appear. If the
 daemon is already running, prints a message and exits without error.
+
+If no base rootfs is installed at `~/.aegis/base-rootfs/`, automatically
+downloads the default variant (`python` — Alpine + Python 3.12) before
+starting the daemon. See `aegis rootfs` for managing rootfs variants.
 
 **Example:**
 
@@ -107,7 +111,7 @@ aegis doctor
 Checks for the presence of required tools and libraries:
 
 - Go
-- krunvm (optional -- libkrun CLI, not used by Aegis directly)
+- krunvm (optional -- libkrun CLI, not used by AegisVM directly)
 - libkrun shared library
 - e2fsprogs / `mkfs.ext4`
 - Daemon status and capabilities
@@ -164,7 +168,7 @@ Serving on http://127.0.0.1:8099
 
 ## Instance Commands
 
-Manage instances -- the core runtime object in Aegis.
+Manage instances -- the core runtime object in AegisVM.
 
 Run `aegis instance help` to print subcommand usage.
 
@@ -479,6 +483,42 @@ Secret API_KEY deleted
 
 ---
 
+## MCP Commands
+
+Manage the MCP (Model Context Protocol) server integration with Claude Code.
+
+### aegis mcp install
+
+Register `aegis-mcp` as an MCP server in Claude Code.
+
+```
+aegis mcp install [--project]
+```
+
+By default, registers with `user` scope (available across all projects). Pass
+`--project` to register with project scope (shared via `.mcp.json`).
+
+**Example:**
+
+```
+$ aegis mcp install
+aegis MCP server registered in Claude Code
+  binary: /opt/homebrew/bin/aegis-mcp
+  scope:  user
+```
+
+---
+
+### aegis mcp uninstall
+
+Remove the `aegis-mcp` server from Claude Code.
+
+```
+aegis mcp uninstall
+```
+
+---
+
 ## Quick Reference
 
 | Command | Description |
@@ -501,3 +541,7 @@ Secret API_KEY deleted
 | `aegis secret set` | Set a secret |
 | `aegis secret list` | List secret names |
 | `aegis secret delete` | Delete a secret |
+| `aegis rootfs list` | Show available rootfs variants |
+| `aegis rootfs pull` | Download a rootfs variant |
+| `aegis mcp install` | Register MCP server in Claude Code |
+| `aegis mcp uninstall` | Remove MCP server from Claude Code |
