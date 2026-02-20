@@ -149,7 +149,7 @@ How this works:
 
 - The `--expose 80` flag tells aegisd to map port 80 inside the VM to a host port (Docker-style static port mapping).
 - The router in aegisd listens on `127.0.0.1:8099` and proxies requests into the VM.
-- When idle for 60 seconds, the VM is paused (SIGSTOP). After 20 minutes idle, the VM is stopped entirely.
+- When idle for 60 seconds, the VM is paused (SIGSTOP). After 5 minutes idle, the VM is stopped entirely.
 - The next incoming request wakes the VM automatically (scale-to-zero).
 
 Press Ctrl+C in the first terminal to stop.

@@ -69,7 +69,7 @@ When the last active connection closes, the idle timer begins:
 
 1. **Pause** (`PauseAfterIdle`, default 60s) -- The VM is paused via SIGSTOP. The process and its memory are retained. The next request triggers SIGCONT resume in under 100ms.
 
-2. **Stop** (`StopAfterIdle`, default 20min) -- The VM is stopped and resources freed. The instance remains in the list with state STOPPED. The next request triggers a cold boot via `EnsureInstance`.
+2. **Stop** (`StopAfterIdle`, default 5min) -- The VM is stopped and resources freed. The instance remains in the list with state STOPPED. The next request triggers a cold boot via `EnsureInstance`.
 
 Any incoming request at any point resets the idle timer and wakes the VM if needed.
 
@@ -83,7 +83,7 @@ WebSocket connections are fully supported. The router detects the `Upgrade: webs
 |---|---|---|
 | Request context | 30s | Maximum time the router will wait for a VM to become ready. |
 | PauseAfterIdle | 60s | Time after last connection closes before SIGSTOP. |
-| StopAfterIdle | 20min | Time after pause before VM is fully stopped. |
+| StopAfterIdle | 5min | Time after pause before VM is fully stopped. |
 
 ## 7. Proxy Failure
 

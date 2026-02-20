@@ -53,7 +53,9 @@ func startPrimaryProcess(ctx context.Context, params runParams, conn net.Conn) (
 		defer func() { done <- struct{}{} }()
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
-			sendNotification(conn, "log", logParams{Stream: "stdout", Line: scanner.Text()})
+			if err := sendNotification(conn, "log", logParams{Stream: "stdout", Line: scanner.Text()}); err != nil {
+				return // conn dead, stop streaming to avoid blocking the process
+			}
 		}
 	}()
 
@@ -61,7 +63,9 @@ func startPrimaryProcess(ctx context.Context, params runParams, conn net.Conn) (
 		defer func() { done <- struct{}{} }()
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
-			sendNotification(conn, "log", logParams{Stream: "stderr", Line: scanner.Text()})
+			if err := sendNotification(conn, "log", logParams{Stream: "stderr", Line: scanner.Text()}); err != nil {
+				return // conn dead, stop streaming to avoid blocking the process
+			}
 		}
 	}()
 
@@ -132,11 +136,13 @@ func startExecProcess(ctx context.Context, params execParams, conn net.Conn) (*e
 		defer func() { done <- struct{}{} }()
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
-			sendNotification(conn, "log", execLogParams{
+			if err := sendNotification(conn, "log", execLogParams{
 				Stream: "stdout",
 				Line:   scanner.Text(),
 				ExecID: params.ExecID,
-			})
+			}); err != nil {
+				return
+			}
 		}
 	}()
 
@@ -144,11 +150,13 @@ func startExecProcess(ctx context.Context, params execParams, conn net.Conn) (*e
 		defer func() { done <- struct{}{} }()
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
-			sendNotification(conn, "log", execLogParams{
+			if err := sendNotification(conn, "log", execLogParams{
 				Stream: "stderr",
 				Line:   scanner.Text(),
 				ExecID: params.ExecID,
-			})
+			}); err != nil {
+				return
+			}
 		}
 	}()
 

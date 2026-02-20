@@ -75,7 +75,7 @@ func DefaultConfig() *Config {
 		LogsDir:            filepath.Join(aegisDir, "data", "logs"),
 		MasterKeyPath:      filepath.Join(aegisDir, "master.key"),
 		PauseAfterIdle:     60 * time.Second,
-		StopAfterIdle:      20 * time.Minute,
+		StopAfterIdle:      5 * time.Minute,
 	}
 }
 
