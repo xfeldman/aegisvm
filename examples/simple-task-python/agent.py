@@ -12,7 +12,7 @@ def main():
     log("info", "agent starting")
 
     # Read a secret from environment
-    greeting = os.environ.get("GREETING", "Hello from Aegis")
+    greeting = os.environ.get("GREETING", "Hello from AegisVM")
     log("info", "greeting loaded", greeting=greeting)
 
     # Write output to workspace

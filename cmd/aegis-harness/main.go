@@ -5,7 +5,7 @@
 // Build: GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o aegis-harness ./cmd/aegis-harness
 package main
 
-import "github.com/xfeldman/aegis/internal/harness"
+import "github.com/xfeldman/aegisvm/internal/harness"
 
 func main() {
 	harness.Run()

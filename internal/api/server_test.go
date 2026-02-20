@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xfeldman/aegis/internal/config"
-	"github.com/xfeldman/aegis/internal/registry"
-	"github.com/xfeldman/aegis/internal/secrets"
+	"github.com/xfeldman/aegisvm/internal/config"
+	"github.com/xfeldman/aegisvm/internal/registry"
+	"github.com/xfeldman/aegisvm/internal/secrets"
 )
 
 func setupTestServer(t *testing.T) *Server {

@@ -1,16 +1,16 @@
-# Aegis
+# AegisVM
 
 Lightweight MicroVM sandbox runtime for agents.
 
-Aegis runs isolated processes inside microVMs that boot in under a second, pause when idle, and wake on demand. It handles VMs, networking, routing, and lifecycle so agent platforms don't have to.
+AegisVM runs isolated processes inside microVMs that boot in under a second, pause when idle, and wake on demand. It handles VMs, networking, routing, and lifecycle so agent platforms don't have to.
 
-Aegis is not a PaaS, not a publish system, and not an agent framework. It is a clean sandbox substrate.
+AegisVM is not a PaaS, not a publish system, and not an agent framework. It is a clean sandbox substrate.
 
 ## Install
 
 ```bash
-brew tap xfeldman/aegis
-brew install aegis
+brew tap xfeldman/aegisvm
+brew install aegisvm
 ```
 
 Requires macOS ARM64 (Apple Silicon M1+). The formula installs all binaries and handles hypervisor entitlement signing automatically.
@@ -19,7 +19,7 @@ Requires macOS ARM64 (Apple Silicon M1+). The formula installs all binaries and 
 
 ```bash
 brew install libkrun e2fsprogs
-git clone https://github.com/xfeldman/aegis.git && cd aegis
+git clone https://github.com/xfeldman/aegisvm.git && cd aegisvm
 make all
 ```
 
@@ -32,7 +32,7 @@ Binaries are placed in `./bin/`.
 aegis up
 
 # Run a command in an ephemeral VM
-aegis run -- echo "hello from aegis"
+aegis run -- echo "hello from aegisvm"
 
 # Run a Python HTTP server with port exposed
 aegis run --expose 80 -- python3 -m http.server 80
@@ -46,7 +46,7 @@ aegis down
 
 ## MCP (Claude Code integration)
 
-Aegis ships an MCP server (`aegis-mcp`) that lets LLMs drive sandboxed instances — start VMs, exec commands, read logs, manage secrets.
+AegisVM ships an MCP server (`aegis-mcp`) that lets LLMs drive sandboxed instances — start VMs, exec commands, read logs, manage secrets.
 
 ```bash
 # Register with Claude Code (one-time setup)
@@ -60,7 +60,7 @@ Once registered, Claude can use tools like `instance_start`, `exec`, `logs`, `se
 
 ## Instances
 
-The only runtime object in Aegis is an **instance** — a VM running a command with optional port exposure, workspace mount, and secret injection. No apps, no releases, no publish lifecycle.
+The only runtime object in AegisVM is an **instance** — a VM running a command with optional port exposure, workspace mount, and secret injection. No apps, no releases, no publish lifecycle.
 
 ```bash
 # Ephemeral: run a command, collect output, instance deleted after
@@ -177,7 +177,7 @@ Common flags: `--name`, `--expose PORT[:proto]`, `--env K=V`, `--secret KEY`, `-
 
 **aegis-mcp** — MCP server. Exposes aegisd as tools for LLMs over stdio JSON-RPC.
 
-## What Aegis is not
+## What AegisVM is not
 
 - **Not a generic hypervisor.** Fixed base image, opinionated lifecycle, one kind of workload.
 - **Not a container replacement.** Containers share the host kernel. Aegis VMs don't.

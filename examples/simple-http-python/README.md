@@ -1,14 +1,14 @@
 # simple-http-python
 
-Demonstrates a long-running HTTP server Aegis agent written in Python using only the standard library.
+Demonstrates a long-running HTTP server AegisVM agent written in Python using only the standard library.
 
 ## What this example shows
 
-- **Long-lived instance**: the server runs indefinitely, handling requests via the Aegis router.
+- **Long-lived instance**: the server runs indefinitely, handling requests via the AegisVM router.
 - **Secrets injection**: reads `API_KEY` from environment variables.
 - **Workspace listing**: displays files present in `/workspace` on the response page.
 - **Structured logging**: writes JSON log lines to stdout for each request.
-- **Router access**: the Aegis router forwards external HTTP traffic to port 80 inside the VM.
+- **Router access**: the AegisVM router forwards external HTTP traffic to port 80 inside the VM.
 
 ## Running
 

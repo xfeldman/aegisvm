@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xfeldman/aegis/internal/config"
-	"github.com/xfeldman/aegis/internal/lifecycle"
-	"github.com/xfeldman/aegis/internal/logstore"
-	"github.com/xfeldman/aegis/internal/registry"
-	"github.com/xfeldman/aegis/internal/secrets"
-	"github.com/xfeldman/aegis/internal/vmm"
+	"github.com/xfeldman/aegisvm/internal/config"
+	"github.com/xfeldman/aegisvm/internal/lifecycle"
+	"github.com/xfeldman/aegisvm/internal/logstore"
+	"github.com/xfeldman/aegisvm/internal/registry"
+	"github.com/xfeldman/aegisvm/internal/secrets"
+	"github.com/xfeldman/aegisvm/internal/vmm"
 )
 
 // Server is the aegisd HTTP API server.

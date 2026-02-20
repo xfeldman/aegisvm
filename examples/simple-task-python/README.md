@@ -1,11 +1,11 @@
 # simple-task-python
 
-Demonstrates a short-lived Aegis agent written in Python. The agent runs once and exits.
+Demonstrates a short-lived AegisVM agent written in Python. The agent runs once and exits.
 
 ## What this example shows
 
 - **One-shot execution**: the agent runs to completion and exits with code 0.
-- **Secrets**: reads the `GREETING` environment variable (injected by Aegis secrets).
+- **Secrets**: reads the `GREETING` environment variable (injected by AegisVM secrets).
 - **Workspace writes**: creates output files under `/workspace/output/`.
 - **Structured logging**: writes JSON log lines to stdout with level, message, and timestamp.
 

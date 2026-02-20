@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xfeldman/aegis/internal/config"
-	"github.com/xfeldman/aegis/internal/logstore"
-	"github.com/xfeldman/aegis/internal/vmm"
+	"github.com/xfeldman/aegisvm/internal/config"
+	"github.com/xfeldman/aegisvm/internal/logstore"
+	"github.com/xfeldman/aegisvm/internal/vmm"
 )
 
 // mockVMM implements vmm.VMM for lifecycle integration tests.

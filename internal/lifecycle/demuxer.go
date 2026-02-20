@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/xfeldman/aegis/internal/vmm"
+	"github.com/xfeldman/aegisvm/internal/vmm"
 )
 
 // channelDemuxer runs a persistent Recv loop on a ControlChannel,

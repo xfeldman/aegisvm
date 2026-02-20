@@ -21,7 +21,7 @@ class Handler(BaseHTTPRequestHandler):
 
         body = f"""<html>
 <body>
-<h1>Aegis HTTP Server</h1>
+<h1>AegisVM HTTP Server</h1>
 <p>API_KEY configured: {has_key}</p>
 <p>Workspace files: {', '.join(files) if files else '(empty)'}</p>
 <p>Time: {datetime.now(timezone.utc).isoformat()}</p>

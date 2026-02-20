@@ -655,13 +655,13 @@ func main() {
 			result = mcpInitializeResult{
 				ProtocolVersion: "2024-11-05",
 				ServerInfo: mcpServerInfo{
-					Name:    "aegis",
+					Name:    "aegisvm",
 					Version: "1.0.0",
 				},
 				Capabilities: mcpCapabilities{
 					Tools: &struct{}{},
 				},
-				Instructions: `Aegis runs commands inside isolated Linux microVMs on the local machine.
+				Instructions: `AegisVM runs commands inside isolated Linux microVMs on the local machine.
 
 Key concepts:
 - Each instance is a lightweight VM running a single command. The VM runs Alpine Linux (ARM64).

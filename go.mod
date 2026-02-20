@@ -1,4 +1,4 @@
-module github.com/xfeldman/aegis
+module github.com/xfeldman/aegisvm
 
 go 1.25.0
 

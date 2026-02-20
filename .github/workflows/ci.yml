@@ -29,4 +29,4 @@ jobs:
         run: |
           echo '{"jsonrpc":"2.0","method":"initialize","params":{"capabilities":{}},"id":1}' \
             | ./bin/aegis-mcp \
-            | python3 -c "import sys,json; r=json.load(sys.stdin)['result']; assert r['serverInfo']['name']=='aegis', 'bad name'; assert 'tools' in r['capabilities'], 'no tools'; print('MCP handshake OK')"
+            | python3 -c "import sys,json; r=json.load(sys.stdin)['result']; assert r['serverInfo']['name']=='aegisvm', 'bad name'; assert 'tools' in r['capabilities'], 'no tools'; print('MCP handshake OK')"

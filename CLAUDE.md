@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Aegis is a local agent runtime platform that runs AI agent workloads inside isolated microVMs. This repo implements the Aegis platform core.
+AegisVM is a local agent runtime platform that runs AI agent workloads inside isolated microVMs. This repo implements the AegisVM platform core. The project brand is "AegisVM" but CLI binaries are named `aegis`, `aegisd`, `aegis-mcp`, etc.
 
 ## Key Architecture
 
@@ -25,7 +25,7 @@ Components:
 
 ## Current State: Instance-centric (post-pivot)
 
-After the architectural pivot, Aegis manages **instances** — a VM running a command with optional port exposure. No app, release, or task objects in core. The harness uses a single `run` RPC for all workloads. The `run` RPC is the handoff point — infrastructure hands off to guest control.
+After the architectural pivot, AegisVM manages **instances** — a VM running a command with optional port exposure. No app, release, or task objects in core. The harness uses a single `run` RPC for all workloads. The `run` RPC is the handoff point — infrastructure hands off to guest control.
 
 ## Build
 

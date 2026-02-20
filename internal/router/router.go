@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xfeldman/aegis/internal/lifecycle"
+	"github.com/xfeldman/aegisvm/internal/lifecycle"
 )
 
 // Router is the HTTP reverse proxy for instances.

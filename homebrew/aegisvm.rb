@@ -1,14 +1,14 @@
-# Homebrew formula for Aegis — microVM sandbox runtime for agents.
+# Homebrew formula for AegisVM — microVM sandbox runtime for agents.
 #
-# This formula is designed for the xfeldman/homebrew-aegis tap.
-# Install: brew tap xfeldman/aegis && brew install aegis
+# This formula is designed for the xfeldman/homebrew-aegisvm tap.
+# Install: brew tap xfeldman/aegisvm && brew install aegisvm
 #
 # The release workflow updates the url, sha256, and version automatically.
 
-class Aegis < Formula
+class Aegisvm < Formula
   desc "Lightweight microVM sandbox runtime for agents"
-  homepage "https://github.com/xfeldman/aegis"
-  url "https://github.com/xfeldman/aegis/releases/download/v0.1.0/aegis-v0.1.0-darwin-arm64.tar.gz"
+  homepage "https://github.com/xfeldman/aegisvm"
+  url "https://github.com/xfeldman/aegisvm/releases/download/v0.1.0/aegisvm-v0.1.0-darwin-arm64.tar.gz"
   sha256 "PLACEHOLDER"
   version "0.1.0"
   license "MIT"
@@ -41,7 +41,7 @@ class Aegis < Formula
 
   def caveats
     <<~EOS
-      To start the Aegis daemon:
+      To start the AegisVM daemon:
         aegis up
 
       To configure as an MCP server for Claude Code:
@@ -64,6 +64,6 @@ class Aegis < Formula
       '{"jsonrpc":"2.0","method":"initialize","params":{"capabilities":{}},"id":1}',
       0
     )
-    assert_match '"name":"aegis"', output
+    assert_match '"name":"aegisvm"', output
   end
 end

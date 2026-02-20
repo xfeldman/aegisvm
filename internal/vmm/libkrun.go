@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/xfeldman/aegis/internal/config"
+	"github.com/xfeldman/aegisvm/internal/config"
 )
 
 // WorkerConfig is the JSON configuration sent to the vmm-worker process.

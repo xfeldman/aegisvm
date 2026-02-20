@@ -1,4 +1,4 @@
-"""European capitals with current time — served from an Aegis microVM."""
+"""European capitals with current time — served from an AegisVM microVM."""
 
 import json
 from datetime import datetime, timezone, timedelta
@@ -84,7 +84,7 @@ def render_page():
             {table_rows}
         </tbody>
     </table>
-    <p class="footer">Served from an Aegis microVM at {now_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC</p>
+    <p class="footer">Served from an AegisVM microVM at {now_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC</p>
 </body>
 </html>"""
 

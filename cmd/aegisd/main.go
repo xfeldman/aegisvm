@@ -13,16 +13,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/xfeldman/aegis/internal/api"
-	"github.com/xfeldman/aegis/internal/config"
-	"github.com/xfeldman/aegis/internal/image"
-	"github.com/xfeldman/aegis/internal/lifecycle"
-	"github.com/xfeldman/aegis/internal/logstore"
-	"github.com/xfeldman/aegis/internal/overlay"
-	"github.com/xfeldman/aegis/internal/registry"
-	"github.com/xfeldman/aegis/internal/router"
-	"github.com/xfeldman/aegis/internal/secrets"
-	"github.com/xfeldman/aegis/internal/vmm"
+	"github.com/xfeldman/aegisvm/internal/api"
+	"github.com/xfeldman/aegisvm/internal/config"
+	"github.com/xfeldman/aegisvm/internal/image"
+	"github.com/xfeldman/aegisvm/internal/lifecycle"
+	"github.com/xfeldman/aegisvm/internal/logstore"
+	"github.com/xfeldman/aegisvm/internal/overlay"
+	"github.com/xfeldman/aegisvm/internal/registry"
+	"github.com/xfeldman/aegisvm/internal/router"
+	"github.com/xfeldman/aegisvm/internal/secrets"
+	"github.com/xfeldman/aegisvm/internal/vmm"
 )
 
 func main() {
