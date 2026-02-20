@@ -18,7 +18,7 @@ jobs:
           go-version: '1.23'
 
       - name: Install dependencies
-        run: brew install libkrun e2fsprogs
+        run: brew tap slp/krun && brew install libkrun e2fsprogs
 
       - name: Build all binaries
         run: make all
