@@ -304,6 +304,8 @@ func (s *Server) handleRestartOrConflict(w http.ResponseWriter, inst *lifecycle.
 		return
 	}
 
+	s.ensurePortListeners(inst)
+
 	// Re-enable and boot via StartInstance (sets Enabled=true + boots).
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -637,6 +639,36 @@ func (s *Server) handleResumeInstance(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "running"})
 }
 
+// ensurePortListeners re-allocates port listeners for an instance if they
+// were freed (e.g. by disable). Uses saved public ports from registry for
+// port stability. No-op if listeners already exist.
+func (s *Server) ensurePortListeners(inst *lifecycle.Instance) {
+	if s.router == nil {
+		return
+	}
+	existing := s.router.GetAllPublicPorts(inst.ID)
+	if len(existing) > 0 || len(inst.ExposePorts) == 0 {
+		return
+	}
+	var savedPorts map[int]int
+	if s.registry != nil {
+		if ri, err := s.registry.GetInstance(inst.ID); err == nil && ri != nil {
+			savedPorts = ri.PublicPorts
+		}
+	}
+	for _, ep := range inst.ExposePorts {
+		requestedPort := 0
+		if savedPorts != nil {
+			requestedPort = savedPorts[ep.GuestPort]
+		}
+		if _, err := s.router.AllocatePort(inst.ID, ep.GuestPort, requestedPort, ep.Protocol); err != nil {
+			if requestedPort > 0 {
+				s.router.AllocatePort(inst.ID, ep.GuestPort, 0, ep.Protocol)
+			}
+		}
+	}
+}
+
 func (s *Server) handleStartInstance(w http.ResponseWriter, r *http.Request) {
 	id := pathParam(r, "id")
 
@@ -650,30 +682,7 @@ func (s *Server) handleStartInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Re-allocate port listeners if they were freed by disable
-	if s.router != nil {
-		existing := s.router.GetAllPublicPorts(inst.ID)
-		if len(existing) == 0 && len(inst.ExposePorts) > 0 {
-			// Look up saved public ports from registry
-			var savedPorts map[int]int
-			if s.registry != nil {
-				if ri, err := s.registry.GetInstance(inst.ID); err == nil && ri != nil {
-					savedPorts = ri.PublicPorts
-				}
-			}
-			for _, ep := range inst.ExposePorts {
-				requestedPort := 0
-				if savedPorts != nil {
-					requestedPort = savedPorts[ep.GuestPort]
-				}
-				if _, err := s.router.AllocatePort(inst.ID, ep.GuestPort, requestedPort, ep.Protocol); err != nil {
-					if requestedPort > 0 {
-						s.router.AllocatePort(inst.ID, ep.GuestPort, 0, ep.Protocol)
-					}
-				}
-			}
-		}
-	}
+	s.ensurePortListeners(inst)
 
 	// StartInstance sets Enabled=true and boots
 	go func() {
