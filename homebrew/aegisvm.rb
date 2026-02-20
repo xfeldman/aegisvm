@@ -11,7 +11,7 @@ class Aegisvm < Formula
   url "https://github.com/xfeldman/aegisvm/releases/download/v0.1.0/aegisvm-v0.1.0-darwin-arm64.tar.gz"
   sha256 "PLACEHOLDER"
   version "0.1.0"
-  license "MIT"
+  license "Apache-2.0"
 
   depends_on "libkrun"
   depends_on arch: :arm64

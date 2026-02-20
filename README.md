@@ -220,3 +220,7 @@ make integration SHORT=1  # skip pause/resume test
 - [v3 Platform Spec](specs/AEGIS_v3_PLATFORM_SPEC.md) — current spec (instance-centric, post-pivot)
 - [Architectural Pivot](specs/aegis_architectural_pivot_spec.md) — pivot from app-centric to instance-centric
 - [Platform Spec (pre-pivot)](specs/AEGIS_PLATFORM_SPEC.md) — original architecture
+
+## License
+
+[Apache License 2.0](LICENSE)
