@@ -128,8 +128,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 // Instance API types
 
 type exposeRequest struct {
-	Port     int    `json:"port"`
-	Protocol string `json:"protocol,omitempty"`
+	Port       int    `json:"port"`
+	PublicPort int    `json:"public_port,omitempty"` // 0 = random
+	Protocol   string `json:"protocol,omitempty"`
 }
 
 type createInstanceRequest struct {
@@ -225,20 +226,21 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 
 	// Allocate public ports via router
 	var publicEndpoints []router.PublicEndpoint
-	if s.router != nil && len(exposePorts) > 0 {
-		for _, ep := range exposePorts {
-			publicPort, err := s.router.AllocatePort(id, ep.GuestPort, ep.Protocol)
+	if s.router != nil && len(req.Exposes) > 0 {
+		for i, e := range req.Exposes {
+			proto := exposePorts[i].Protocol
+			publicPort, err := s.router.AllocatePort(id, e.Port, e.PublicPort, proto)
 			if err != nil {
-				log.Printf("allocate public port for guest %d: %v", ep.GuestPort, err)
+				log.Printf("allocate public port for guest %d: %v", e.Port, err)
 				s.router.FreeAllPorts(id)
 				s.lifecycle.DeleteInstance(id)
 				writeError(w, http.StatusInternalServerError, fmt.Sprintf("port allocation failed: %v", err))
 				return
 			}
 			publicEndpoints = append(publicEndpoints, router.PublicEndpoint{
-				GuestPort:  ep.GuestPort,
+				GuestPort:  e.Port,
 				PublicPort: publicPort,
-				Protocol:   ep.Protocol,
+				Protocol:   proto,
 			})
 		}
 	}

@@ -34,11 +34,14 @@ aegis up
 # Run a command in an ephemeral VM
 aegis run -- echo "hello from aegisvm"
 
-# Run a Python HTTP server with port exposed
+# Run a Python HTTP server on port 8080
+aegis run --expose 8080:80 -- python3 -m http.server 80
+
+# Random public port (OS-assigned)
 aegis run --expose 80 -- python3 -m http.server 80
 
 # Run a script from your host directory (mounted at /workspace/ in the VM)
-aegis run --workspace ./myapp -- python3 /workspace/server.py
+aegis run --workspace ./myapp --expose 8080:80 -- python3 /workspace/server.py
 
 # Stop the daemon
 aegis down
@@ -66,11 +69,11 @@ The only runtime object in AegisVM is an **instance** — a VM running a command
 # Ephemeral: run a command, collect output, instance deleted after
 aegis run -- python analyze.py
 
-# Ephemeral with exposed ports
-aegis run --expose 80 -- python app.py
+# Ephemeral with exposed port (public 8080 → guest 80)
+aegis run --expose 8080:80 -- python3 -m http.server 80
 
 # Persistent instance with a handle
-aegis instance start --name web --workspace myapp --expose 80 -- python3 -m http.server 80
+aegis instance start --name web --workspace myapp --expose 8080:80 -- python3 -m http.server 80
 aegis exec web -- echo hello
 aegis logs web --follow
 
@@ -131,11 +134,11 @@ aegis secret set/list/delete                        Manage secrets
 aegis mcp install/uninstall                         Claude Code MCP integration
 ```
 
-Common flags: `--name`, `--expose PORT[:proto]`, `--env K=V`, `--secret KEY`, `--workspace NAME_OR_PATH`, `--image REF`.
+Common flags: `--name`, `--expose [PUBLIC:]GUEST[/proto]`, `--env K=V`, `--secret KEY`, `--workspace NAME_OR_PATH`, `--image REF`.
 
 ## Core mechanisms
 
-**Docker-style static port mapping.** `--expose 80` or `--expose 8080:tcp` configures VMM port forwarding at creation time. The router proxies traffic, resumes paused instances on ingress, and returns 503 if the backend is unreachable. No readiness gating in core.
+**Docker-style port mapping.** `--expose 8080:80` maps public port 8080 to guest port 80. `--expose 80` assigns a random public port. All ports are owned by the router — traffic is proxied through aegisd with wake-on-connect, so paused and stopped VMs wake automatically on incoming connections.
 
 **Disk is canonical.** Stop terminates the VM and restores from disk layers on next boot. Pause (SIGSTOP) retains RAM for fast resume but is never treated as durable state. Memory is ephemeral, workspace is persistent.
 
@@ -210,7 +213,7 @@ make integration SHORT=1  # skip pause/resume test
 - [Quickstart](docs/QUICKSTART.md) — zero to running agent in 5 minutes
 - [CLI Reference](docs/CLI.md) — complete command reference
 - [Agent Conventions](docs/AGENT_CONVENTIONS.md) — guest environment contract
-- [Router](docs/ROUTER.md) — handle-based routing, wake-on-connect, idle behavior
+- [Router](docs/ROUTER.md) — always-proxy ingress, wake-on-connect, idle behavior
 - [Workspaces](docs/WORKSPACES.md) — persistent volumes, lifecycle
 - [Secrets](docs/SECRETS.md) — encryption, injection, threat model
 - [Troubleshooting](docs/TROUBLESHOOTING.md) — common issues and fixes

@@ -134,23 +134,23 @@ When you specify `--image`, aegisd pulls the OCI image (if not already cached), 
 ## 7. Start an HTTP Server
 
 ```bash
-aegis run --expose 80 -- python3 -m http.server 80
+aegis run --expose 8080:80 -- python3 -m http.server 80
 ```
 
 In a second terminal:
 
 ```bash
-curl http://127.0.0.1:8099/
+curl http://127.0.0.1:8080/
 ```
 
 You should see the directory listing from Python's HTTP server.
 
 How this works:
 
-- The `--expose 80` flag tells aegisd to map port 80 inside the VM to a host port (Docker-style static port mapping).
-- The router in aegisd listens on `127.0.0.1:8099` and proxies requests into the VM.
+- `--expose 8080:80` maps public port 8080 to guest port 80. You can also use `--expose 80` to let the OS assign a random public port.
+- All exposed ports are owned by the router in aegisd — traffic is proxied with wake-on-connect.
 - When idle for 60 seconds, the VM is paused (SIGSTOP). After 5 minutes idle, the VM is stopped entirely.
-- The next incoming request wakes the VM automatically (scale-to-zero).
+- The next incoming connection wakes the VM automatically (scale-to-zero).
 
 Press Ctrl+C in the first terminal to stop.
 
@@ -159,7 +159,7 @@ Press Ctrl+C in the first terminal to stop.
 Use `--workspace` to mount a host directory into the VM at `/workspace/`:
 
 ```bash
-aegis run --workspace ./myapp --expose 80 -- python3 /workspace/server.py
+aegis run --workspace ./myapp --expose 8080:80 -- python3 /workspace/server.py
 ```
 
 This mounts `./myapp` from your host as `/workspace/` inside the VM. Files are available read-write and persist after the VM stops.
@@ -169,14 +169,14 @@ This mounts `./myapp` from your host as `/workspace/` inside the VM. Files are a
 Start a long-lived instance with a handle:
 
 ```bash
-# Start the instance
-aegis instance start --name demo --expose 80 -- python3 -m http.server 80
+# Start the instance (public port 8080 → guest port 80)
+aegis instance start --name demo --expose 8080:80 -- python3 -m http.server 80
 
 # Set a workspace secret (available as env var inside VMs)
 aegis secret set API_KEY sk-test123
 
 # Curl the server
-curl http://127.0.0.1:8099/
+curl http://127.0.0.1:8080/
 ```
 
 ## 10. Exec Into a Running Instance

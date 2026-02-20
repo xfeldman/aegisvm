@@ -61,11 +61,19 @@ When a connection arrives on a public port and the VM is not running:
 
 ### Port allocation
 
-Ports are allocated with `net.Listen("tcp", "127.0.0.1:0")` — the OS assigns a random available port. The allocated port is returned in the API response and shown in CLI output.
+`--expose` supports Docker-style port mapping:
+
+```
+--expose 80          → random public port → guest 80
+--expose 8080:80     → public 8080 → guest 80
+--expose 8080:80/tcp → public 8080 → guest 80, protocol tcp
+```
+
+Random ports are allocated with `net.Listen("tcp", "127.0.0.1:0")`. Deterministic ports bind to the specified port. Ports below 1024 require root.
 
 **Stability policy:**
-- Stable across: pause, resume, stop, restart (same daemon session)
-- NOT stable across: daemon restart (ports are re-randomized)
+- Deterministic ports (`8080:80`): stable always (same port every time)
+- Random ports (`80`): stable across pause/resume/stop/restart within a daemon session. NOT stable across daemon restart.
 
 ## 3. Main HTTP Router
 
@@ -73,17 +81,12 @@ The main router listens on `127.0.0.1:8099` (configurable via `RouterAddr`). It 
 
 ### Instance resolution
 
-When an HTTP request arrives, the router resolves the target instance:
+When an HTTP request arrives on the main router, it resolves the target instance:
 
-1. **Header: `X-Aegis-Instance`** — route by instance ID
-2. **Path prefix: `/{handle}/...`** — route by handle, strip prefix before forwarding
-3. **Default fallback** — if exactly one instance exists, use it
+1. **Header: `X-Aegis-Instance`** — route by instance ID or handle
+2. **Default fallback** — if exactly one instance exists, use it
 
-```
-GET /web/api/data  →  instance "web"  →  backend sees GET /api/data
-```
-
-With multiple instances and no explicit routing, the router returns 503.
+With multiple instances and no explicit routing, the router returns 503. Use per-port endpoints (from `--expose`) to reach specific instances directly — each instance gets its own port.
 
 ### HTTP reverse proxy
 

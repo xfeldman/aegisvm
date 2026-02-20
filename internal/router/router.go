@@ -107,10 +107,15 @@ func (r *Router) Addr() string {
 // --- Per-port proxy management ---
 
 // AllocatePort creates a public TCP listener for a guest port.
-// The listener handles wake-on-connect and L4 relay to the VMM backend.
+// If requestedPort is 0, a random port is allocated.
+// If requestedPort is non-zero, that specific port is used.
 // Returns the allocated host port.
-func (r *Router) AllocatePort(instanceID string, guestPort int, protocol string) (int, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+func (r *Router) AllocatePort(instanceID string, guestPort int, requestedPort int, protocol string) (int, error) {
+	listenAddr := "127.0.0.1:0"
+	if requestedPort > 0 {
+		listenAddr = fmt.Sprintf("127.0.0.1:%d", requestedPort)
+	}
+	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return 0, fmt.Errorf("allocate public port for guest %d: %w", guestPort, err)
 	}
@@ -362,47 +367,24 @@ func (r *Router) handleWebSocket(w http.ResponseWriter, req *http.Request, targe
 
 // resolveInstance finds an instance for a request.
 // Resolution order:
-//  1. X-Aegis-Instance header → route to instance by ID
-//  2. Path prefix: /{handle}/... → strip handle, route to instance by handle
-//  3. Fall back to default instance if only one exists
+//  1. X-Aegis-Instance header → route to instance by ID or handle
+//  2. Fall back to default instance if only one exists
 func (r *Router) resolveInstance(req *http.Request) *lifecycle.Instance {
-	// 1. Header-based routing: X-Aegis-Instance
-	if instID := req.Header.Get("X-Aegis-Instance"); instID != "" {
-		return r.lm.GetInstance(instID)
+	// 1. Header-based routing: X-Aegis-Instance (ID or handle)
+	if instRef := req.Header.Get("X-Aegis-Instance"); instRef != "" {
+		if inst := r.lm.GetInstance(instRef); inst != nil {
+			return inst
+		}
+		return r.lm.GetInstanceByHandle(instRef)
 	}
 
-	// 2. Path-based routing: /{handle}/...
-	if req.URL.Path != "/" && req.URL.Path != "" {
-		path := strings.TrimPrefix(req.URL.Path, "/")
-		slashIdx := strings.IndexByte(path, '/')
-		var handle string
-		if slashIdx >= 0 {
-			handle = path[:slashIdx]
-		} else {
-			handle = path
-		}
-
-		if handle != "" {
-			inst := r.lm.GetInstanceByHandle(handle)
-			if inst != nil {
-				// Strip the handle prefix
-				if slashIdx >= 0 {
-					req.URL.Path = path[slashIdx:]
-				} else {
-					req.URL.Path = "/"
-				}
-				return inst
-			}
-		}
-	}
-
-	// 3. Default instance fallback
+	// 2. Default instance fallback
 	count := r.lm.InstanceCount()
 	if count == 1 {
 		return r.lm.GetDefaultInstance()
 	}
 	if count > 1 {
-		log.Printf("router: ambiguous request to %s with %d instances — use /{handle}/... path or X-Aegis-Instance header", req.URL.Path, count)
+		log.Printf("router: ambiguous request to %s with %d instances — use X-Aegis-Instance header or per-port endpoints", req.URL.Path, count)
 	}
 	return nil
 }

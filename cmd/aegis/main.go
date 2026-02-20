@@ -97,9 +97,10 @@ Commands:
 Examples:
   aegis up
   aegis run -- echo "hello from aegisvm"
-  aegis run --expose 80 -- python -m http.server 80
+  aegis run --expose 80 -- python3 -m http.server 80
+  aegis run --expose 8080:80 -- python3 -m http.server 80
   aegis run --workspace ./myapp --expose 80 -- python3 /workspace/app.py
-  aegis instance start --name web --expose 80:http --workspace myapp -- python3 -m http.server 80
+  aegis instance start --name web --expose 8080:80 --workspace myapp -- python3 -m http.server 80
   aegis instance stop web
   aegis instance start --name web                                    (restart stopped)
   aegis instance list --stopped
@@ -235,8 +236,9 @@ func cmdDown() {
 }
 
 type exposeFlag struct {
-	Port     int
-	Protocol string // "http", "tcp", etc. Default: "http"
+	GuestPort  int
+	PublicPort int    // 0 = random
+	Protocol   string // "http", "tcp", etc. Default: "http"
 }
 
 // parseRunFlags parses common flags: --expose, --name, --env, --image, --workspace, --secret
@@ -251,22 +253,10 @@ func parseRunFlags(args []string) (exposePorts []exposeFlag, name, imageRef stri
 		switch args[i] {
 		case "--expose":
 			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--expose requires a port (e.g. 80, 8080:tcp)")
+				fmt.Fprintln(os.Stderr, "--expose requires a port (e.g. 80, 8080:80, 8080:80/tcp)")
 				os.Exit(1)
 			}
-			arg := args[i+1]
-			proto := "http"
-			portStr := arg
-			if idx := strings.IndexByte(arg, ':'); idx >= 0 {
-				portStr = arg[:idx]
-				proto = arg[idx+1:]
-			}
-			port, err := strconv.Atoi(portStr)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "invalid port: %s\n", arg)
-				os.Exit(1)
-			}
-			exposePorts = append(exposePorts, exposeFlag{Port: port, Protocol: proto})
+			exposePorts = append(exposePorts, parseExposeArg(args[i+1]))
 			i++
 		case "--name":
 			if i+1 >= len(args) {
@@ -314,6 +304,48 @@ func parseRunFlags(args []string) (exposePorts []exposeFlag, name, imageRef stri
 	return
 }
 
+// parseExposeArg parses --expose argument in Docker-style format:
+//
+//	80          → random public port → guest 80
+//	8080:80     → public 8080 → guest 80
+//	8080:80/tcp → public 8080 → guest 80, protocol tcp
+//	80/tcp      → random public port → guest 80, protocol tcp
+func parseExposeArg(arg string) exposeFlag {
+	proto := "http"
+	portPart := arg
+
+	// Extract protocol suffix: /http, /tcp, /grpc
+	if idx := strings.LastIndexByte(arg, '/'); idx >= 0 {
+		proto = arg[idx+1:]
+		portPart = arg[:idx]
+	}
+
+	// Check for public:guest format
+	if idx := strings.IndexByte(portPart, ':'); idx >= 0 {
+		publicStr := portPart[:idx]
+		guestStr := portPart[idx+1:]
+		publicPort, err := strconv.Atoi(publicStr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid public port: %s\n", arg)
+			os.Exit(1)
+		}
+		guestPort, err := strconv.Atoi(guestStr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid guest port: %s\n", arg)
+			os.Exit(1)
+		}
+		return exposeFlag{GuestPort: guestPort, PublicPort: publicPort, Protocol: proto}
+	}
+
+	// Just a guest port
+	guestPort, err := strconv.Atoi(portPart)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid port: %s\n", arg)
+		os.Exit(1)
+	}
+	return exposeFlag{GuestPort: guestPort, PublicPort: 0, Protocol: proto}
+}
+
 // cmdRun creates an ephemeral instance: start → follow logs → wait → delete.
 // If --workspace is omitted, a temporary workspace is allocated and deleted after.
 // If --workspace is provided, that workspace is preserved (user-owned).
@@ -356,7 +388,11 @@ func cmdRun() {
 	if len(exposePorts) > 0 {
 		exposes := make([]map[string]interface{}, len(exposePorts))
 		for i, p := range exposePorts {
-			exposes[i] = map[string]interface{}{"port": p.Port, "protocol": p.Protocol}
+			expose := map[string]interface{}{"port": p.GuestPort, "protocol": p.Protocol}
+			if p.PublicPort > 0 {
+				expose["public_port"] = p.PublicPort
+			}
+			exposes[i] = expose
 		}
 		reqBody["exposes"] = exposes
 	}
@@ -651,7 +687,11 @@ func cmdInstanceStart(client *http.Client) {
 	if len(exposePorts) > 0 {
 		exposes := make([]map[string]interface{}, len(exposePorts))
 		for i, p := range exposePorts {
-			exposes[i] = map[string]interface{}{"port": p.Port, "protocol": p.Protocol}
+			expose := map[string]interface{}{"port": p.GuestPort, "protocol": p.Protocol}
+			if p.PublicPort > 0 {
+				expose["public_port"] = p.PublicPort
+			}
+			exposes[i] = expose
 		}
 		reqBody["exposes"] = exposes
 	}

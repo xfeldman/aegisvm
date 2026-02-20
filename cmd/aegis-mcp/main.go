@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -167,7 +168,7 @@ var tools = []mcpTool{
 			"properties": {
 				"command":   {"type": "array", "items": {"type": "string"}, "description": "Command to run inside the VM. Paths must be VM paths (e.g. /workspace/script.py), not host paths."},
 				"name":      {"type": "string", "description": "Human-friendly handle for the instance (e.g. 'web', 'api'). Use this to reference the instance in other tools."},
-				"expose":    {"type": "array", "items": {"type": "integer"}, "description": "Guest ports to expose. The response includes the mapped host port in endpoints."},
+				"expose":    {"type": "array", "items": {"type": "string"}, "description": "Ports to expose. Each entry is 'guestPort' (random public port) or 'publicPort:guestPort' (deterministic). Examples: ['80'], ['8080:80']. Response includes public_port in endpoints."},
 				"workspace": {"type": "string", "description": "Absolute host directory path to mount inside the VM at /workspace/. Example: '/home/user/project' becomes /workspace/ in the VM."},
 				"image":     {"type": "string", "description": "OCI image reference for the VM root filesystem (e.g. 'python:3.12', 'node:20'). Default is a minimal Alpine Linux."},
 				"env":       {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment variables to set inside the VM."},
@@ -286,7 +287,7 @@ func handleInstanceStart(args json.RawMessage) *mcpToolResult {
 	var params struct {
 		Command   []string          `json:"command"`
 		Name      string            `json:"name"`
-		Expose    []int             `json:"expose"`
+		Expose    []string          `json:"expose"`
 		Workspace string            `json:"workspace"`
 		Image     string            `json:"image"`
 		Env       map[string]string `json:"env"`
@@ -322,8 +323,20 @@ func handleInstanceStart(args json.RawMessage) *mcpToolResult {
 	}
 	if len(params.Expose) > 0 {
 		exposes := make([]map[string]interface{}, len(params.Expose))
-		for i, p := range params.Expose {
-			exposes[i] = map[string]interface{}{"port": p}
+		for i, s := range params.Expose {
+			expose := map[string]interface{}{}
+			if idx := strings.IndexByte(s, ':'); idx >= 0 {
+				// "publicPort:guestPort" format
+				publicPort, _ := strconv.Atoi(s[:idx])
+				guestPort, _ := strconv.Atoi(s[idx+1:])
+				expose["port"] = guestPort
+				expose["public_port"] = publicPort
+			} else {
+				// Just guest port
+				guestPort, _ := strconv.Atoi(s)
+				expose["port"] = guestPort
+			}
+			exposes[i] = expose
 		}
 		body["exposes"] = exposes
 	}
