@@ -44,6 +44,7 @@ type mcpInitializeResult struct {
 	ProtocolVersion string          `json:"protocolVersion"`
 	ServerInfo      mcpServerInfo   `json:"serverInfo"`
 	Capabilities    mcpCapabilities `json:"capabilities"`
+	Instructions    string          `json:"instructions"`
 }
 
 type mcpServerInfo struct {
@@ -160,17 +161,17 @@ func doStreamingRequest(method, path string, body interface{}) (*http.Response, 
 var tools = []mcpTool{
 	{
 		Name:        "instance_start",
-		Description: "Start a new VM instance running a command, or restart a stopped instance by name.",
+		Description: "Start a new isolated Linux microVM running a command. The VM is a fresh Alpine Linux environment — host files are NOT available unless mapped via workspace. To restart a stopped instance, pass just the name without a command.",
 		InputSchema: rawJSON(`{
 			"type": "object",
 			"properties": {
-				"command":   {"type": "array", "items": {"type": "string"}, "description": "Command to run in the VM"},
-				"name":      {"type": "string", "description": "Handle alias for the instance"},
-				"expose":    {"type": "array", "items": {"type": "integer"}, "description": "Ports to expose on the host"},
-				"workspace": {"type": "string", "description": "Named workspace or path to mount"},
-				"image":     {"type": "string", "description": "OCI image reference (e.g. python:3.12)"},
-				"env":       {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment variables"},
-				"secrets":   {"type": "array", "items": {"type": "string"}, "description": "Secret keys to inject"}
+				"command":   {"type": "array", "items": {"type": "string"}, "description": "Command to run inside the VM. Paths must be VM paths (e.g. /workspace/script.py), not host paths."},
+				"name":      {"type": "string", "description": "Human-friendly handle for the instance (e.g. 'web', 'api'). Use this to reference the instance in other tools."},
+				"expose":    {"type": "array", "items": {"type": "integer"}, "description": "Guest ports to expose. The response includes the mapped host port in endpoints."},
+				"workspace": {"type": "string", "description": "Absolute host directory path to mount inside the VM at /workspace/. Example: '/home/user/project' becomes /workspace/ in the VM."},
+				"image":     {"type": "string", "description": "OCI image reference for the VM root filesystem (e.g. 'python:3.12', 'node:20'). Default is a minimal Alpine Linux."},
+				"env":       {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment variables to set inside the VM."},
+				"secrets":   {"type": "array", "items": {"type": "string"}, "description": "Secret keys to inject as environment variables (must be set via secret_set first)."}
 			},
 			"required": ["command"]
 		}`),
@@ -220,12 +221,12 @@ var tools = []mcpTool{
 	},
 	{
 		Name:        "exec",
-		Description: "Execute a command inside a running instance and return its output.",
+		Description: "Execute a command inside a running VM instance and return its full output. The command runs in the VM filesystem — use /workspace/ paths to access workspace-mounted files.",
 		InputSchema: rawJSON(`{
 			"type": "object",
 			"properties": {
 				"name":    {"type": "string", "description": "Instance handle or ID"},
-				"command": {"type": "array", "items": {"type": "string"}, "description": "Command to execute"}
+				"command": {"type": "array", "items": {"type": "string"}, "description": "Command to execute inside the VM (e.g. [\"ls\", \"/workspace/\"])"}
 			},
 			"required": ["name", "command"]
 		}`),
@@ -660,6 +661,21 @@ func main() {
 				Capabilities: mcpCapabilities{
 					Tools: &struct{}{},
 				},
+				Instructions: `Aegis runs commands inside isolated Linux microVMs on the local machine.
+
+Key concepts:
+- Each instance is a lightweight VM running a single command. The VM runs Alpine Linux (ARM64).
+- Commands run INSIDE the VM, not on the host. Host files are NOT available inside the VM unless you use a workspace.
+- Workspace: pass an absolute host directory path as the "workspace" parameter. It will be mounted at /workspace/ inside the VM. Reference files as /workspace/filename.
+- Ports: the VM has its own network. To access a server running inside, use "expose" to map guest ports to the host. The response includes the host port in "endpoints".
+- The base VM has basic tools (sh, ls, cat, etc). For Python, Node, or other runtimes, use the "image" parameter with an OCI image ref (e.g. "python:3.12", "node:20").
+- Use "exec" to run commands inside a running instance. Use "logs" to see instance output.
+- Use "name" to give instances human-friendly handles for easy reference.
+
+Example — run a Python script from the host:
+  1. instance_start with workspace="/path/to/project", command=["python3", "/workspace/script.py"], expose=[8080], name="myapp"
+  2. exec with name="myapp", command=["ls", "/workspace/"] to see mounted files
+  3. logs with name="myapp" to check output`,
 			}
 
 		case "tools/list":
