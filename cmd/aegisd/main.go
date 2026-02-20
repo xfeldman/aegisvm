@@ -55,7 +55,7 @@ func main() {
 	}
 
 	caps := backend.Capabilities()
-	log.Printf("VMM backend: %s (pause=%v, snapshot=%v)", caps.Name, caps.Pause, caps.SnapshotRestore)
+	log.Printf("VMM backend: %s (pause=%v)", caps.Name, caps.Pause)
 
 	// Open registry database
 	reg, err := registry.Open(cfg.DBPath)

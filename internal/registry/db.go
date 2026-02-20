@@ -77,6 +77,9 @@ func (d *DB) migrate() error {
 	migrations := []string{
 		`ALTER TABLE instances ADD COLUMN handle TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE instances ADD COLUMN image_ref TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE instances ADD COLUMN workspace TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE instances ADD COLUMN env TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE instances ADD COLUMN secret_keys TEXT NOT NULL DEFAULT '[]'`,
 	}
 	for _, stmt := range migrations {
 		d.db.Exec(stmt)

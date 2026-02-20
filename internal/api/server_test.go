@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xfeldman/aegis/internal/config"
 	"github.com/xfeldman/aegis/internal/registry"
 	"github.com/xfeldman/aegis/internal/secrets"
 )
@@ -178,5 +179,115 @@ func TestResolveEnv_EmptyStore(t *testing.T) {
 	env = s.resolveEnv([]string{"API_KEY"}, nil)
 	if len(env) != 0 {
 		t.Fatalf("expected empty env for missing key, got %v", env)
+	}
+}
+
+// --- resolveWorkspace tests ---
+
+func TestResolveWorkspace_NamedWorkspace(t *testing.T) {
+	s := &Server{
+		cfg: &config.Config{WorkspacesDir: "/home/user/.aegis/data/workspaces"},
+	}
+
+	got := s.resolveWorkspace("claw")
+	want := "/home/user/.aegis/data/workspaces/claw"
+	if got != want {
+		t.Errorf("resolveWorkspace(%q) = %q, want %q", "claw", got, want)
+	}
+}
+
+func TestResolveWorkspace_NamedWorkspace_Hyphenated(t *testing.T) {
+	s := &Server{
+		cfg: &config.Config{WorkspacesDir: "/data/workspaces"},
+	}
+
+	got := s.resolveWorkspace("my-agent")
+	want := "/data/workspaces/my-agent"
+	if got != want {
+		t.Errorf("resolveWorkspace(%q) = %q, want %q", "my-agent", got, want)
+	}
+}
+
+func TestResolveWorkspace_PathWithSlash(t *testing.T) {
+	s := &Server{
+		cfg: &config.Config{WorkspacesDir: "/data/workspaces"},
+	}
+
+	got := s.resolveWorkspace("/absolute/path/to/project")
+	if got != "/absolute/path/to/project" {
+		t.Errorf("resolveWorkspace with absolute path = %q, want %q", got, "/absolute/path/to/project")
+	}
+}
+
+func TestResolveWorkspace_PathWithDot(t *testing.T) {
+	s := &Server{
+		cfg: &config.Config{WorkspacesDir: "/data/workspaces"},
+	}
+
+	got := s.resolveWorkspace("./myapp")
+	// Should resolve to absolute path, not named workspace
+	if got == "/data/workspaces/./myapp" {
+		t.Errorf("resolveWorkspace(%q) should not treat dot-path as named workspace", "./myapp")
+	}
+}
+
+func TestResolveWorkspace_RelativeWithSlash(t *testing.T) {
+	s := &Server{
+		cfg: &config.Config{WorkspacesDir: "/data/workspaces"},
+	}
+
+	got := s.resolveWorkspace("foo/bar")
+	// Contains slash → treated as path, not named
+	if got == "/data/workspaces/foo/bar" {
+		t.Errorf("resolveWorkspace(%q) should not treat path-with-slash as named workspace", "foo/bar")
+	}
+}
+
+// --- parseDuration tests ---
+
+func TestParseDuration_Days(t *testing.T) {
+	d, err := parseDuration("7d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d != 7*24*time.Hour {
+		t.Errorf("parseDuration(%q) = %v, want %v", "7d", d, 7*24*time.Hour)
+	}
+}
+
+func TestParseDuration_SingleDay(t *testing.T) {
+	d, err := parseDuration("1d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d != 24*time.Hour {
+		t.Errorf("parseDuration(%q) = %v, want %v", "1d", d, 24*time.Hour)
+	}
+}
+
+func TestParseDuration_Hours(t *testing.T) {
+	d, err := parseDuration("24h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d != 24*time.Hour {
+		t.Errorf("parseDuration(%q) = %v, want %v", "24h", d, 24*time.Hour)
+	}
+}
+
+func TestParseDuration_Minutes(t *testing.T) {
+	d, err := parseDuration("30m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d != 30*time.Minute {
+		t.Errorf("parseDuration(%q) = %v, want %v", "30m", d, 30*time.Minute)
+	}
+}
+
+func TestParseDuration_Invalid(t *testing.T) {
+	_, err := parseDuration("abc")
+	if err == nil {
+		t.Error("expected error for invalid duration")
 	}
 }

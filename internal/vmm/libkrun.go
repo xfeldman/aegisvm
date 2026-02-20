@@ -242,19 +242,10 @@ func (l *LibkrunVMM) StopVM(h Handle) error {
 	return nil
 }
 
-func (l *LibkrunVMM) Snapshot(h Handle, path string) error {
-	return ErrNotSupported
-}
-
-func (l *LibkrunVMM) Restore(snapshotPath string) (Handle, error) {
-	return Handle{}, ErrNotSupported
-}
-
 func (l *LibkrunVMM) Capabilities() BackendCaps {
 	return BackendCaps{
-		Pause:           true,
-		SnapshotRestore: false,
-		RootFSType:      RootFSDirectory,
-		Name:            "libkrun",
+		Pause:      true,
+		RootFSType: RootFSDirectory,
+		Name:       "libkrun",
 	}
 }

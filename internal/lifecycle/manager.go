@@ -85,6 +85,7 @@ type Instance struct {
 
 	// Timestamps
 	CreatedAt time.Time
+	StoppedAt time.Time // zero if never stopped or currently running
 }
 
 // FirstGuestPort returns the first exposed guest port, or 0 if none.
@@ -235,6 +236,7 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		return nil
 	}
 	inst.State = StateStarting
+	inst.StoppedAt = time.Time{} // clear
 	inst.mu.Unlock()
 	m.notifyStateChange(inst.ID, StateStarting)
 
@@ -244,6 +246,7 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		if err != nil {
 			inst.mu.Lock()
 			inst.State = StateStopped
+		inst.StoppedAt = time.Now()
 			inst.mu.Unlock()
 			m.notifyStateChange(inst.ID, StateStopped)
 			return fmt.Errorf("prepare image rootfs: %w", err)
@@ -271,6 +274,7 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 	if err != nil {
 		inst.mu.Lock()
 		inst.State = StateStopped
+		inst.StoppedAt = time.Now()
 		inst.mu.Unlock()
 		m.notifyStateChange(inst.ID, StateStopped)
 		return fmt.Errorf("create VM: %w", err)
@@ -281,6 +285,7 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		m.vmm.StopVM(handle)
 		inst.mu.Lock()
 		inst.State = StateStopped
+		inst.StoppedAt = time.Now()
 		inst.mu.Unlock()
 		m.notifyStateChange(inst.ID, StateStopped)
 		return fmt.Errorf("start VM: %w", err)
@@ -350,6 +355,7 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		m.vmm.StopVM(handle)
 		inst.mu.Lock()
 		inst.State = StateStopped
+		inst.StoppedAt = time.Now()
 		inst.mu.Unlock()
 		m.notifyStateChange(inst.ID, StateStopped)
 		return fmt.Errorf("run RPC: %w", err)
@@ -367,6 +373,7 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		m.vmm.StopVM(handle)
 		inst.mu.Lock()
 		inst.State = StateStopped
+		inst.StoppedAt = time.Now()
 		inst.mu.Unlock()
 		m.notifyStateChange(inst.ID, StateStopped)
 		return fmt.Errorf("run failed: %s", respObj.Error.Message)
@@ -419,6 +426,7 @@ func (m *Manager) handleProcessExited(inst *Instance, exitCode int) {
 	}
 
 	inst.State = StateStopped
+		inst.StoppedAt = time.Now()
 	inst.Channel = nil
 	inst.Endpoints = nil
 	inst.demuxer = nil
@@ -585,6 +593,7 @@ func (m *Manager) stopIdleInstance(inst *Instance) {
 	ch := inst.Channel
 	demux := inst.demuxer
 	inst.State = StateStopped
+		inst.StoppedAt = time.Now()
 	inst.Channel = nil
 	inst.Endpoints = nil
 	inst.demuxer = nil
@@ -746,6 +755,7 @@ func (m *Manager) StopInstance(id string) error {
 	}
 
 	inst.State = StateStopped
+		inst.StoppedAt = time.Now()
 	inst.Channel = nil
 	inst.Endpoints = nil
 	inst.demuxer = nil
@@ -791,6 +801,7 @@ func (m *Manager) DeleteInstance(id string) error {
 	}
 
 	inst.State = StateStopped
+		inst.StoppedAt = time.Now()
 	inst.Channel = nil
 	inst.Endpoints = nil
 	inst.demuxer = nil

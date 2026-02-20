@@ -116,12 +116,12 @@ Checks for the presence of required tools and libraries:
 
 ## aegis run
 
-Sugar command: creates an instance, follows logs, deletes on exit. Equivalent
-to `aegis instance start` + `aegis logs --follow` + cleanup on Ctrl+C or
-process exit.
+Ephemeral command: creates an instance, follows logs, waits for exit, deletes
+the instance. If `--workspace` is omitted, a temporary workspace is allocated
+and deleted after. If `--workspace` is provided, that workspace is preserved.
 
 ```
-aegis run [--expose PORT] [--name NAME] [--image IMAGE] [--env K=V] -- COMMAND [ARGS...]
+aegis run [--expose PORT[:PROTO]] [--name NAME] [--image IMAGE] [--env K=V] [--secret KEY] [--workspace NAME_OR_PATH] -- COMMAND [ARGS...]
 ```
 
 **Flags:**
@@ -129,10 +129,11 @@ aegis run [--expose PORT] [--name NAME] [--image IMAGE] [--env K=V] -- COMMAND [
 | Flag | Description |
 |---|---|
 | `--image IMAGE` | OCI image reference (e.g., `alpine:3.21`). Without this, the base rootfs is used. |
-| `--expose PORT` | Port to expose from the VM. Docker-style static port mapping. May be specified multiple times. |
+| `--expose PORT[:PROTO]` | Port to expose, with optional protocol (`http`, `tcp`). Default: `http`. May be specified multiple times. |
 | `--name NAME` | Handle alias for the instance. |
 | `--env K=V` | Environment variable to inject. May be specified multiple times. |
 | `--secret KEY` | Secret to inject (by name). May be specified multiple times. Use `--secret '*'` for all. Default: none. |
+| `--workspace NAME_OR_PATH` | Named workspace (e.g., `claw`) or host path (e.g., `./myapp`). Named workspaces resolve to `~/.aegis/data/workspaces/<name>`. |
 
 Creates an instance via `POST /v1/instances`, streams logs, and watches for
 process exit. On Ctrl+C or process exit, sends `DELETE /v1/instances/{id}` to
@@ -169,50 +170,64 @@ Run `aegis instance help` to print subcommand usage.
 
 ### aegis instance start
 
-Start a new instance.
+Start a new instance, or restart a stopped instance by handle.
 
 ```
-aegis instance start [--name NAME] [--expose PORT] [--image IMAGE] [--env K=V] [--workspace PATH] -- COMMAND [ARGS...]
+aegis instance start [--name NAME] [--expose PORT[:PROTO]] [--image IMAGE] [--env K=V] [--secret KEY] [--workspace NAME_OR_PATH] -- COMMAND [ARGS...]
+aegis instance start --name NAME                          (restart stopped instance)
 ```
+
+Idempotent on `--name`: if the named instance exists and is STOPPED, it is
+restarted using stored config. If it is RUNNING or STARTING, returns 409. If
+not found, creates a new instance.
 
 **Flags:**
 
 | Flag | Description |
 |---|---|
-| `--name NAME` | Handle alias (used for routing, exec, logs). |
-| `--expose PORT` | Port to expose. May be specified multiple times. |
+| `--name NAME` | Handle alias (used for routing, exec, logs, restart). |
+| `--expose PORT[:PROTO]` | Port to expose with optional protocol. Default: `http`. May be specified multiple times. |
 | `--image IMAGE` | OCI image reference. |
 | `--env K=V` | Environment variable. May be specified multiple times. |
 | `--secret KEY` | Secret to inject. May be specified multiple times. `'*'` for all. Default: none. |
-| `--workspace PATH` | Host path for workspace volume. |
+| `--workspace NAME_OR_PATH` | Named workspace or host path. Named workspaces resolve to `~/.aegis/data/workspaces/<name>`. |
 
-**Example:**
+**Examples:**
 
 ```
-$ aegis instance start --name web --secret API_KEY --expose 80 -- python3 -m http.server 80
+$ aegis instance start --name web --expose 80 --workspace myapp -- python3 -m http.server 80
 Instance started: inst-173f...
 Handle: web
 Router: http://127.0.0.1:8099
+
+$ aegis instance stop web
+$ aegis instance start --name web
+Instance restarted: inst-173f...
 ```
 
 ---
 
 ### aegis instance list
 
-List all instances.
+List instances, optionally filtered by state.
 
 ```
-aegis instance list
+aegis instance list [--stopped | --running]
 ```
 
-Columns: ID, HANDLE, STATE, CONNS.
+Columns: ID, HANDLE, STATE, STOPPED AT.
 
-**Example:**
+**Examples:**
 
 ```
 $ aegis instance list
-ID                             HANDLE          STATE      CONNS
-inst-1739893456789012345       web           running    0
+ID                             HANDLE          STATE      STOPPED AT
+inst-1739893456789012345       web             running    -
+inst-1739893456789054321       worker          stopped    2026-02-19T10:30:00Z
+
+$ aegis instance list --stopped
+ID                             HANDLE          STATE      STOPPED AT
+inst-1739893456789054321       worker          stopped    2026-02-19T10:30:00Z
 ```
 
 ---
@@ -278,8 +293,9 @@ aegis instance delete HANDLE_OR_ID
 | `aegis instance delete` | Removed | No | No | No |
 | `aegis run` + Ctrl+C | Deleted | No | No | No |
 
-STOPPED instances can be inspected (`instance info`, `logs`) and will be
-rebooted on next `EnsureInstance` (e.g., router wake-on-connect). `delete` is
+STOPPED instances retain their config and can be restarted via
+`aegis instance start --name <handle>` or router wake-on-connect. Use
+`aegis instance prune` to clean up old stopped instances. `delete` is
 permanent — the instance and its logs are gone.
 
 ---
@@ -300,6 +316,26 @@ Resume a paused instance (SIGCONT).
 
 ```
 aegis instance resume HANDLE_OR_ID
+```
+
+---
+
+### aegis instance prune
+
+Remove stopped instances older than a threshold. User-invoked cleanup —
+no background GC. Workspaces are never deleted by prune.
+
+```
+aegis instance prune --stopped-older-than DURATION
+```
+
+Duration supports `h` (hours) and `d` (days). Default: `7d`.
+
+**Example:**
+
+```
+$ aegis instance prune --stopped-older-than 7d
+Pruned 3 stopped instance(s)
 ```
 
 ---
@@ -380,8 +416,9 @@ Serving HTTP on 0.0.0.0 port 80 ...
 ## Secret Commands
 
 Manage secrets. Secrets are a flat key-value store with AES-256 encryption at
-rest. All secrets are injected as env vars into every instance at boot. Values
-are never displayed by any list command.
+rest. Secrets are injected as env vars only when explicitly requested via
+`--secret KEY` or `--secret '*'`. Default: none injected. Values are never
+displayed by any list command.
 
 Run `aegis secret help` to print subcommand usage.
 
@@ -450,14 +487,15 @@ Secret API_KEY deleted
 | `aegis down` | Stop the daemon |
 | `aegis status` | Show daemon status |
 | `aegis doctor` | Diagnose environment |
-| `aegis run [...] -- CMD` | Run a command (sugar: start + follow + delete) |
-| `aegis instance start` | Start a new instance |
-| `aegis instance list` | List instances |
+| `aegis run [...] -- CMD` | Ephemeral: start + follow + delete |
+| `aegis instance start` | Start new or restart stopped instance |
+| `aegis instance list` | List instances (`--stopped`, `--running`) |
 | `aegis instance info` | Show instance details |
-| `aegis instance stop` | Stop an instance (VM stopped, stays in list) |
+| `aegis instance stop` | Stop an instance (record kept for restart) |
 | `aegis instance delete` | Delete an instance (removed entirely) |
 | `aegis instance pause` | Pause an instance |
 | `aegis instance resume` | Resume an instance |
+| `aegis instance prune` | Remove stale stopped instances |
 | `aegis exec` | Execute command in instance |
 | `aegis logs` | Stream instance logs |
 | `aegis secret set` | Set a secret |

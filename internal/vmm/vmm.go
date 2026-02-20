@@ -1,16 +1,11 @@
 // Package vmm defines the virtual machine manager interface.
-// This interface is FROZEN — do not modify without explicit approval.
 // Both LibkrunVMM (macOS) and FirecrackerVMM (Linux) implement this interface.
 package vmm
 
 import (
 	"context"
-	"errors"
 	"fmt"
 )
-
-// ErrNotSupported is returned when a backend does not support a capability.
-var ErrNotSupported = errors.New("operation not supported by this backend")
 
 // Handle is an opaque reference to a running VM.
 type Handle struct {
@@ -68,13 +63,6 @@ type VMConfig struct {
 	// VCPUs is the number of virtual CPUs.
 	VCPUs int
 
-	// KernelPath is the path to the vmlinux kernel image.
-	// If empty, the backend uses its default kernel.
-	KernelPath string
-
-	// KernelArgs are additional kernel boot arguments.
-	KernelArgs string
-
 	// WorkspacePath is the path to the workspace volume to mount.
 	// Empty means no workspace mount.
 	WorkspacePath string
@@ -96,9 +84,6 @@ type BackendCaps struct {
 	// Pause indicates whether pause/resume with RAM retained is supported.
 	Pause bool
 
-	// SnapshotRestore indicates whether save/restore of full VM memory to disk is supported.
-	SnapshotRestore bool
-
 	// RootFSType is the rootfs format this backend expects.
 	RootFSType RootFSType
 
@@ -107,8 +92,8 @@ type BackendCaps struct {
 }
 
 func (c BackendCaps) String() string {
-	return fmt.Sprintf("backend=%s pause=%v snapshot=%v rootfs=%s",
-		c.Name, c.Pause, c.SnapshotRestore, c.RootFSType)
+	return fmt.Sprintf("backend=%s pause=%v rootfs=%s",
+		c.Name, c.Pause, c.RootFSType)
 }
 
 // ControlChannel is a message-oriented, bidirectional channel between aegisd
@@ -154,23 +139,13 @@ type VMM interface {
 	StartVM(h Handle) (ControlChannel, error)
 
 	// PauseVM pauses a running VM, retaining RAM.
-	// Returns ErrNotSupported if the backend does not support pause.
 	PauseVM(h Handle) error
 
 	// ResumeVM resumes a paused VM.
-	// Returns ErrNotSupported if the backend does not support resume.
 	ResumeVM(h Handle) error
 
 	// StopVM stops and destroys a VM, freeing all resources.
 	StopVM(h Handle) error
-
-	// Snapshot saves a running VM's full state (RAM + disk) to the given path.
-	// Returns ErrNotSupported if the backend does not support snapshots.
-	Snapshot(h Handle, path string) error
-
-	// Restore restores a VM from a previously saved snapshot.
-	// Returns ErrNotSupported if the backend does not support snapshots.
-	Restore(snapshotPath string) (Handle, error)
 
 	// HostEndpoints returns the resolved host endpoints for a VM's exposed ports.
 	// Only valid after StartVM returns successfully.

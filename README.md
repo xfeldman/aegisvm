@@ -2,7 +2,7 @@
 
 A local, scale-to-zero microVM runtime for autonomous agent workloads.
 
-Aegis runs agent code inside isolated microVMs that boot in under a second, hibernate when idle, and wake on demand. It handles the hard infrastructure — VMs, snapshots, networking, routing, lifecycle — so agent platforms don't have to.
+Aegis runs agent code inside isolated microVMs that boot in under a second, pause when idle, and wake on demand. It handles the hard infrastructure — VMs, networking, routing, lifecycle — so agent platforms don't have to.
 
 ## Why
 
@@ -53,7 +53,7 @@ STOPPED instances can be inspected (`instance info`, `logs`) and restarted. `del
 
 **Docker-style static port mapping** is the ingress model. `--expose` configures port forwarding at instance creation. It does not enable a "mode," imply readiness, or affect lifecycle. The router proxies traffic, resumes paused instances on ingress, and returns 503 if the backend is unreachable.
 
-**The snapshot rule** keeps lifecycle predictable: disk layers are canonical, memory snapshots are cache. Terminate always restores from disk layers. Pause retains RAM for fast resume but is never treated as durable state.
+**Disk is canonical.** Stop terminates the VM and restores from disk layers on next boot. Pause (SIGSTOP) retains RAM for fast resume (~35ms) but is never treated as durable state. Memory is ephemeral, workspace is persistent.
 
 **Two-layer control model.** The infrastructure control plane (aegisd) manages VMs, port mapping, secrets, and images. The guest control agent (harness) manages the process inside the VM. Serving semantics, readiness, and versioning belong to the kit layer outside core.
 

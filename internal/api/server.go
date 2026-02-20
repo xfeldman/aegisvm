@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -59,6 +60,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v1/instances/{id}/pause", s.handlePauseInstance)
 	s.mux.HandleFunc("POST /v1/instances/{id}/resume", s.handleResumeInstance)
 	s.mux.HandleFunc("DELETE /v1/instances/{id}", s.handleDeleteInstance)
+	s.mux.HandleFunc("POST /v1/instances/prune", s.handlePruneInstances)
 
 	// Secret routes (workspace-scoped key-value store)
 	s.mux.HandleFunc("PUT /v1/secrets/{name}", s.handleSetSecret)
@@ -115,7 +117,6 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Backend: caps.Name,
 		Capabilities: map[string]interface{}{
 			"pause_resume":          caps.Pause,
-			"memory_snapshots":      caps.SnapshotRestore,
 			"boot_from_disk_layers": true,
 		},
 	})
@@ -144,6 +145,14 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
 		return
 	}
+	// Idempotent start: if handle exists, restart if stopped or conflict if running
+	if req.Handle != "" {
+		if existing := s.lifecycle.GetInstanceByHandle(req.Handle); existing != nil {
+			s.handleRestartOrConflict(w, existing, req)
+			return
+		}
+	}
+
 	if len(req.Command) == 0 {
 		writeError(w, http.StatusBadRequest, "command is required")
 		return
@@ -178,7 +187,10 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		opts = append(opts, lifecycle.WithEnv(env))
 	}
 	if req.Workspace != "" {
-		opts = append(opts, lifecycle.WithWorkspace(req.Workspace))
+		resolved := s.resolveWorkspace(req.Workspace)
+		os.MkdirAll(resolved, 0755)
+		req.Workspace = resolved
+		opts = append(opts, lifecycle.WithWorkspace(resolved))
 	}
 
 	// Create in lifecycle manager
@@ -197,6 +209,9 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 			ExposePorts: portInts,
 			Handle:      req.Handle,
 			ImageRef:    req.ImageRef,
+			Workspace:   req.Workspace,
+			Env:         env,
+			SecretKeys:  req.Secrets,
 			CreatedAt:   time.Now(),
 			UpdatedAt:   time.Now(),
 		}
@@ -237,6 +252,37 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, resp)
 }
 
+// handleRestartOrConflict handles idempotent instance start:
+// STOPPED → restart using stored config
+// RUNNING/STARTING/PAUSED → 409 conflict
+func (s *Server) handleRestartOrConflict(w http.ResponseWriter, inst *lifecycle.Instance, req createInstanceRequest) {
+	if inst.State != lifecycle.StateStopped {
+		writeError(w, http.StatusConflict, fmt.Sprintf("instance %q is %s", req.Handle, inst.State))
+		return
+	}
+
+	// Restart uses stored config. EnsureInstance handles STOPPED → boot.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		if err := s.lifecycle.EnsureInstance(ctx, inst.ID); err != nil {
+			log.Printf("instance %s restart failed: %v", inst.ID, err)
+		}
+	}()
+
+	resp := map[string]interface{}{
+		"id":          inst.ID,
+		"state":       "starting",
+		"command":     inst.Command,
+		"router_addr": s.cfg.RouterAddr,
+	}
+	if inst.HandleAlias != "" {
+		resp["handle"] = inst.HandleAlias
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 	id := pathParam(r, "id")
 
@@ -265,6 +311,9 @@ func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 	if inst.ImageRef != "" {
 		resp["image_ref"] = inst.ImageRef
 	}
+	if !inst.StoppedAt.IsZero() {
+		resp["stopped_at"] = inst.StoppedAt.Format(time.RFC3339)
+	}
 
 	if len(inst.ExposePorts) > 0 {
 		ports := make([]int, len(inst.ExposePorts))
@@ -292,8 +341,14 @@ func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 	instances := s.lifecycle.ListInstances()
 
+	// Optional state filter: ?state=stopped or ?state=running
+	stateFilter := r.URL.Query().Get("state")
+
 	result := make([]map[string]interface{}, 0, len(instances))
 	for _, inst := range instances {
+		if stateFilter != "" && inst.State != stateFilter {
+			continue
+		}
 		entry := map[string]interface{}{
 			"id":                inst.ID,
 			"state":             inst.State,
@@ -307,6 +362,9 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 		}
 		if inst.ImageRef != "" {
 			entry["image_ref"] = inst.ImageRef
+		}
+		if !inst.StoppedAt.IsZero() {
+			entry["stopped_at"] = inst.StoppedAt.Format(time.RFC3339)
 		}
 		result = append(result, entry)
 	}
@@ -544,6 +602,55 @@ func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+func (s *Server) handlePruneInstances(w http.ResponseWriter, r *http.Request) {
+	olderThanStr := r.URL.Query().Get("older_than")
+	if olderThanStr == "" {
+		writeError(w, http.StatusBadRequest, "older_than query parameter is required (e.g. 7d, 24h)")
+		return
+	}
+
+	dur, err := parseDuration(olderThanStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid duration: %s", olderThanStr))
+		return
+	}
+
+	cutoff := time.Now().Add(-dur)
+	instances := s.lifecycle.ListInstances()
+	var pruned []string
+
+	for _, inst := range instances {
+		if inst.State == lifecycle.StateStopped && !inst.StoppedAt.IsZero() && inst.StoppedAt.Before(cutoff) {
+			if err := s.lifecycle.DeleteInstance(inst.ID); err == nil {
+				if s.registry != nil {
+					s.registry.DeleteInstance(inst.ID)
+				}
+				pruned = append(pruned, inst.ID)
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"pruned": len(pruned),
+		"ids":    pruned,
+	})
+}
+
+// parseDuration extends time.ParseDuration to support "d" for days.
+func parseDuration(s string) (time.Duration, error) {
+	if strings.HasSuffix(s, "d") {
+		days := strings.TrimSuffix(s, "d")
+		n, err := fmt.Sscanf(days, "%d", new(int))
+		if err != nil || n != 1 {
+			return 0, fmt.Errorf("invalid day duration: %s", s)
+		}
+		var d int
+		fmt.Sscanf(days, "%d", &d)
+		return time.Duration(d) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(s)
+}
+
 // Secret handlers — dumb key-value store with encryption.
 // No scoping, no naming rules, no rotation, no kit semantics.
 
@@ -659,6 +766,20 @@ func (s *Server) resolveEnv(secretKeys []string, explicitEnv map[string]string) 
 		env[k] = v
 	}
 	return env
+}
+
+// resolveWorkspace resolves a workspace argument to an absolute path.
+// Named workspaces (no / or . prefix) resolve to ~/.aegis/data/workspaces/<name>.
+// Path workspaces resolve to their absolute path.
+func (s *Server) resolveWorkspace(ws string) string {
+	if !strings.Contains(ws, "/") && !strings.HasPrefix(ws, ".") {
+		return filepath.Join(s.cfg.WorkspacesDir, ws)
+	}
+	abs, err := filepath.Abs(ws)
+	if err != nil {
+		return ws
+	}
+	return abs
 }
 
 // writeJSON writes a JSON response.

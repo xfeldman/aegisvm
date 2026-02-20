@@ -186,12 +186,13 @@ Runtime:
 aegis run [options] -- <cmd> [args...]             Ephemeral: start + follow + delete
 
 aegis instance start [options] -- <cmd> [args...]  Start new or restart stopped instance
-aegis instance list                                List instances
+aegis instance list [--stopped|--running]           List instances
 aegis instance info <name|id>                      Instance detail
 aegis instance stop <name|id>                      Stop VM (keep record)
 aegis instance delete <name|id>                    Remove instance + cleanup
 aegis instance pause <name|id>                     Pause (SIGSTOP, RAM retained)
 aegis instance resume <name|id>                    Resume (SIGCONT)
+aegis instance prune --stopped-older-than <dur>    Remove stale stopped instances
 
 aegis exec <name|id> -- <cmd> [args...]            Execute in running instance
 aegis logs <name|id> [--follow]                    Stream logs
@@ -217,7 +218,7 @@ Two separate intents:
 - **stop** — turn off the VM, keep the instance record (logs, config, handle reservation). Allows inspection and restart.
 - **delete** — forget the instance completely. Remove record, logs, cleanup.
 
-STOPPED instances that linger are handled by GC policy in aegisd (auto-purge after configurable TTL), not by merging stop into delete. GC purges STOPPED instance records and logs after TTL; workspaces are never deleted by GC unless explicitly requested.
+No background GC. Stopped instances accumulate until explicitly deleted or pruned. `instance list` shows `STOPPED` state and `stopped_at` timestamp for visibility. `instance prune --stopped-older-than 7d` is the user-invoked broom — removes stopped instance records and logs older than the threshold. Workspaces are never deleted by prune.
 
 ---
 

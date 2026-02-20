@@ -302,6 +302,54 @@ func TestGetEndpoint_NoMatchingPort(t *testing.T) {
 	}
 }
 
+func TestCreateInstance_WithEnvOption(t *testing.T) {
+	m := newTestManager()
+
+	env := map[string]string{"API_KEY": "sk-123", "DEBUG": "1"}
+	inst := m.CreateInstance("inst-1", []string{"echo"}, nil,
+		WithEnv(env),
+	)
+
+	if inst.Env["API_KEY"] != "sk-123" {
+		t.Errorf("Env[API_KEY] = %q, want %q", inst.Env["API_KEY"], "sk-123")
+	}
+	if inst.Env["DEBUG"] != "1" {
+		t.Errorf("Env[DEBUG] = %q, want %q", inst.Env["DEBUG"], "1")
+	}
+}
+
+func TestCreateInstance_StoppedAtInitiallyZero(t *testing.T) {
+	m := newTestManager()
+
+	inst := m.CreateInstance("inst-1", []string{"echo"}, nil)
+
+	if !inst.StoppedAt.IsZero() {
+		t.Errorf("StoppedAt should be zero on creation, got %v", inst.StoppedAt)
+	}
+}
+
+func TestListInstances(t *testing.T) {
+	m := newTestManager()
+
+	m.CreateInstance("inst-1", []string{"echo"}, nil, WithHandle("alpha"))
+	m.CreateInstance("inst-2", []string{"echo"}, nil, WithHandle("beta"))
+	m.CreateInstance("inst-3", []string{"echo"}, nil)
+
+	list := m.ListInstances()
+	if len(list) != 3 {
+		t.Fatalf("expected 3 instances, got %d", len(list))
+	}
+}
+
+func TestListInstances_Empty(t *testing.T) {
+	m := newTestManager()
+
+	list := m.ListInstances()
+	if len(list) != 0 {
+		t.Fatalf("expected 0 instances, got %d", len(list))
+	}
+}
+
 func TestGetEndpoint_MatchingPort(t *testing.T) {
 	m := newTestManager()
 

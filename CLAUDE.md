@@ -54,11 +54,13 @@ make all
 
 ```
 aegis up / down / status / doctor
-aegis instance start [--name H] [--expose P] [--env K=V] [--secret KEY] [--image REF] -- CMD
-aegis instance list / info / stop / delete / pause / resume
+aegis run [--expose P[:proto]] [--env K=V] [--secret KEY] [--name H] [--workspace W] -- CMD   (ephemeral: start + follow + delete)
+aegis instance start [--name H] [--expose P[:proto]] [--env K=V] [--secret KEY] [--workspace W] [--image REF] -- CMD
+aegis instance start --name H                              (restart stopped instance)
+aegis instance list [--stopped | --running] / info / stop / delete / pause / resume
+aegis instance prune --stopped-older-than <dur>
 aegis exec <handle|id> -- CMD
 aegis logs <handle|id> [--follow]
-aegis run [--expose P] [--env K=V] [--secret KEY] [--name H] -- CMD   (sugar: start + follow + delete)
 aegis secret set KEY VALUE / list / delete KEY
 ```
 
@@ -67,7 +69,7 @@ aegis secret set KEY VALUE / list / delete KEY
 - Go 1.23+
 - ARM64-only for M0-M5
 - No conditional platform logic in core — all behind VMM interface
-- VMM interface is frozen — do not modify without explicit approval
+- VMM interface: CreateVM, StartVM, PauseVM, ResumeVM, StopVM, HostEndpoints, Capabilities
 - Harness is statically linked (CGO_ENABLED=0 for harness)
 - aegisd uses cgo (for libkrun bindings)
 

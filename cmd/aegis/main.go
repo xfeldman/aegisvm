@@ -4,17 +4,20 @@
 //
 //	aegis up                   Start aegisd daemon
 //	aegis down                 Stop aegisd daemon
-//	aegis run                  Run a command in a microVM (sugar: start + follow + delete)
-//	aegis instance start       Start a new instance
-//	aegis instance list        List instances
+//	aegis run                  Run a command in an ephemeral microVM (start + follow + delete)
+//	aegis instance start       Start new or restart stopped instance
+//	aegis instance list        List instances (--stopped, --running)
 //	aegis instance info        Show instance details
-//	aegis instance stop        Stop an instance
+//	aegis instance stop        Stop an instance (keep record)
+//	aegis instance delete      Delete an instance (remove entirely)
 //	aegis instance pause       Pause an instance
 //	aegis instance resume      Resume a paused instance
+//	aegis instance prune       Remove stale stopped instances
 //	aegis exec                 Execute a command in a running instance
 //	aegis logs                 Stream instance logs
-//	aegis secret set           Set a workspace secret
-//	aegis secret list          List workspace secrets
+//	aegis secret set           Set a secret
+//	aegis secret list          List secrets
+//	aegis secret delete        Delete a secret
 //	aegis status               Show daemon status
 //	aegis doctor               Print platform and backend info
 package main
@@ -78,10 +81,10 @@ func usage() {
 Commands:
   up         Start aegisd daemon
   down       Stop aegisd daemon
-  run        Run a command in a microVM (sugar: start + follow + delete)
+  run        Run a command in an ephemeral microVM (start + follow + delete)
   status     Show daemon status
   doctor     Print platform and backend info
-  instance   Manage instances (start, list, info, stop, delete, pause, resume)
+  instance   Manage instances (start, list, info, stop, delete, pause, resume, prune)
   exec       Execute a command in a running instance
   logs       Stream instance logs
   secret     Manage secrets (set, list, delete)
@@ -90,14 +93,15 @@ Examples:
   aegis up
   aegis run -- echo "hello from aegis"
   aegis run --expose 80 -- python -m http.server 80
-  aegis run --name web --secret API_KEY --expose 80 -- python3 -m http.server 80
-  aegis run --secret '*' -- python agent.py
-  aegis instance start --name web --secret API_KEY --expose 80 -- python3 -m http.server 80
-  aegis instance list
+  aegis run --workspace ./myapp --expose 80 -- python3 app.py
+  aegis instance start --name web --expose 80:http --workspace myapp -- python3 -m http.server 80
+  aegis instance stop web
+  aegis instance start --name web                                    (restart stopped)
+  aegis instance list --stopped
+  aegis instance prune --stopped-older-than 7d
   aegis exec web -- echo hello
   aegis logs web --follow
   aegis secret set API_KEY sk-test123
-  aegis secret delete API_KEY
   aegis down`)
 }
 
@@ -213,8 +217,13 @@ func cmdDown() {
 	os.Exit(1)
 }
 
+type exposeFlag struct {
+	Port     int
+	Protocol string // "http", "tcp", etc. Default: "http"
+}
+
 // parseRunFlags parses common flags: --expose, --name, --env, --image, --workspace, --secret
-func parseRunFlags(args []string) (exposePorts []int, name, imageRef string, envVars map[string]string, secretKeys []string, workspace string, command []string) {
+func parseRunFlags(args []string) (exposePorts []exposeFlag, name, imageRef string, envVars map[string]string, secretKeys []string, workspace string, command []string) {
 	envVars = make(map[string]string)
 
 	for i := 0; i < len(args); i++ {
@@ -225,15 +234,22 @@ func parseRunFlags(args []string) (exposePorts []int, name, imageRef string, env
 		switch args[i] {
 		case "--expose":
 			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--expose requires a port number")
+				fmt.Fprintln(os.Stderr, "--expose requires a port (e.g. 80, 8080:tcp)")
 				os.Exit(1)
 			}
-			port, err := strconv.Atoi(args[i+1])
+			arg := args[i+1]
+			proto := "http"
+			portStr := arg
+			if idx := strings.IndexByte(arg, ':'); idx >= 0 {
+				portStr = arg[:idx]
+				proto = arg[idx+1:]
+			}
+			port, err := strconv.Atoi(portStr)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "invalid port: %s\n", args[i+1])
+				fmt.Fprintf(os.Stderr, "invalid port: %s\n", arg)
 				os.Exit(1)
 			}
-			exposePorts = append(exposePorts, port)
+			exposePorts = append(exposePorts, exposeFlag{Port: port, Protocol: proto})
 			i++
 		case "--name":
 			if i+1 >= len(args) {
@@ -281,7 +297,9 @@ func parseRunFlags(args []string) (exposePorts []int, name, imageRef string, env
 	return
 }
 
-// cmdRun is sugar: creates an instance, follows logs, deletes on exit.
+// cmdRun creates an ephemeral instance: start → follow logs → wait → delete.
+// If --workspace is omitted, a temporary workspace is allocated and deleted after.
+// If --workspace is provided, that workspace is preserved (user-owned).
 func cmdRun() {
 	args := os.Args[2:]
 
@@ -297,16 +315,24 @@ func cmdRun() {
 		os.Exit(1)
 	}
 
+	// If no workspace provided, allocate a temporary named workspace
+	tempWorkspace := ""
+	if workspace == "" {
+		tempWorkspace = fmt.Sprintf("run-%d", time.Now().UnixNano())
+		workspace = tempWorkspace
+	}
+
 	client := httpClient()
 
 	// Build create instance request
 	reqBody := map[string]interface{}{
-		"command": command,
+		"command":   command,
+		"workspace": workspace,
 	}
 	if len(exposePorts) > 0 {
 		exposes := make([]map[string]interface{}, len(exposePorts))
 		for i, p := range exposePorts {
-			exposes[i] = map[string]interface{}{"port": p}
+			exposes[i] = map[string]interface{}{"port": p.Port, "protocol": p.Protocol}
 		}
 		reqBody["exposes"] = exposes
 	}
@@ -321,9 +347,6 @@ func cmdRun() {
 	}
 	if len(secretKeys) > 0 {
 		reqBody["secrets"] = secretKeys
-	}
-	if workspace != "" {
-		reqBody["workspace"] = workspace
 	}
 
 	bodyJSON, _ := json.Marshal(reqBody)
@@ -405,8 +428,15 @@ func cmdRun() {
 	}
 
 	// Clean up: delete the instance
-	req, _ := http.NewRequest("DELETE", fmt.Sprintf("http://aegis/v1/instances/%s", instanceID), nil)
-	client.Do(req)
+	delReq, _ := http.NewRequest("DELETE", fmt.Sprintf("http://aegis/v1/instances/%s", instanceID), nil)
+	client.Do(delReq)
+
+	// Clean up temp workspace
+	if tempWorkspace != "" {
+		home, _ := os.UserHomeDir()
+		wsPath := filepath.Join(home, ".aegis", "data", "workspaces", tempWorkspace)
+		os.RemoveAll(wsPath)
+	}
 
 	os.Exit(exitCode)
 }
@@ -490,9 +520,6 @@ func cmdDoctor() {
 				if v, ok := caps["pause_resume"].(bool); ok {
 					fmt.Printf("  Pause/Resume:          %s\n", boolYesNo(v))
 				}
-				if v, ok := caps["memory_snapshots"].(bool); ok {
-					fmt.Printf("  Memory Snapshots:      %s\n", boolYesNo(v))
-				}
 				if v, ok := caps["boot_from_disk_layers"].(bool); ok {
 					fmt.Printf("  Boot from disk layers: %s\n", boolYesNo(v))
 				}
@@ -539,6 +566,8 @@ func cmdInstance() {
 		cmdInstancePause(client)
 	case "resume":
 		cmdInstanceResume(client)
+	case "prune":
+		cmdInstancePrune(client)
 	case "help", "--help", "-h":
 		instanceUsage()
 	default:
@@ -552,23 +581,24 @@ func instanceUsage() {
 	fmt.Println(`Usage: aegis instance <command> [options]
 
 Commands:
-  start    Start a new instance
-  list     List all instances
+  start    Start a new instance (or restart a stopped instance by --name)
+  list     List instances (--stopped, --running to filter)
   info     Show instance details
-  stop     Stop an instance (VM stopped, instance stays in list with logs)
+  stop     Stop an instance (VM stopped, record kept for restart)
   delete   Delete an instance (removed entirely, logs cleaned)
   pause    Pause a running instance (SIGSTOP)
   resume   Resume a paused instance (SIGCONT)
+  prune    Remove stopped instances older than a threshold
 
 Examples:
   aegis instance start --name web --secret API_KEY --expose 80 -- python3 -m http.server 80
-  aegis instance start --secret '*' --image alpine:3.21 -- python agent.py
+  aegis instance start --name web                                (restart stopped instance)
   aegis instance list
+  aegis instance list --stopped
   aegis instance info web
   aegis instance stop web
   aegis instance delete web
-  aegis instance pause web
-  aegis instance resume web`)
+  aegis instance prune --stopped-older-than 7d`)
 }
 
 // cmdInstanceStart starts a new instance.
@@ -577,18 +607,20 @@ func cmdInstanceStart(client *http.Client) {
 
 	exposePorts, name, imageRef, envVars, secretKeys, workspace, command := parseRunFlags(args)
 
-	if len(command) == 0 {
+	if len(command) == 0 && name == "" {
 		fmt.Fprintln(os.Stderr, "usage: aegis instance start [--name NAME] [--expose PORT] [--env K=V] [--secret KEY] [--image IMAGE] -- COMMAND [args...]")
+		fmt.Fprintln(os.Stderr, "       aegis instance start --name NAME   (restart stopped instance)")
 		os.Exit(1)
 	}
 
-	reqBody := map[string]interface{}{
-		"command": command,
+	reqBody := map[string]interface{}{}
+	if len(command) > 0 {
+		reqBody["command"] = command
 	}
 	if len(exposePorts) > 0 {
 		exposes := make([]map[string]interface{}, len(exposePorts))
 		for i, p := range exposePorts {
-			exposes[i] = map[string]interface{}{"port": p}
+			exposes[i] = map[string]interface{}{"port": p.Port, "protocol": p.Protocol}
 		}
 		reqBody["exposes"] = exposes
 	}
@@ -616,9 +648,9 @@ func cmdInstanceStart(client *http.Client) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusCreated {
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		fmt.Fprintf(os.Stderr, "create instance failed (%d): %s\n", resp.StatusCode, body)
+		fmt.Fprintf(os.Stderr, "start instance failed (%d): %s\n", resp.StatusCode, body)
 		os.Exit(1)
 	}
 
@@ -629,17 +661,32 @@ func cmdInstanceStart(client *http.Client) {
 	handle, _ := inst["handle"].(string)
 	routerAddr, _ := inst["router_addr"].(string)
 
-	fmt.Printf("Instance started: %s\n", id)
+	if resp.StatusCode == http.StatusOK {
+		fmt.Printf("Instance restarted: %s\n", id)
+	} else {
+		fmt.Printf("Instance started: %s\n", id)
+	}
 	if handle != "" {
 		fmt.Printf("Handle: %s\n", handle)
 	}
-	if len(exposePorts) > 0 {
+	if routerAddr != "" {
 		fmt.Printf("Router: http://%s\n", routerAddr)
 	}
 }
 
 func cmdInstanceList(client *http.Client) {
-	resp, err := client.Get("http://aegis/v1/instances")
+	// Parse optional --stopped or --running filter
+	url := "http://aegis/v1/instances"
+	for _, arg := range os.Args[3:] {
+		switch arg {
+		case "--stopped":
+			url = "http://aegis/v1/instances?state=stopped"
+		case "--running":
+			url = "http://aegis/v1/instances?state=running"
+		}
+	}
+
+	resp, err := client.Get(url)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "list instances: %v\n", err)
 		os.Exit(1)
@@ -654,16 +701,19 @@ func cmdInstanceList(client *http.Client) {
 		return
 	}
 
-	fmt.Printf("%-30s %-15s %-10s %-10s\n", "ID", "HANDLE", "STATE", "CONNS")
+	fmt.Printf("%-30s %-15s %-10s %-20s\n", "ID", "HANDLE", "STATE", "STOPPED AT")
 	for _, inst := range instances {
 		id, _ := inst["id"].(string)
 		state, _ := inst["state"].(string)
 		handle, _ := inst["handle"].(string)
-		conns, _ := inst["active_connections"].(float64)
+		stoppedAt, _ := inst["stopped_at"].(string)
 		if handle == "" {
 			handle = "-"
 		}
-		fmt.Printf("%-30s %-15s %-10s %-10.0f\n", id, handle, state, conns)
+		if stoppedAt == "" {
+			stoppedAt = "-"
+		}
+		fmt.Printf("%-30s %-15s %-10s %-20s\n", id, handle, state, stoppedAt)
 	}
 }
 
@@ -851,6 +901,34 @@ func cmdInstanceResume(client *http.Client) {
 	}
 
 	fmt.Printf("Instance %s resumed\n", target)
+}
+
+func cmdInstancePrune(client *http.Client) {
+	olderThan := "7d" // default
+	for i := 3; i < len(os.Args); i++ {
+		if os.Args[i] == "--stopped-older-than" && i+1 < len(os.Args) {
+			olderThan = os.Args[i+1]
+			i++
+		}
+	}
+
+	resp, err := client.Post(fmt.Sprintf("http://aegis/v1/instances/prune?older_than=%s", olderThan), "application/json", nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "prune instances: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "prune failed: %s\n", body)
+		os.Exit(1)
+	}
+
+	var result map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&result)
+	pruned, _ := result["pruned"].(float64)
+	fmt.Printf("Pruned %d stopped instance(s)\n", int(pruned))
 }
 
 // cmdExec executes a command in a running instance.
