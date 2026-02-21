@@ -15,16 +15,18 @@ This blocks any workload that sends large API payloads. The immediate trigger wa
 
 Small requests (< ~30KB) work fine. The threshold is between 30–35KB. Ingress is unaffected (TSI handles inbound port mapping correctly at any size).
 
-## 2. Solution: gvproxy virtio-net
+## 2. Solution: In-Process gvproxy (gvisor-tap-vsock)
 
-Replace TSI with gvproxy (from `containers/gvisor-tap-vsock`), giving the guest a real NIC via virtio-net. gvproxy runs as a host-side process per VM, providing:
+Replace TSI with the `gvisor-tap-vsock` Go library embedded directly in the vmm-worker process, giving the guest a real NIC via virtio-net:
 
 - **virtio-net data plane** via unixgram socket (no payload size limit)
 - **NAT gateway** at 192.168.127.1 (outbound internet access)
 - **Built-in DNS** at the gateway address
-- **Port forwarding** via HTTP API (replaces TSI's `krun_set_port_map`)
+- **Port forwarding** via in-process API calls (replaces TSI's `krun_set_port_map`)
 
-The control channel (harness ↔ aegisd RPC) switches from TCP-over-TSI to AF_VSOCK, mapped to a unix socket on the host via `krun_add_vsock_port()`.
+The library runs as goroutines inside the vmm-worker process. SIGSTOP on the worker freezes both the VM and the network stack — zero CPU during pause, no separate process to manage.
+
+The control channel (harness ↔ aegisd RPC) uses AF_VSOCK, mapped to a unix socket on the host via `krun_add_vsock_port()`.
 
 ## 3. Design Principle: Unified Harness
 
@@ -33,8 +35,8 @@ The harness is designed so both libkrun (macOS) and a future Firecracker (Linux)
 | Concern | Harness (guest, unified) | libkrun + gvproxy | Firecracker (future) |
 |---|---|---|---|
 | Control channel | `connect(AF_VSOCK, CID=2, port=N)` | `krun_add_vsock_port()` → unix socket | vsock → unix socket |
-| Data networking | Configure eth0 (IP from env) | gvproxy (virtio-net) | tap device |
-| Port forwarding | N/A (host-side) | gvproxy HTTP API | iptables/nft |
+| Data networking | Configure eth0 via netlink syscalls | gvproxy library (virtio-net) | tap device |
+| Port forwarding | Port proxy: guestIP:port → 127.0.0.1:port | In-process gvproxy forwarder | iptables/nft |
 | DNS | Use gateway IP | gvproxy DNS at gateway | host DNS forwarding |
 
 ### 3.1 Harness Environment Variables
@@ -58,20 +60,24 @@ AEGIS_HOST_ADDR=host:port      # legacy TSI mode (if AEGIS_VSOCK_PORT not set)
 
 ```
 aegisd (daemon, no cgo)
-  ├── gvproxy (per-VM, host process, stays alive during pause)
-  │     ├── unixgram socket (virtio-net data plane)
-  │     └── unix socket (HTTP API for port forwarding)
-  │
-  └── aegis-vmm-worker (per-VM, cgo + libkrun)
+  └── aegis-vmm-worker (per-VM, cgo + libkrun + gvproxy library)
+        ├── gvproxy goroutines (gvisor-tap-vsock userspace network stack)
+        │     ├── virtio-net packet loop (unixgram socket ↔ gVisor stack)
+        │     ├── NAT + DNS (gVisor userspace TCP/IP)
+        │     └── port forwarding listeners (pre-exposed before VM boot)
+        │
         ├── krun_disable_implicit_vsock()
         ├── krun_add_vsock(tsi_features=0)  ← vsock without TSI
         ├── krun_add_vsock_port(5000, ctl.sock)  ← control channel
-        ├── krun_add_net_unixgram(net.sock)  ← virtio-net via gvproxy
-        └── krun_start_enter()  ← process becomes VM
+        ├── krun_add_net_unixgram(net.sock)  ← virtio-net via in-process gvproxy
+        └── krun_start_enter()  ← main thread becomes VM, goroutines continue
               └── aegis-harness (PID 1)
-                    ├── setupNetwork()  ← configure eth0
-                    └── dialVsock(port=5000)  ← control channel
+                    ├── setupNetwork()  ← configure eth0 via netlink
+                    ├── dialVsock(port=5000)  ← control channel
+                    └── portProxy(guestIP:port → 127.0.0.1:port)  ← ingress bridge
 ```
+
+**Key property:** SIGSTOP on the vmm-worker process freezes ALL threads — vCPUs, gvproxy goroutines, and port forwarding listeners. Zero CPU during pause. No separate process, no orphans, no CPU spin.
 
 ### 4.2 Ingress (Router → Guest)
 
@@ -79,139 +85,164 @@ Two-hop model, unchanged from TSI era — only the entity listening on BACKEND_P
 
 ```
 Client → PUBLIC_PORT (router TCP listener, unchanged)
-       → BACKEND_PORT (gvproxy-mapped, was TSI-mapped)
-       → 192.168.127.2:GUEST_PORT
+       → BACKEND_PORT (gvproxy forwarder, in vmm-worker process)
+       → 192.168.127.2:GUEST_PORT (guest eth0)
+       → portProxy → 127.0.0.1:GUEST_PORT (if app binds to localhost)
 ```
 
 - **PUBLIC_PORT**: Owned by the router's L4 proxy (unchanged)
-- **BACKEND_PORT**: Random host port, allocated by LibkrunVMM.StartVM, forwarded by gvproxy
+- **BACKEND_PORT**: Random host port, allocated by aegisd, forwarded by in-process gvproxy
 - Router dials `127.0.0.1:BACKEND_PORT` exactly as before
+
+#### 4.2.1 Port Proxy (harness-side)
+
+gvproxy forwards inbound traffic to the guest's eth0 IP (192.168.127.2). Apps that bind to `127.0.0.1` won't receive this traffic. The harness runs a TCP proxy for each exposed port:
+
+- Listens on `guestIP:port` (e.g. `192.168.127.2:8080`)
+- Forwards to `127.0.0.1:port`
+- Binds to the specific guest IP (not `0.0.0.0`) to avoid conflicts with apps that bind to `0.0.0.0`
+- Starts with a 2-second delay after the app, so apps binding to `0.0.0.0` take the port first (proxy skips with EADDRINUSE)
+- Completely transparent — apps need no configuration changes
 
 ### 4.3 Boot Sequence
 
-Ordering matters — gvproxy port forwarding must be set up after the harness connects (proving the VM is alive) and before the instance is marked RUNNING:
+Port forwarding is pre-exposed in the worker before `krun_start_enter()`, eliminating the need for aegisd to talk to gvproxy:
 
-1. Allocate BACKEND_PORTs (random host ports for each exposed guest port)
-2. Start gvproxy → wait for API socket ready
-3. Start vmm-worker → VM boots
-4. Harness mounts filesystems, configures eth0, connects via vsock
-5. aegisd accepts harness connection on unix socket
-6. Expose ports via gvproxy HTTP API (`POST /services/forwarder/expose`)
-7. Send `run` RPC to harness
-8. Mark instance RUNNING
+1. aegisd allocates BACKEND_PORTs (random host ports for each exposed guest port)
+2. aegisd spawns vmm-worker with `ExposePorts` in config
+3. Worker initializes gvproxy library (`virtualnetwork.New()`)
+4. Worker creates unixgram socket, starts packet loop goroutine
+5. Worker pre-exposes ports via in-process `ServicesMux` (no HTTP socket)
+6. Worker calls `krun_start_enter()` — main thread becomes VM
+7. Harness boots, mounts filesystems, configures eth0 via netlink
+8. Harness connects to aegisd via vsock
+9. aegisd accepts connection, sends `run` RPC (with `expose_ports` for port proxy)
+10. Harness starts port proxies (delayed), then starts primary process
+11. aegisd marks instance RUNNING
 
 ### 4.4 Pause Behavior
 
 On VM pause (SIGSTOP on vmm-worker):
 
-- **gvproxy stays alive** — it's a separate host process, not SIGSTOPped
-- BACKEND_PORT listeners remain active (gvproxy owns them)
-- Router still accepts PUBLIC_PORT connections → calls `EnsureInstance()` → SIGCONT resumes VM
-- On resume: guest unfreezes, traffic flows through existing gvproxy forwarders
-- No reconnection needed — gvproxy forwarders are host-side and don't freeze
+- **Everything freezes** — VM, gvproxy goroutines, port forwarding listeners
+- **Zero CPU** — no separate process to spin (was 100% CPU with separate gvproxy due to ENOBUFS retry loop on macOS)
+- BACKEND_PORT TCP listeners are frozen but the kernel still accepts SYNs into the backlog
+- Router accepts PUBLIC_PORT connections → `EnsureInstance()` → SIGCONT resumes worker
+- On resume: gvproxy goroutines unfreeze, accept from backlog, traffic flows
+- No reconnection needed — all state is in-process and survives SIGSTOP/SIGCONT
 
 ### 4.5 Cleanup
 
 On VM stop:
 
-1. Kill vmm-worker process
-2. Kill gvproxy process
-3. Remove sockets: `net-{vmID}.sock`, `api-{vmID}.sock`, `ctl-{vmID}.sock`
-4. Remove PID file: `gvproxy-{vmID}.pid`
+1. Kill vmm-worker process (kills VM + gvproxy goroutines + port forwarding)
+2. Remove control socket: `ctl-{vmID}.sock`
+3. Worker's net socket auto-cleaned on process exit
 
-On daemon startup (orphan reaping):
-
-1. Scan `{DataDir}/sockets/` for `gvproxy-*.pid` files
-2. Kill any leftover gvproxy processes from previous daemon run
-3. Remove stale sockets and PID files
+No orphan reaping needed — no separate processes to orphan.
 
 ## 5. Configuration
 
 ### 5.1 Config Fields
 
-Added to `internal/config/config.go`:
+In `internal/config/config.go`:
 
 ```go
 NetworkBackend string  // "auto" (default), "tsi", "gvproxy"
-GvproxyBin     string  // path to gvproxy binary (auto-detected)
 ```
+
+No `GvproxyBin` field — the library is compiled into vmm-worker.
 
 ### 5.2 Resolution
 
 `Config.ResolveNetworkBackend()` resolves `"auto"` at daemon startup:
 
-- If gvproxy binary found → `"gvproxy"`
-- If gvproxy not found → `"tsi"` with loud WARNING log
+- On darwin (macOS) → `"gvproxy"` (always available, compiled in)
+- On linux → `"tsi"` (future: tap device backend)
 
-Search order for gvproxy binary:
-
-1. Same directory as aegisd binary
-2. `/opt/homebrew/bin/gvproxy`
-3. `/usr/local/bin/gvproxy`
-4. `/usr/bin/gvproxy`
-
-### 5.3 Fallback Warning
-
-When falling back to TSI, aegisd logs:
-
-```
-WARNING: network backend: tsi (gvproxy not found — known outbound payload limit ~32KB)
-```
-
-This log appears at daemon startup and is visible to operators. The `network_backend` field is also exposed in the `/v1/status` API response under `capabilities`.
+No binary search, no installation step. `brew install gvproxy` is not needed.
 
 ## 6. Implementation Details
 
-### 6.1 Files Modified
+### 6.1 Library Usage in vmm-worker
 
-| File | Changes |
-|------|---------|
-| `internal/config/config.go` | `NetworkBackend`, `GvproxyBin` fields, `ResolveNetworkBackend()`, `findGvproxy()` |
-| `internal/vmm/vmm.go` | `NetworkBackend` field in `BackendCaps` |
-| `internal/vmm/libkrun.go` | Dual gvproxy/TSI path in `StartVM()`, gvproxy cleanup in `StopVM()` |
-| `cmd/aegis-vmm-worker/main.go` | `NetworkMode`/`GvproxySocket`/`VsockPort` in `WorkerConfig`, gvproxy C API branch |
-| `internal/harness/main.go` | `connectToHost()`: vsock preferred over TCP/TSI |
-| `internal/harness/mount_linux.go` | `setupNetwork()`: configure eth0 via `ip` commands |
-| `cmd/aegisd/main.go` | `ResolveNetworkBackend()`, `ReapOrphanGvproxies()`, backend logging |
-| `internal/api/server.go` | `network_backend` in status API |
+```go
+import (
+    "github.com/containers/gvisor-tap-vsock/pkg/types"
+    "github.com/containers/gvisor-tap-vsock/pkg/virtualnetwork"
+    "github.com/containers/gvisor-tap-vsock/pkg/transport"
+)
 
-### 6.2 Files Added
+// Create gVisor userspace network stack
+vn, _ := virtualnetwork.New(&types.Configuration{
+    Subnet:    "192.168.127.0/24",
+    GatewayIP: "192.168.127.1",
+    Protocol:  types.VfkitProtocol,
+    DNS:       []types.Zone{{Name: "dns.internal.", DefaultIP: guestIP}},
+})
 
-| File | Purpose |
-|------|---------|
-| `internal/vmm/gvproxy.go` | gvproxy process lifecycle: start, expose/unexpose ports, stop, orphan reaping |
-| `internal/harness/vsock_linux.go` | AF_VSOCK dial using raw syscalls (no external deps) |
-| `internal/harness/vsock_other.go` | Stub for non-Linux builds |
+// Create unixgram socket and start packet loop
+conn, _ := transport.ListenUnixgram("unixgram://" + netSockPath)
+go func() {
+    vfkitConn, _ := transport.AcceptVfkit(conn)
+    vn.AcceptVfkit(ctx, vfkitConn)
+}()
 
-### 6.3 Files NOT Modified
+// Pre-expose ports via in-process ServicesMux (no HTTP socket)
+mux := vn.ServicesMux()
+// POST /services/forwarder/expose via httptest.NewRequest (in-memory)
+```
 
-The following were explicitly not touched — the changes are fully contained in the VMM layer:
+### 6.2 Files
 
-- VMM interface (`vmm.go` — only `BackendCaps` extended, interface unchanged)
-- Lifecycle manager (`lifecycle/manager.go`)
-- Router (`router/`)
-- Registry (`registry/`)
-- MCP server (`cmd/aegis-mcp/`)
+| File | Role |
+|------|------|
+| `cmd/aegis-vmm-worker/main.go` | Embeds gvproxy library, `startInProcessNetwork()`, pre-exposes ports |
+| `internal/vmm/libkrun.go` | Passes `ExposePorts` + `SocketDir` in WorkerConfig to worker |
+| `internal/config/config.go` | `NetworkBackend` field, `ResolveNetworkBackend()` (platform-based) |
+| `internal/harness/vsock_linux.go` | AF_VSOCK dial via raw syscalls, custom `vsockConn` net.Conn wrapper |
+| `internal/harness/netlink_linux.go` | Raw netlink syscalls for eth0 setup (no `ip` binary dependency) |
+| `internal/harness/portproxy.go` | TCP proxy: guestIP:port → 127.0.0.1:port for localhost-binding apps |
+| `internal/harness/rpc.go` | `expose_ports` field in `runParams` for port proxy setup |
+| `internal/lifecycle/manager.go` | Sends `expose_ports` in `run` RPC |
+
+### 6.3 Deleted Files
+
+| File | Reason |
+|------|--------|
+| `internal/vmm/gvproxy.go` | Process management no longer needed (was: spawn, PID files, orphan reaping, HTTP API client) |
+
+### 6.4 Dependencies
+
+```
+github.com/containers/gvisor-tap-vsock v0.8.8
+```
+
+Compiled into vmm-worker only. aegisd, harness, CLI, and MCP server do not link it.
 
 ## 7. Design Decisions
 
-### 7.1 Why gvproxy (not passt, not vde, not custom)
+### 7.1 Why gvproxy / gvisor-tap-vsock (not passt, not vde, not custom)
 
-gvproxy from `containers/gvisor-tap-vsock` was chosen because:
+`containers/gvisor-tap-vsock` was chosen because:
 
 1. **libkrun native support**: `krun_add_net_unixgram()` with `NET_FLAG_VFKIT` is designed for gvproxy's vfkit mode
-2. **Podman ecosystem**: Widely used, well-maintained, macOS-native (no Linux dependencies)
-3. **Built-in DNS + NAT**: No separate DNS server or iptables setup needed
-4. **HTTP API for port forwarding**: Clean programmatic interface, no shell commands
-5. **Single static binary**: No runtime dependencies, easy to distribute
+2. **Go library**: Can be embedded in-process — no separate binary, no IPC overhead
+3. **Podman ecosystem**: Widely used, well-maintained, macOS-native
+4. **Built-in DNS + NAT**: No separate DNS server or iptables setup needed
+5. **Programmatic port forwarding**: `ServicesMux` callable in-process via httptest
 
-Alternatives considered:
+### 7.2 Why in-process (not separate process)
 
-- **passt**: Also supported by libkrun (`krun_add_net_unixstream`), but requires host-side configuration and doesn't provide a port forwarding API
-- **vmnet-helper (macOS)**: Requires elevated privileges, complex setup
-- **Custom userspace stack**: Too much work, reinventing the wheel
+The original implementation spawned gvproxy as a separate host process. This was changed to in-process because:
 
-### 7.2 Why vsock for control (not TCP-over-virtio-net)
+1. **SIGSTOP CPU burn**: On macOS, when the vmm-worker is SIGSTOPped, a separate gvproxy enters a tight busy-spin — `sendto()` returns `ENOBUFS` immediately (macOS behavior), and gvproxy retries in a `for { continue }` loop with no backoff. Burns 100% CPU for the duration of the pause.
+2. **In-process = zero CPU**: SIGSTOP freezes all threads in the worker, including gvproxy goroutines. No spin, no CPU usage during pause.
+3. **No binary dependency**: `brew install gvproxy` no longer needed. Library compiled into vmm-worker.
+4. **Simpler lifecycle**: No PID files, no orphan reaping, no process management. Worker death cleans up everything.
+5. **No IPC**: Port forwarding calls are in-process Go function calls, not HTTP over unix socket.
+
+### 7.3 Why vsock for control (not TCP-over-virtio-net)
 
 The control channel uses vsock (mapped to a unix socket) rather than TCP over the new virtio-net NIC because:
 
@@ -219,40 +250,26 @@ The control channel uses vsock (mapped to a unix socket) rather than TCP over th
 2. **Isolation**: Control traffic stays on a separate path from data traffic. If the guest's network stack breaks, the control channel still works.
 3. **Firecracker compatibility**: Firecracker also uses vsock for control. Using vsock now means the harness code is already compatible.
 
-### 7.3 Why per-VM gvproxy (not shared)
+### 7.4 Why netlink syscalls for eth0 (not `ip` commands)
 
-Each VM gets its own gvproxy process rather than sharing one gvproxy across all VMs:
+The harness configures eth0 using raw netlink syscalls (RTM_NEWLINK, RTM_NEWADDR, RTM_NEWROUTE) instead of shelling out to `ip`:
 
-1. **Isolation**: A crash in one gvproxy doesn't affect other VMs
-2. **Lifecycle simplicity**: gvproxy lives and dies with its VM. No reference counting, no shared state.
-3. **Port forwarding scope**: Each gvproxy manages its own forwarding rules. No risk of cross-VM leakage.
-4. **Resource overhead**: gvproxy is lightweight (~5MB RSS). The overhead of multiple instances is negligible.
-
-### 7.4 Why eth0 setup uses `ip` commands (not netlink syscalls)
-
-The plan called for netlink syscalls for reliability. We chose `ip` commands instead:
-
-1. **Universally available**: `ip` from iproute2 or busybox is present in Alpine base rootfs and all OCI images
-2. **Debuggable**: `ip` commands are human-readable in logs, unlike raw netlink
-3. **Maintainable**: 10 lines of exec vs ~200 lines of raw netlink Go code
-4. **Reliable enough**: The harness controls the rootfs — `ip` binary presence is guaranteed
-
-If this proves fragile in edge cases (e.g., minimal OCI images stripping busybox), we can switch to netlink later without changing the interface.
+1. **No rootfs dependency**: Debian-slim (node:22) doesn't include iproute2. Netlink works on any OCI image, even distroless.
+2. **Reliability**: No PATH issues, no missing binaries, no exec failures.
+3. **Performance**: Direct syscalls, no fork/exec overhead.
 
 ### 7.5 Why TSI fallback (not hard requirement)
 
-gvproxy is preferred but not required. When not found:
+gvproxy is preferred but TSI is still supported for backwards compatibility:
 
-1. **Graceful degradation**: Existing TSI path still works for small-payload workloads
-2. **Developer experience**: No new binary dependency for basic usage (echo, sleep, simple HTTP)
-3. **Loud warning**: The ~32KB limit is clearly communicated at daemon startup
-4. **Easy upgrade**: Install gvproxy, restart daemon, done
+1. **Graceful degradation**: TSI path still works for small-payload workloads
+2. **Platform flexibility**: On future Linux hosts, the networking backend will be different (tap devices)
 
 ### 7.6 MAC address choice
 
 The guest NIC uses a fixed MAC address `5a:94:ef:e4:0c:ee`. This is fine because:
 
-1. Each VM has its own gvproxy (no MAC collision within a broadcast domain)
+1. Each VM has its own gvproxy instance (no MAC collision within a broadcast domain)
 2. gvproxy's subnet (192.168.127.0/24) is per-VM, not shared
 3. If we need multi-VM networking in the future, we'll generate unique MACs per VM
 
@@ -272,68 +289,52 @@ krun_add_vsock(ctx_id, 0);
 //    Guest: connect(AF_VSOCK, CID=2, port=5000) → Host: ctl-{vmID}.sock
 krun_add_vsock_port(ctx_id, 5000, "/path/to/ctl-{vmID}.sock");
 
-// 4. Add virtio-net device via gvproxy's unixgram socket
+// 4. Add virtio-net device via in-process gvproxy's unixgram socket
 //    Guest gets a real NIC (eth0). gvproxy handles NAT/DNS/forwarding.
-krun_add_net_unixgram(ctx_id, "/path/to/net-{vmID}.sock",
+krun_add_net_unixgram(ctx_id, "/path/to/net-{pid}.sock",
     -1, mac, COMPAT_NET_FEATURES, NET_FLAG_VFKIT);
 ```
 
-Key: `krun_add_net_unixgram()` with `NET_FLAG_VFKIT` tells libkrun to speak the vfkit protocol to gvproxy. `COMPAT_NET_FEATURES` enables standard virtio-net offloads (checksumming, TSO).
+Key: `krun_add_net_unixgram()` with `NET_FLAG_VFKIT` tells libkrun to speak the vfkit protocol to the gvproxy library's unixgram listener. `COMPAT_NET_FEATURES` enables standard virtio-net offloads (checksumming, TSO).
 
 TSI and virtio-net cannot coexist for outbound traffic — TSI hijacks AF_INET at the kernel level. Once we add a virtio-net device, TSI is disabled. Both ingress AND egress go through gvproxy.
 
-## 9. gvproxy HTTP API
-
-Port forwarding is managed via gvproxy's HTTP API on a unix socket:
-
-```bash
-# Expose: host:8080 → guest:80
-POST /services/forwarder/expose
-{"local": "127.0.0.1:8080", "remote": "192.168.127.2:80"}
-
-# Unexpose
-POST /services/forwarder/unexpose
-{"local": "127.0.0.1:8080"}
-```
-
-The `local` field uses `127.0.0.1:PORT` (not `:PORT`) to bind on localhost only. This matches the existing TSI behavior where mapped ports are only accessible locally.
-
-## 10. Verification Plan
+## 9. Verification
 
 ### Basic
 
 1. Build: `cd ~/work/aegis && make`
-2. Start aegisd, verify `"network backend: gvproxy"` in startup log
-3. Test small payload: `aegis run -- echo hello`
-4. Test DNS: `aegis run --image alpine -- wget -qO- https://example.com`
-5. Test port exposure: create instance with `--expose 80`, verify HTTP through router
+2. Start aegisd, verify `"network backend: gvproxy"` in startup log (no binary path)
+3. Verify no gvproxy processes: `pgrep gvproxy` returns nothing
+4. Test small payload: `aegis run -- echo hello`
+5. Test DNS: `aegis run --image alpine -- wget -qO- https://example.com`
+6. Test port exposure: create instance with `--expose 80`, verify HTTP through router
 
 ### Large Payload (the original blocker)
 
-6. 50KB POST body from inside VM → external endpoint
-7. 100KB POST body (well above the TSI limit)
-8. OpenClaw's 46KB API call pattern
+7. 50KB POST body from inside VM → external endpoint
+8. 100KB POST body (well above the TSI limit)
+9. OpenClaw's 46KB API call pattern
 
-### Resilience
+### Pause/Resume
 
-9. Test without gvproxy installed → falls back to TSI with warning
-10. Test pause/resume → gvproxy stays alive, traffic resumes
-11. Test daemon restart → orphan gvproxies cleaned up
-12. Concurrent outbound (10 parallel large POSTs) → no buffering issues
+10. Test pause → verify 0% CPU on vmm-worker (no gvproxy spin)
+11. Test wake-on-connect → curl to exposed port while paused → VM resumes
+12. Test port forwarding after resume → traffic flows
+
+### Port Proxy
+
+13. App binding to `0.0.0.0` → proxy skips (EADDRINUSE), app handles directly
+14. App binding to `127.0.0.1` → proxy bridges guestIP:port → localhost:port
 
 ### Integration Tests
 
-See `test/integration/network_test.go` for automated verification of:
-- Network backend detection in status API
-- DNS resolution from guest
-- Small and large HTTP payloads from guest (egress)
-- Ingress via router (small and large)
-- Concurrent outbound requests
+See `test/integration/network_test.go` for automated verification.
 
-## 11. Future Work
+## 10. Future Work
 
 - **Remove TSI fallback** once gvproxy is proven stable across all workloads
 - **Make vsock the only control channel** (drop TCP/TSI legacy path in harness)
 - **Per-VM unique MAC addresses** if multi-VM networking is added
-- **gvproxy health monitoring** to detect and recover from gvproxy crashes
-- **Bandwidth/rate limiting** via gvproxy configuration for multi-tenant scenarios
+- **Activity-based idle detection** — track network activity (not just inbound connections) to avoid pausing active workloads
+- **Wake on outbound data** — detect packets queued for a paused guest and resume the VM
