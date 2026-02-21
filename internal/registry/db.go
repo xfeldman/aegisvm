@@ -85,6 +85,7 @@ func (d *DB) migrate() error {
 		`ALTER TABLE instances ADD COLUMN memory_mb INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE instances ADD COLUMN vcpus INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE instances ADD COLUMN stopped_at TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE instances ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, stmt := range migrations {
 		d.db.Exec(stmt)

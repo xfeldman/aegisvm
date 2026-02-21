@@ -46,8 +46,15 @@ func Run() {
 	conn := connectToHost()
 	defer conn.Close()
 
-	// Handle JSON-RPC commands from the host over this connection
-	handleConnection(ctx, conn)
+	// Create bidirectional RPC client for guest API
+	hrpc := newHarnessRPC(conn)
+
+	// Start guest API HTTP server (localhost:7777)
+	// Guest processes call this to spawn/manage instances.
+	go startGuestAPIServer(hrpc)
+
+	// Handle JSON-RPC from the host + responses to our guest API calls
+	handleConnection(ctx, conn, hrpc)
 
 	log.Println("harness shutting down")
 }

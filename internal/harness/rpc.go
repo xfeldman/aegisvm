@@ -43,10 +43,11 @@ type rpcError struct {
 // RPC params/results
 
 type runParams struct {
-	Command     []string          `json:"command"`
-	Env         map[string]string `json:"env,omitempty"`
-	Workdir     string            `json:"workdir,omitempty"`
-	ExposePorts []int             `json:"expose_ports,omitempty"` // guest ports to proxy (0.0.0.0 → 127.0.0.1)
+	Command         []string          `json:"command"`
+	Env             map[string]string `json:"env,omitempty"`
+	Workdir         string            `json:"workdir,omitempty"`
+	ExposePorts     []int             `json:"expose_ports,omitempty"`     // guest ports to proxy
+	CapabilityToken string            `json:"capability_token,omitempty"` // guest orchestration token
 }
 
 type runResult struct {
@@ -115,8 +116,96 @@ func (pt *processTracker) killAll() {
 	}
 }
 
+// harnessRPC provides bidirectional JSON-RPC over the control channel.
+// It handles incoming requests from aegisd (run, exec, etc.) AND supports
+// sending requests TO aegisd for the guest API (guest.spawn, etc.).
+type harnessRPC struct {
+	conn    net.Conn
+	mu      sync.Mutex // serializes writes to conn
+	pending sync.Map   // id → chan json.RawMessage (responses to our calls)
+	nextID  int64
+
+	// capabilityToken is stored from the run RPC params.
+	// Attached to all guest API → aegisd requests automatically.
+	capabilityToken string
+}
+
+func newHarnessRPC(conn net.Conn) *harnessRPC {
+	return &harnessRPC{conn: conn}
+}
+
+// Call sends an RPC request to aegisd and waits for the response.
+// Used by the guest API server to forward spawn/list/stop requests.
+func (h *harnessRPC) Call(method string, params interface{}) (json.RawMessage, error) {
+	h.nextID++
+	// Use string IDs to avoid collision with aegisd's numeric IDs
+	id := fmt.Sprintf("g-%d", h.nextID)
+
+	respCh := make(chan json.RawMessage, 1)
+	h.pending.Store(id, respCh) // id is a string like "g-1"
+	defer h.pending.Delete(id)
+
+	// Attach capability token if this is a guest.* request
+	if h.capabilityToken != "" {
+		// Wrap params to include token
+		paramsJSON, _ := json.Marshal(params)
+		var m map[string]interface{}
+		json.Unmarshal(paramsJSON, &m)
+		if m == nil {
+			m = make(map[string]interface{})
+		}
+		m["_token"] = h.capabilityToken
+		params = m
+	}
+
+	msg, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  method,
+		"params":  params,
+		"id":      id,
+	})
+	msg = append(msg, '\n')
+
+	h.mu.Lock()
+	_, err := h.conn.Write(msg)
+	h.mu.Unlock()
+	if err != nil {
+		return nil, fmt.Errorf("send %s: %w", method, err)
+	}
+
+	// Wait for response (with timeout)
+	select {
+	case resp := <-respCh:
+		// Parse response to check for errors
+		var parsed struct {
+			Result json.RawMessage `json:"result"`
+			Error  *rpcError       `json:"error"`
+		}
+		json.Unmarshal(resp, &parsed)
+		if parsed.Error != nil {
+			return nil, fmt.Errorf("%s: %s", method, parsed.Error.Message)
+		}
+		return parsed.Result, nil
+	case <-time.After(30 * time.Second):
+		return nil, fmt.Errorf("%s: timeout waiting for response", method)
+	}
+}
+
+// dispatchResponse routes an incoming response to the pending Call.
+func (h *harnessRPC) dispatchResponse(id interface{}, msg []byte) {
+	// Our IDs are strings like "g-1", "g-2"
+	idStr := fmt.Sprintf("%v", id)
+	if ch, ok := h.pending.Load(idStr); ok {
+		ch.(chan json.RawMessage) <- msg
+	}
+}
+
 // handleConnection processes JSON-RPC messages from a single host connection.
-func handleConnection(ctx context.Context, conn net.Conn) {
+// Messages are classified as:
+//   - Request from aegisd (has method + id): dispatched to request handler
+//   - Response to our call (has id, no method): dispatched to pending Call()
+//   - Notification (has method, no id): currently unused from aegisd→harness direction
+func handleConnection(ctx context.Context, conn net.Conn, hrpc *harnessRPC) {
 	defer conn.Close()
 
 	tracker := &processTracker{}
@@ -124,7 +213,6 @@ func handleConnection(ctx context.Context, conn net.Conn) {
 
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB max message
-	encoder := json.NewEncoder(conn)
 
 	for scanner.Scan() {
 		select {
@@ -138,26 +226,45 @@ func handleConnection(ctx context.Context, conn net.Conn) {
 			continue
 		}
 
-		var req rpcRequest
-		if err := json.Unmarshal(line, &req); err != nil {
+		// Parse to classify the message type
+		var msg struct {
+			JSONRPC string          `json:"jsonrpc"`
+			Method  string          `json:"method,omitempty"`
+			ID      interface{}     `json:"id,omitempty"`
+			Params  json.RawMessage `json:"params,omitempty"`
+		}
+		if err := json.Unmarshal(line, &msg); err != nil {
 			log.Printf("invalid JSON-RPC message: %v", err)
 			continue
 		}
 
-		if req.JSONRPC != "2.0" {
-			log.Printf("invalid JSON-RPC version: %s", req.JSONRPC)
+		if msg.ID != nil && msg.Method == "" {
+			// Response to one of our outgoing calls (guest API → aegisd)
+			hrpc.dispatchResponse(msg.ID, line)
 			continue
 		}
 
-		resp := dispatch(ctx, &req, conn, tracker)
+		if msg.Method == "" {
+			continue
+		}
+
+		// Request from aegisd — dispatch to handler
+		var req rpcRequest
+		json.Unmarshal(line, &req)
+
+		resp := dispatch(ctx, &req, conn, tracker, hrpc)
 		if resp != nil {
-			if err := encoder.Encode(resp); err != nil {
+			respJSON, _ := json.Marshal(resp)
+			respJSON = append(respJSON, '\n')
+			hrpc.mu.Lock()
+			_, err := conn.Write(respJSON)
+			hrpc.mu.Unlock()
+			if err != nil {
 				log.Printf("write response: %v", err)
 				return
 			}
 		}
 
-		// If shutdown was requested, exit
 		if req.Method == "shutdown" {
 			return
 		}
@@ -169,10 +276,10 @@ func handleConnection(ctx context.Context, conn net.Conn) {
 }
 
 // dispatch routes a JSON-RPC request to the appropriate handler.
-func dispatch(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *processTracker) *rpcResponse {
+func dispatch(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *processTracker, hrpc *harnessRPC) *rpcResponse {
 	switch req.Method {
 	case "run":
-		return handleRun(ctx, req, conn, tracker)
+		return handleRun(ctx, req, conn, tracker, hrpc)
 
 	case "exec":
 		return handleExec(ctx, req, conn, tracker)
@@ -207,7 +314,7 @@ func dispatch(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *proc
 // handleRun starts the primary process asynchronously, streaming output as log
 // notifications. When the process exits, it sends a processExited notification.
 // Only one primary process is allowed per instance.
-func handleRun(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *processTracker) *rpcResponse {
+func handleRun(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *processTracker, hrpc *harnessRPC) *rpcResponse {
 	var params runParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return &rpcResponse{
@@ -232,6 +339,12 @@ func handleRun(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *pro
 	}
 
 	log.Printf("run: %v", params.Command)
+
+	// Store capability token for guest API requests
+	if params.CapabilityToken != "" && hrpc != nil {
+		hrpc.capabilityToken = params.CapabilityToken
+		log.Printf("capability token received (guest API enabled)")
+	}
 
 	// Start port proxies for exposed ports before the app.
 	// These forward 0.0.0.0:port → 127.0.0.1:port so that apps binding
@@ -320,6 +433,7 @@ func monitorActivity(ctx context.Context, pid int, conn net.Conn) {
 		// Only send if meaningful activity detected.
 		// net_bytes threshold filters out background ARP/keepalive noise (~70 bytes/5s).
 		const netBytesThreshold = 512
+		log.Printf("activity probe: tcp=%d cpu_ms=%d net_bytes=%d (threshold=%d)", tcp, cpuMs, netDelta, netBytesThreshold)
 		if tcp > 0 || cpuMs > 0 || netDelta > netBytesThreshold {
 			err := sendNotification(conn, "activity", map[string]interface{}{
 				"tcp":       tcp,

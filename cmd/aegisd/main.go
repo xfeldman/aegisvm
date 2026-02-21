@@ -99,6 +99,9 @@ func main() {
 	}
 	log.Printf("secret store: %s", cfg.MasterKeyPath)
 
+	// Pass secret store to lifecycle manager for capability token operations
+	lm.SetSecretStore(ss)
+
 	// Start router (handle-based routing, no app resolver)
 	rtr := router.New(lm, cfg.RouterAddr)
 	if err := rtr.Start(); err != nil {

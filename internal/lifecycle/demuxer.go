@@ -14,12 +14,13 @@ import (
 // channelDemuxer runs a persistent Recv loop on a ControlChannel,
 // routing RPC responses to waiting callers and notifications to an onNotif callback.
 type channelDemuxer struct {
-	ch      vmm.ControlChannel
-	mu      sync.Mutex // protects pending map AND serializes Send calls
-	pending map[interface{}]chan json.RawMessage
-	onNotif func(method string, params json.RawMessage)
-	done    chan struct{}
-	cancel  context.CancelFunc
+	ch             vmm.ControlChannel
+	mu             sync.Mutex // protects pending map AND serializes Send calls
+	pending        map[interface{}]chan json.RawMessage
+	onNotif        func(method string, params json.RawMessage)
+	onGuestRequest func(method string, params json.RawMessage) (interface{}, error) // handles requests FROM harness (guest API)
+	done           chan struct{}
+	cancel         context.CancelFunc
 }
 
 // rpcMessage is used for parsing incoming messages to determine their type.
@@ -77,7 +78,6 @@ func (d *channelDemuxer) recvLoop(ctx context.Context) {
 
 		if parsed.ID != nil && parsed.Method == "" {
 			// RPC response — route to pending caller
-			// Normalize ID to float64 or string for map lookup
 			normalizedID := normalizeID(parsed.ID)
 			d.mu.Lock()
 			ch, ok := d.pending[normalizedID]
@@ -90,6 +90,13 @@ func (d *channelDemuxer) recvLoop(ctx context.Context) {
 			} else {
 				log.Printf("demuxer: no pending call for id=%v", parsed.ID)
 			}
+		} else if parsed.Method != "" && parsed.ID != nil {
+			// RPC request FROM harness (guest API) — handle and send response
+			if d.onGuestRequest != nil {
+				go d.handleGuestRequest(ctx, parsed)
+			} else {
+				log.Printf("demuxer: guest request %s but no handler registered", parsed.Method)
+			}
 		} else if parsed.Method != "" && parsed.ID == nil {
 			// Notification
 			if d.onNotif != nil {
@@ -98,6 +105,37 @@ func (d *channelDemuxer) recvLoop(ctx context.Context) {
 		} else {
 			log.Printf("demuxer: unclassified message: %s", string(msg))
 		}
+	}
+}
+
+// handleGuestRequest processes an RPC request from the harness (guest API),
+// calls the registered handler, and sends the response back.
+func (d *channelDemuxer) handleGuestRequest(ctx context.Context, msg rpcMessage) {
+	result, err := d.onGuestRequest(msg.Method, msg.Params)
+
+	var resp []byte
+	if err != nil {
+		resp, _ = json.Marshal(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      msg.ID,
+			"error": map[string]interface{}{
+				"code":    -32000,
+				"message": err.Error(),
+			},
+		})
+	} else {
+		resp, _ = json.Marshal(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      msg.ID,
+			"result":  result,
+		})
+	}
+
+	d.mu.Lock()
+	sendErr := d.ch.Send(ctx, resp)
+	d.mu.Unlock()
+	if sendErr != nil {
+		log.Printf("demuxer: failed to send guest request response: %v", sendErr)
 	}
 }
 

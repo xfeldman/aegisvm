@@ -145,7 +145,8 @@ type createInstanceRequest struct {
 	Workspace string            `json:"workspace,omitempty"`
 	MemoryMB   int               `json:"memory_mb,omitempty"`
 	VCPUs      int               `json:"vcpus,omitempty"`
-	IdlePolicy string            `json:"idle_policy,omitempty"` // "default" or "leases_only"
+	IdlePolicy   string                   `json:"idle_policy,omitempty"`
+	Capabilities *lifecycle.CapabilityToken `json:"capabilities,omitempty"` // guest orchestration capabilities
 }
 
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
@@ -209,6 +210,9 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.IdlePolicy != "" {
 		opts = append(opts, lifecycle.WithIdlePolicy(req.IdlePolicy))
+	}
+	if req.Capabilities != nil {
+		opts = append(opts, lifecycle.WithCapabilities(req.Capabilities))
 	}
 
 	// Create in lifecycle manager

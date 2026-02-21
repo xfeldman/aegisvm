@@ -27,6 +27,7 @@ import (
 	"github.com/xfeldman/aegisvm/internal/image"
 	"github.com/xfeldman/aegisvm/internal/logstore"
 	"github.com/xfeldman/aegisvm/internal/overlay"
+	"github.com/xfeldman/aegisvm/internal/secrets"
 	"github.com/xfeldman/aegisvm/internal/vmm"
 )
 
@@ -87,6 +88,10 @@ type Instance struct {
 	// Idle policy: "default" (heartbeat + lease + inbound), "leases_only" (lease + inbound only)
 	IdlePolicy string
 
+	// Parent-child relationship for guest orchestration
+	ParentID     string           // ID of the parent instance that spawned this one (empty = top-level)
+	Capabilities *CapabilityToken // spawn capabilities (nil = no guest API spawning)
+
 	// Keepalive lease — prevents pause while held, auto-expires after TTL
 	leaseHeld   bool
 	leaseExpiry time.Time
@@ -123,8 +128,9 @@ type Manager struct {
 	cfg       *config.Config
 	logStore  *logstore.Store
 
-	imageCache *image.Cache
-	overlay    overlay.Overlay
+	imageCache  *image.Cache
+	overlay     overlay.Overlay
+	secretStore *secrets.Store
 
 	// Callbacks
 	onStateChange func(id, state string)
@@ -140,6 +146,11 @@ func NewManager(v vmm.VMM, cfg *config.Config, ls *logstore.Store, imgCache *ima
 		imageCache: imgCache,
 		overlay:    ov,
 	}
+}
+
+// SetSecretStore sets the secret store for capability token operations.
+func (m *Manager) SetSecretStore(ss *secrets.Store) {
+	m.secretStore = ss
 }
 
 // OnStateChange registers a callback for state changes (e.g., to persist to registry).
@@ -196,6 +207,20 @@ func WithMemory(mb int) InstanceOption {
 func WithVCPUs(n int) InstanceOption {
 	return func(inst *Instance) {
 		inst.VCPUs = n
+	}
+}
+
+// WithParentID sets the parent instance ID (for child instances spawned via guest API).
+func WithParentID(id string) InstanceOption {
+	return func(inst *Instance) {
+		inst.ParentID = id
+	}
+}
+
+// WithCapabilities sets the spawn capabilities for guest orchestration.
+func WithCapabilities(caps *CapabilityToken) InstanceOption {
+	return func(inst *Instance) {
+		inst.Capabilities = caps
 	}
 }
 
@@ -414,6 +439,11 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		}
 	})
 
+	// Register guest request handler (for guest API → aegisd calls)
+	demux.onGuestRequest = func(method string, params json.RawMessage) (interface{}, error) {
+		return m.handleGuestRequest(inst, method, params)
+	}
+
 	// Send run RPC via demuxer
 	rpcCtx, rpcCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer rpcCancel()
@@ -433,6 +463,15 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 			ports = append(ports, ep.GuestPort)
 		}
 		rpcParams["expose_ports"] = ports
+	}
+	// Inject capability token if this instance has spawn capabilities
+	if inst.Capabilities != nil && m.secretStore != nil {
+		token, err := GenerateToken(m.secretStore, inst.ID, *inst.Capabilities)
+		if err != nil {
+			log.Printf("instance %s: generate capability token: %v", inst.ID, err)
+		} else {
+			rpcParams["capability_token"] = token
+		}
 	}
 
 	resp, err := demux.Call(rpcCtx, "run", rpcParams, nextRPCID())
@@ -936,6 +975,10 @@ func (m *Manager) StopInstance(id string) error {
 	}
 
 	m.shutdownVM(demux, handle)
+
+	// Cascade stop children (orphan policy: cascade)
+	go m.CascadeStopChildren(id)
+
 	return nil
 }
 
@@ -1027,6 +1070,10 @@ func (m *Manager) DisableInstance(id string) error {
 		demux.Stop()
 	}
 	m.vmm.StopVM(handle)
+
+	// Cascade stop children
+	go m.CascadeStopChildren(id)
+
 	return nil
 }
 
