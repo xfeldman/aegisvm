@@ -391,6 +391,16 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 	if len(inst.Env) > 0 {
 		rpcParams["env"] = inst.Env
 	}
+	// Send exposed guest ports so the harness can start port proxies.
+	// The proxies forward 0.0.0.0:port → 127.0.0.1:port, making apps
+	// that bind to localhost reachable via gvproxy ingress.
+	if len(inst.ExposePorts) > 0 {
+		var ports []int
+		for _, ep := range inst.ExposePorts {
+			ports = append(ports, ep.GuestPort)
+		}
+		rpcParams["expose_ports"] = ports
+	}
 
 	resp, err := demux.Call(rpcCtx, "run", rpcParams, nextRPCID())
 	if err != nil {

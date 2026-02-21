@@ -43,9 +43,10 @@ type rpcError struct {
 // RPC params/results
 
 type runParams struct {
-	Command []string          `json:"command"`
-	Env     map[string]string `json:"env,omitempty"`
-	Workdir string            `json:"workdir,omitempty"`
+	Command     []string          `json:"command"`
+	Env         map[string]string `json:"env,omitempty"`
+	Workdir     string            `json:"workdir,omitempty"`
+	ExposePorts []int             `json:"expose_ports,omitempty"` // guest ports to proxy (0.0.0.0 → 127.0.0.1)
 }
 
 type runResult struct {
@@ -232,8 +233,19 @@ func handleRun(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *pro
 
 	log.Printf("run: %v", params.Command)
 
+	// Start port proxies for exposed ports before the app.
+	// These forward 0.0.0.0:port → 127.0.0.1:port so that apps binding
+	// to localhost are reachable via gvproxy's virtio-net ingress.
+	var pp *portProxy
+	if len(params.ExposePorts) > 0 {
+		pp = startPortProxies(params.ExposePorts)
+	}
+
 	cmd, err := startPrimaryProcess(ctx, params, conn)
 	if err != nil {
+		if pp != nil {
+			pp.Stop()
+		}
 		return &rpcResponse{
 			JSONRPC: "2.0",
 			Error: &rpcError{
@@ -246,6 +258,9 @@ func handleRun(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *pro
 
 	if !tracker.setPrimary(cmd) {
 		cmd.Process.Kill()
+		if pp != nil {
+			pp.Stop()
+		}
 		return &rpcResponse{
 			JSONRPC: "2.0",
 			Error: &rpcError{

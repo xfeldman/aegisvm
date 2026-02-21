@@ -12,7 +12,7 @@ Run OpenClaw (gateway + embedded agent) inside an Aegis VM with Telegram integra
 - Secrets: ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, OPENAI_API_KEY via Aegis secrets
 - Exposed: port 18789 (gateway control UI/WebSocket)
 - Outbound: LLM APIs + Telegram API via gvproxy (virtio-net)
-- Gateway must use `--bind lan` (gvproxy forwards to guest IP, not localhost)
+- Ingress: harness port proxy bridges guestIP → localhost (transparent to app)
 
 ## Friction Points — Aegis Issues
 
@@ -93,11 +93,10 @@ Run OpenClaw (gateway + embedded agent) inside an Aegis VM with Telegram integra
   - `brew install slp/krun/gvproxy`, restart aegisd
   - Tested: 50KB and 100KB POST bodies work, Telegram bot + agent conversations work end-to-end
 
-### #15 — Apps binding to localhost unreachable via gvproxy [FIXED — --bind lan]
+### #15 — Apps binding to localhost unreachable via gvproxy [FIXED — harness port proxy]
 - **Problem:** gvproxy forwards traffic to guest's eth0 IP (192.168.127.2), not localhost. Apps binding to 127.0.0.1 are unreachable from the host.
 - **Root cause:** TSI intercepted AF_INET at the kernel level, making all traffic appear local. gvproxy uses a real NIC, so traffic arrives at the guest's IP.
-- **Fix:** OpenClaw's `--bind lan` flag makes it listen on 0.0.0.0 instead of 127.0.0.1.
-- **Lesson:** Any app with exposed ports must bind to 0.0.0.0 (or the guest IP) in gvproxy mode. This is a common gotcha — consider documenting it or adding a socat forwarding layer in the harness.
+- **Fix:** Harness starts a Go TCP proxy for each exposed port: `guestIP:port → 127.0.0.1:port`. Listens on the guest IP specifically (not 0.0.0.0) to avoid conflicts with apps that bind to 127.0.0.1 on the same port. Completely transparent — apps don't need any configuration changes.
 
 ### #16 — Kernel OOM killer with default 512MB RAM [FIXED — memory_mb via API]
 - **Problem:** OpenClaw (Node.js) needs ~400MB heap + kernel overhead. Default 512MB VM RAM triggers kernel OOM killer silently.
@@ -122,7 +121,7 @@ Run OpenClaw (gateway + embedded agent) inside an Aegis VM with Telegram integra
 - /etc/hosts works (harness fix) ✓
 - Wake-on-connect works for gateway port ✓
 - Auth profiles correctly configured ✓
-- Ingress via gvproxy port forwarding (with --bind lan) ✓
+- Ingress via gvproxy port forwarding + harness port proxy ✓
 - Network setup via netlink (works on any OCI image) ✓
 
 ### Remaining Issues
@@ -140,6 +139,7 @@ Run OpenClaw (gateway + embedded agent) inside an Aegis VM with Telegram integra
 6. **Harness: netlink network setup** — raw syscalls instead of `ip` commands (works on any OCI image)
 7. **gvproxy CLI flags fix** — corrected `--listen-vfkit unixgram://` (was `--listen vfkit:unixgram://`)
 8. **vsockConn wrapper** — Go's net.FileConn doesn't support AF_VSOCK, custom net.Conn wrapper
+9. **Harness port proxy** — TCP proxy for exposed ports: guestIP:port → 127.0.0.1:port (transparent to apps)
 
 ## Lessons for Kit System
 
@@ -165,8 +165,8 @@ if [ ! -f /workspace/.npm-global/bin/openclaw ]; then
   npm install -g openclaw@latest
 fi
 
-# Run gateway (--bind lan required for gvproxy ingress)
-exec openclaw gateway --allow-unconfigured --bind lan
+# Run gateway
+exec openclaw gateway --allow-unconfigured
 ```
 
 ## Instance Creation (via API)
@@ -175,7 +175,7 @@ exec openclaw gateway --allow-unconfigured --bind lan
 curl -s --unix-socket ~/.aegis/aegisd.sock -X POST http://aegis/v1/instances \
   -H 'Content-Type: application/json' -d '{
     "handle": "claw",
-    "command": ["sh", "-c", "export HOME=/workspace && export OPENCLAW_HOME=/workspace/.openclaw && export npm_config_prefix=/workspace/.npm-global && export PATH=/workspace/.npm-global/bin:$PATH && export NODE_OPTIONS=\"--max-old-space-size=1536\" && if [ -f /workspace/.npm-global/bin/openclaw ]; then true; else npm install -g openclaw@latest; fi && exec openclaw gateway --allow-unconfigured --bind lan"],
+    "command": ["sh", "-c", "export HOME=/workspace && export OPENCLAW_HOME=/workspace/.openclaw && export npm_config_prefix=/workspace/.npm-global && export PATH=/workspace/.npm-global/bin:$PATH && export NODE_OPTIONS=\"--max-old-space-size=1536\" && if [ -f /workspace/.npm-global/bin/openclaw ]; then true; else npm install -g openclaw@latest; fi && exec openclaw gateway --allow-unconfigured"],
     "image_ref": "node:22",
     "workspace": "/Users/user/openclaw-workspace",
     "exposes": [{"port": 18789}],
