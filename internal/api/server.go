@@ -249,22 +249,29 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		for _, ep := range publicEndpoints {
 			publicPorts[ep.GuestPort] = ep.PublicPort
 		}
+		capsJSON := ""
+		if req.Capabilities != nil {
+			if b, err := json.Marshal(req.Capabilities); err == nil {
+				capsJSON = string(b)
+			}
+		}
 		regInst := &registry.Instance{
-			ID:          id,
-			State:       "stopped",
-			Command:     req.Command,
-			ExposePorts: portInts,
-			Handle:      req.Handle,
-			ImageRef:    req.ImageRef,
-			Workspace:   req.Workspace,
-			Env:         env,
-			SecretKeys:  req.Secrets,
-			PublicPorts: publicPorts,
-			Enabled:     true,
-			MemoryMB:    req.MemoryMB,
-			VCPUs:       req.VCPUs,
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
+			ID:           id,
+			State:        "stopped",
+			Command:      req.Command,
+			ExposePorts:  portInts,
+			Handle:       req.Handle,
+			ImageRef:     req.ImageRef,
+			Workspace:    req.Workspace,
+			Env:          env,
+			SecretKeys:   req.Secrets,
+			PublicPorts:  publicPorts,
+			Enabled:      true,
+			MemoryMB:     req.MemoryMB,
+			VCPUs:        req.VCPUs,
+			Capabilities: capsJSON,
+			CreatedAt:    time.Now(),
+			UpdatedAt:    time.Now(),
 		}
 		if err := s.registry.SaveInstance(regInst); err != nil {
 			log.Printf("save instance to registry: %v", err)

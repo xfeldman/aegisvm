@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -138,6 +139,15 @@ func main() {
 			}
 			if ri.VCPUs > 0 {
 				opts = append(opts, lifecycle.WithVCPUs(ri.VCPUs))
+			}
+			if ri.ParentID != "" {
+				opts = append(opts, lifecycle.WithParentID(ri.ParentID))
+			}
+			if ri.Capabilities != "" {
+				var caps lifecycle.CapabilityToken
+				if json.Unmarshal([]byte(ri.Capabilities), &caps) == nil {
+					opts = append(opts, lifecycle.WithCapabilities(&caps))
+				}
 			}
 
 			// Re-create in lifecycle manager (state = stopped)
