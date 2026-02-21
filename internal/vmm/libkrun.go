@@ -3,6 +3,7 @@ package vmm
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -24,7 +25,15 @@ type WorkerConfig struct {
 	HostAddr      string   `json:"host_addr"`
 	PortMap       []string `json:"port_map,omitempty"`       // e.g. ["8080:80"] — host_port:guest_port
 	MappedVolumes []string `json:"mapped_volumes,omitempty"` // e.g. ["workspace:/path"] — tag:path
+
+	// gvproxy networking (when NetworkMode == "gvproxy")
+	NetworkMode   string `json:"network_mode,omitempty"`
+	GvproxySocket string `json:"gvproxy_socket,omitempty"`
+	VsockPort     int    `json:"vsock_port,omitempty"`
 }
+
+// harnessVsockPort is the vsock port the harness connects to for the control channel.
+const harnessVsockPort = 5000
 
 type vmInstance struct {
 	id        string
@@ -32,6 +41,7 @@ type vmInstance struct {
 	cmd       *exec.Cmd
 	done      chan struct{}
 	endpoints []HostEndpoint
+	gvproxy   *gvproxyInstance // non-nil when using gvproxy networking
 }
 
 // LibkrunVMM implements the VMM interface using libkrun on macOS.
@@ -41,6 +51,7 @@ type LibkrunVMM struct {
 	mu        sync.Mutex
 	instances map[string]*vmInstance
 	workerBin string
+	cfg       *config.Config
 }
 
 func NewLibkrunVMM(cfg *config.Config) (*LibkrunVMM, error) {
@@ -52,6 +63,7 @@ func NewLibkrunVMM(cfg *config.Config) (*LibkrunVMM, error) {
 	return &LibkrunVMM{
 		instances: make(map[string]*vmInstance),
 		workerBin: workerBin,
+		cfg:       cfg,
 	}, nil
 }
 
@@ -75,9 +87,12 @@ func (l *LibkrunVMM) CreateVM(cfg VMConfig) (Handle, error) {
 }
 
 // StartVM boots the VM and returns a ControlChannel for harness communication.
-// Internally: starts a TCP listener on localhost, spawns the vmm-worker
-// (which boots the VM via libkrun), and waits for the harness to connect
-// back via TSI. Returns a ready-to-use ControlChannel.
+//
+// Two networking modes:
+//   - gvproxy: spawns gvproxy for virtio-net, uses unix socket + vsock for control channel.
+//     Port forwarding via gvproxy HTTP API. No TSI — real NIC in guest.
+//   - tsi (legacy): TCP listener on localhost, harness connects via TSI.
+//     Port mapping via krun_set_port_map. Known ~32KB outbound body limit.
 func (l *LibkrunVMM) StartVM(h Handle) (ControlChannel, error) {
 	l.mu.Lock()
 	inst, ok := l.instances[h.ID]
@@ -88,39 +103,7 @@ func (l *LibkrunVMM) StartVM(h Handle) (ControlChannel, error) {
 	cfg := inst.config
 	l.mu.Unlock()
 
-	// 1. Start TCP listener for harness callback
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return nil, fmt.Errorf("listen for harness: %w", err)
-	}
-
-	hostAddr := ln.Addr().String()
-
-	// 2. Allocate host ports for exposed guest ports
-	var portMap []string
-	var endpoints []HostEndpoint
-	for _, ep := range cfg.ExposePorts {
-		// Allocate a random host port by binding to :0 then closing
-		tmpLn, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			ln.Close()
-			return nil, fmt.Errorf("allocate port for guest port %d: %w", ep.GuestPort, err)
-		}
-		hostPort := tmpLn.Addr().(*net.TCPAddr).Port
-		tmpLn.Close()
-
-		portMap = append(portMap, fmt.Sprintf("%d:%d", hostPort, ep.GuestPort))
-		endpoints = append(endpoints, HostEndpoint{
-			GuestPort: ep.GuestPort,
-			HostPort:  hostPort,
-			Protocol:  ep.Protocol,
-		})
-	}
-
-	// Store endpoints on instance
-	l.mu.Lock()
-	inst.endpoints = endpoints
-	l.mu.Unlock()
+	useGvproxy := l.cfg.NetworkBackend == "gvproxy" && l.cfg.GvproxyBin != ""
 
 	// Build mapped volumes list
 	var mappedVolumes []string
@@ -128,23 +111,108 @@ func (l *LibkrunVMM) StartVM(h Handle) (ControlChannel, error) {
 		mappedVolumes = append(mappedVolumes, "workspace:"+cfg.WorkspacePath)
 	}
 
-	// 3. Spawn vmm-worker
-	// ExecPath is always the harness, regardless of OCI image entrypoint.
-	// krun_set_exec() sets the guest PID 1 — the image's ENTRYPOINT/CMD
-	// is ignored. The harness then starts user commands via RPC.
+	// Common worker config fields
 	wc := WorkerConfig{
 		RootfsPath:    cfg.Rootfs.Path,
 		MemoryMB:      cfg.MemoryMB,
 		VCPUs:         cfg.VCPUs,
 		ExecPath:      "/usr/bin/aegis-harness",
-		HostAddr:      hostAddr,
-		PortMap:       portMap,
 		MappedVolumes: mappedVolumes,
 	}
 
+	var ln net.Listener
+	var gvp *gvproxyInstance
+
+	if useGvproxy {
+		// --- gvproxy networking path ---
+		sockDir := filepath.Join(l.cfg.DataDir, "sockets")
+
+		// 1. Spawn gvproxy
+		var err error
+		gvp, err = startGvproxy(l.cfg.GvproxyBin, h.ID, sockDir)
+		if err != nil {
+			return nil, fmt.Errorf("start gvproxy: %w", err)
+		}
+
+		// 2. Listen on unix socket for harness control channel (vsock → unix socket)
+		ctlSocketPath := filepath.Join(sockDir, fmt.Sprintf("ctl-%s.sock", h.ID))
+		os.Remove(ctlSocketPath) // clean stale
+		ln, err = net.Listen("unix", ctlSocketPath)
+		if err != nil {
+			gvp.Stop()
+			return nil, fmt.Errorf("listen for harness (unix): %w", err)
+		}
+
+		// 3. Allocate host ports for exposed guest ports
+		var endpoints []HostEndpoint
+		for _, ep := range cfg.ExposePorts {
+			tmpLn, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				ln.Close()
+				gvp.Stop()
+				return nil, fmt.Errorf("allocate port for guest port %d: %w", ep.GuestPort, err)
+			}
+			hostPort := tmpLn.Addr().(*net.TCPAddr).Port
+			tmpLn.Close()
+
+			endpoints = append(endpoints, HostEndpoint{
+				GuestPort: ep.GuestPort,
+				HostPort:  hostPort,
+				Protocol:  ep.Protocol,
+			})
+		}
+
+		l.mu.Lock()
+		inst.endpoints = endpoints
+		l.mu.Unlock()
+
+		wc.NetworkMode = "gvproxy"
+		wc.GvproxySocket = gvp.netSocket
+		wc.VsockPort = harnessVsockPort
+		wc.HostAddr = ctlSocketPath // reuse field for unix socket path
+	} else {
+		// --- TSI networking path (legacy) ---
+		var err error
+		ln, err = net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, fmt.Errorf("listen for harness: %w", err)
+		}
+		wc.HostAddr = ln.Addr().String()
+
+		// Allocate host ports + build TSI port map
+		var portMap []string
+		var endpoints []HostEndpoint
+		for _, ep := range cfg.ExposePorts {
+			tmpLn, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				ln.Close()
+				return nil, fmt.Errorf("allocate port for guest port %d: %w", ep.GuestPort, err)
+			}
+			hostPort := tmpLn.Addr().(*net.TCPAddr).Port
+			tmpLn.Close()
+
+			portMap = append(portMap, fmt.Sprintf("%d:%d", hostPort, ep.GuestPort))
+			endpoints = append(endpoints, HostEndpoint{
+				GuestPort: ep.GuestPort,
+				HostPort:  hostPort,
+				Protocol:  ep.Protocol,
+			})
+		}
+
+		l.mu.Lock()
+		inst.endpoints = endpoints
+		l.mu.Unlock()
+
+		wc.PortMap = portMap
+	}
+
+	// Spawn vmm-worker
 	wcJSON, err := json.Marshal(wc)
 	if err != nil {
 		ln.Close()
+		if gvp != nil {
+			gvp.Stop()
+		}
 		return nil, fmt.Errorf("marshal worker config: %w", err)
 	}
 
@@ -160,11 +228,15 @@ func (l *LibkrunVMM) StartVM(h Handle) (ControlChannel, error) {
 
 	if err := cmd.Start(); err != nil {
 		ln.Close()
+		if gvp != nil {
+			gvp.Stop()
+		}
 		return nil, fmt.Errorf("start vmm-worker: %w", err)
 	}
 
 	l.mu.Lock()
 	inst.cmd = cmd
+	inst.gvproxy = gvp
 	l.mu.Unlock()
 
 	go func() {
@@ -172,12 +244,36 @@ func (l *LibkrunVMM) StartVM(h Handle) (ControlChannel, error) {
 		close(inst.done)
 	}()
 
-	// 4. Wait for harness to connect back (with timeout)
-	ln.(*net.TCPListener).SetDeadline(time.Now().Add(30 * time.Second))
+	// Wait for harness to connect back (with timeout)
+	if tcpLn, ok := ln.(*net.TCPListener); ok {
+		tcpLn.SetDeadline(time.Now().Add(30 * time.Second))
+	} else if unixLn, ok := ln.(*net.UnixListener); ok {
+		unixLn.SetDeadline(time.Now().Add(30 * time.Second))
+	}
 	conn, err := ln.Accept()
 	ln.Close() // only need one connection
 	if err != nil {
+		if gvp != nil {
+			gvp.Stop()
+		}
 		return nil, fmt.Errorf("harness did not connect within 30s: %w", err)
+	}
+
+	// For gvproxy: now that harness is connected (VM is alive),
+	// expose ports via gvproxy API before marking instance as RUNNING.
+	if gvp != nil {
+		l.mu.Lock()
+		endpoints := inst.endpoints
+		l.mu.Unlock()
+
+		for _, ep := range endpoints {
+			if err := gvp.ExposePort(ep.HostPort, ep.GuestPort); err != nil {
+				log.Printf("gvproxy: expose port %d→%d failed: %v", ep.HostPort, ep.GuestPort, err)
+				conn.Close()
+				gvp.Stop()
+				return nil, fmt.Errorf("gvproxy expose port %d: %w", ep.GuestPort, err)
+			}
+		}
 	}
 
 	return NewNetControlChannel(conn), nil
@@ -235,6 +331,15 @@ func (l *LibkrunVMM) StopVM(h Handle) error {
 		_ = inst.cmd.Wait()
 	}
 
+	// Stop gvproxy process and clean up sockets
+	if inst.gvproxy != nil {
+		inst.gvproxy.Stop()
+	}
+
+	// Clean up control socket
+	ctlSocket := filepath.Join(l.cfg.DataDir, "sockets", fmt.Sprintf("ctl-%s.sock", h.ID))
+	os.Remove(ctlSocket)
+
 	l.mu.Lock()
 	delete(l.instances, h.ID)
 	l.mu.Unlock()
@@ -244,8 +349,9 @@ func (l *LibkrunVMM) StopVM(h Handle) error {
 
 func (l *LibkrunVMM) Capabilities() BackendCaps {
 	return BackendCaps{
-		Pause:      true,
-		RootFSType: RootFSDirectory,
-		Name:       "libkrun",
+		Pause:          true,
+		RootFSType:     RootFSDirectory,
+		Name:           "libkrun",
+		NetworkBackend: l.cfg.NetworkBackend,
 	}
 }

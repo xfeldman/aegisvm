@@ -40,6 +40,17 @@ func main() {
 
 	log.Printf("aegisd starting on %s/%s (backend: %s)", platform.OS, platform.Arch, platform.Backend)
 
+	// Resolve network backend (auto → gvproxy if found, else TSI)
+	cfg.ResolveNetworkBackend()
+	if cfg.NetworkBackend == "gvproxy" {
+		log.Printf("network backend: gvproxy (%s)", cfg.GvproxyBin)
+	} else {
+		log.Printf("WARNING: network backend: tsi (gvproxy not found — known outbound payload limit ~32KB)")
+	}
+
+	// Reap orphan gvproxy processes from previous daemon runs
+	vmm.ReapOrphanGvproxies(cfg.DataDir + "/sockets")
+
 	// Initialize VMM backend
 	var backend vmm.VMM
 	switch platform.Backend {
@@ -55,7 +66,7 @@ func main() {
 	}
 
 	caps := backend.Capabilities()
-	log.Printf("VMM backend: %s (pause=%v)", caps.Name, caps.Pause)
+	log.Printf("VMM backend: %s (pause=%v, network=%s)", caps.Name, caps.Pause, caps.NetworkBackend)
 
 	// Open registry database
 	reg, err := registry.Open(cfg.DBPath)

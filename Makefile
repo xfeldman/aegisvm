@@ -30,7 +30,7 @@ ifeq ($(HOST_OS),darwin)
 	CGO_LDFLAGS := -L/opt/homebrew/lib
 endif
 
-.PHONY: all aegisd aegis harness vmm-worker mcp base-rootfs clean test test-unit test-m2 test-m3 integration
+.PHONY: all aegisd aegis harness vmm-worker mcp base-rootfs clean test test-unit test-m2 test-m3 test-network integration
 
 all: aegisd aegis harness vmm-worker mcp
 
@@ -96,6 +96,16 @@ ifdef SHORT
 else
 	$(GO) test -tags integration -v -count=1 -timeout 15m \
 		-run 'TestSecret|TestKit|TestDoctor|TestConformance' ./test/integration/
+endif
+
+# Run network integration tests (gvproxy/TSI egress+ingress, large payloads)
+test-network: all
+ifdef SHORT
+	$(GO) test -tags integration -v -count=1 -short -timeout 15m \
+		-run 'TestNetwork' ./test/integration/
+else
+	$(GO) test -tags integration -v -count=1 -timeout 15m \
+		-run 'TestNetwork' ./test/integration/
 endif
 
 # Run integration tests (requires built binaries + base rootfs installed)

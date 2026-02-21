@@ -89,11 +89,14 @@ type BackendCaps struct {
 
 	// Name is the backend identifier ("libkrun" or "firecracker").
 	Name string
+
+	// NetworkBackend is the active networking mode ("gvproxy" or "tsi").
+	NetworkBackend string
 }
 
 func (c BackendCaps) String() string {
-	return fmt.Sprintf("backend=%s pause=%v rootfs=%s",
-		c.Name, c.Pause, c.RootFSType)
+	return fmt.Sprintf("backend=%s pause=%v rootfs=%s network=%s",
+		c.Name, c.Pause, c.RootFSType, c.NetworkBackend)
 }
 
 // ControlChannel is a message-oriented, bidirectional channel between aegisd

@@ -27,9 +27,14 @@ type WorkerConfig struct {
 	MemoryMB      int      `json:"memory_mb"`
 	VCPUs         int      `json:"vcpus"`
 	ExecPath      string   `json:"exec_path"`
-	HostAddr      string   `json:"host_addr"`       // host:port for harness to connect back to
-	PortMap       []string `json:"port_map"`         // e.g. ["8080:80"] — host_port:guest_port
+	HostAddr      string   `json:"host_addr"`       // TSI: host:port | gvproxy: unix socket path
+	PortMap       []string `json:"port_map"`         // e.g. ["8080:80"] — host_port:guest_port (TSI only)
 	MappedVolumes []string `json:"mapped_volumes"`   // e.g. ["workspace:/path/to/dir"] — tag:path
+
+	// gvproxy networking (when NetworkMode == "gvproxy")
+	NetworkMode   string `json:"network_mode"`      // "tsi" (default) or "gvproxy"
+	GvproxySocket string `json:"gvproxy_socket"`    // data plane unixgram socket path
+	VsockPort     int    `json:"vsock_port"`         // harness control channel vsock port
 }
 
 func main() {
@@ -89,17 +94,73 @@ func run(cfg WorkerConfig) error {
 	// On aarch64, libkrun embeds all env vars into the kernel cmdline,
 	// which has a 2048-byte limit. Passing nil inherits the host's full
 	// environment and overflows it.
-	//
-	// AEGIS_HOST_ADDR tells the harness where to connect back to the host.
-	// TSI (Transparent Socket Impersonation) intercepts AF_INET connections
-	// in the guest and routes them through vsock to the host, so 127.0.0.1:PORT
-	// from inside the VM reaches the host's actual localhost.
 	envVars := []string{
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"HOME=/root",
 		"TERM=linux",
-		fmt.Sprintf("AEGIS_HOST_ADDR=%s", cfg.HostAddr),
 	}
+
+	if cfg.NetworkMode == "gvproxy" {
+		// --- gvproxy networking: real NIC via virtio-net, vsock for control ---
+
+		// 1. Disable implicit vsock+TSI so we can configure our own
+		ret = C.krun_disable_implicit_vsock(C.uint32_t(ctxID))
+		if ret < 0 {
+			return fmt.Errorf("krun_disable_implicit_vsock failed: %d", ret)
+		}
+
+		// 2. Add vsock WITHOUT TSI hijacking (tsi_features=0).
+		// We only need vsock for the harness control channel.
+		ret = C.krun_add_vsock(C.uint32_t(ctxID), 0)
+		if ret < 0 {
+			return fmt.Errorf("krun_add_vsock failed: %d", ret)
+		}
+
+		// 3. Map vsock port → unix socket for harness control channel.
+		// When harness does connect(AF_VSOCK, CID=2, port=N), it reaches
+		// this unix socket on the host.
+		cCtlSocket := C.CString(cfg.HostAddr) // HostAddr holds unix socket path in gvproxy mode
+		defer C.free(unsafe.Pointer(cCtlSocket))
+		ret = C.krun_add_vsock_port(C.uint32_t(ctxID), C.uint32_t(cfg.VsockPort), cCtlSocket)
+		if ret < 0 {
+			return fmt.Errorf("krun_add_vsock_port failed: %d", ret)
+		}
+
+		// 4. Add virtio-net device via gvproxy's unixgram socket.
+		// This gives the guest a real eth0 NIC. gvproxy handles
+		// NAT, DNS (at gateway 192.168.127.1), and port forwarding.
+		cGvproxySocket := C.CString(cfg.GvproxySocket)
+		defer C.free(unsafe.Pointer(cGvproxySocket))
+		mac := [6]C.uint8_t{0x5a, 0x94, 0xef, 0xe4, 0x0c, 0xee}
+		ret = C.krun_add_net_unixgram(
+			C.uint32_t(ctxID),
+			cGvproxySocket,
+			-1,        // fd unused when using path
+			&mac[0],
+			C.uint32_t(C.COMPAT_NET_FEATURES),
+			C.uint32_t(C.NET_FLAG_VFKIT),
+		)
+		if ret < 0 {
+			return fmt.Errorf("krun_add_net_unixgram failed: %d", ret)
+		}
+
+		// 5. Tell harness to use vsock + configure eth0
+		envVars = append(envVars,
+			fmt.Sprintf("AEGIS_VSOCK_PORT=%d", cfg.VsockPort),
+			"AEGIS_NET_IP=192.168.127.2/24",
+			"AEGIS_NET_GW=192.168.127.1",
+		)
+		// Don't set AEGIS_HOST_ADDR (not using TSI)
+		// Don't call krun_set_port_map (gvproxy handles port forwarding)
+	} else {
+		// --- TSI networking (legacy): TSI intercepts AF_INET in guest ---
+		// AEGIS_HOST_ADDR tells the harness where to connect back to the host.
+		// TSI intercepts AF_INET connections in the guest and routes them
+		// through vsock to the host, so 127.0.0.1:PORT from inside the VM
+		// reaches the host's actual localhost.
+		envVars = append(envVars, fmt.Sprintf("AEGIS_HOST_ADDR=%s", cfg.HostAddr))
+	}
+
 	// Signal to the harness whether a workspace volume was configured.
 	// If set, the harness must fail on mount error rather than silently skip.
 	if len(cfg.MappedVolumes) > 0 {
@@ -117,10 +178,11 @@ func run(cfg WorkerConfig) error {
 		return fmt.Errorf("krun_set_exec failed: %d", ret)
 	}
 
-	// Set port mapping if any ports are exposed.
+	// Set port mapping if any ports are exposed (TSI mode only).
 	// Each entry is "host_port:guest_port", e.g. "8080:80".
 	// This tells libkrun's TSI to expose guest listening ports on specific host ports.
-	if len(cfg.PortMap) > 0 {
+	// In gvproxy mode, port forwarding is handled by the gvproxy API instead.
+	if len(cfg.PortMap) > 0 && cfg.NetworkMode != "gvproxy" {
 		cPortPtrs := make([]*C.char, len(cfg.PortMap)+1)
 		for i, pm := range cfg.PortMap {
 			cPortPtrs[i] = C.CString(pm)

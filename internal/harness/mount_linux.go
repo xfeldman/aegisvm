@@ -1,9 +1,13 @@
 package harness
 
 import (
+	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"strings"
 	"syscall"
+	"time"
 )
 
 // mountWorkspace mounts the "workspace" virtiofs tag at /workspace.
@@ -54,8 +58,14 @@ func mountEssential() {
 		}
 	}
 
+	// Configure network if AEGIS_NET_IP is set (gvproxy mode).
+	// Must happen before /etc/resolv.conf setup since it may override DNS.
+	// Must happen before read-only remount since it writes to /etc.
+	setupNetwork()
+
 	// Ensure /etc/resolv.conf exists (OCI images often lack it).
-	// Must happen before read-only remount since /etc lives on the rootfs.
+	// In gvproxy mode, setupNetwork() already wrote it with the gateway DNS.
+	// In TSI mode, fall back to 8.8.8.8.
 	if _, err := os.Stat("/etc/resolv.conf"); os.IsNotExist(err) {
 		if err := os.WriteFile("/etc/resolv.conf", []byte("nameserver 8.8.8.8\n"), 0644); err != nil {
 			log.Printf("write /etc/resolv.conf: %v (non-fatal, DNS may not work)", err)
@@ -81,4 +91,67 @@ func mountEssential() {
 	} else {
 		log.Println("rootfs remounted read-only")
 	}
+}
+
+// setupNetwork configures eth0 when AEGIS_NET_IP is set (gvproxy mode).
+// In TSI mode (no AEGIS_NET_IP), this is a no-op.
+//
+// Uses `ip` commands from iproute2/busybox, available in all supported rootfs.
+func setupNetwork() {
+	ip := os.Getenv("AEGIS_NET_IP")
+	gw := os.Getenv("AEGIS_NET_GW")
+	if ip == "" {
+		return // TSI mode, no network setup needed
+	}
+
+	dns := os.Getenv("AEGIS_NET_DNS")
+	if dns == "" {
+		dns = gw // default: gateway runs DNS (gvproxy built-in)
+	}
+
+	// Wait for eth0 to appear (virtio-net device may take a moment)
+	if err := waitForInterface("eth0", 5*time.Second); err != nil {
+		log.Printf("setupNetwork: %v (network may not work)", err)
+		return
+	}
+
+	// Bring up the interface
+	cmds := []struct {
+		args []string
+		desc string
+	}{
+		{[]string{"ip", "link", "set", "eth0", "up"}, "link up"},
+		{[]string{"ip", "addr", "add", ip, "dev", "eth0"}, "add address"},
+		{[]string{"ip", "route", "add", "default", "via", gw}, "add default route"},
+	}
+
+	for _, c := range cmds {
+		out, err := exec.Command(c.args[0], c.args[1:]...).CombinedOutput()
+		if err != nil {
+			log.Printf("setupNetwork %s: %v: %s", c.desc, err, strings.TrimSpace(string(out)))
+			return
+		}
+	}
+
+	// Write resolv.conf with gvproxy's DNS server (overwrites any existing one).
+	// Remove existing first to handle both regular file and symlink cases.
+	os.Remove("/etc/resolv.conf")
+	if err := os.WriteFile("/etc/resolv.conf", []byte(fmt.Sprintf("nameserver %s\n", dns)), 0644); err != nil {
+		log.Printf("setupNetwork write resolv.conf: %v", err)
+	}
+
+	log.Printf("network configured: %s via %s (dns %s)", ip, gw, dns)
+}
+
+// waitForInterface polls /sys/class/net/{name} until the interface appears.
+func waitForInterface(name string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	path := fmt.Sprintf("/sys/class/net/%s", name)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("interface %s did not appear within %v", name, timeout)
 }
