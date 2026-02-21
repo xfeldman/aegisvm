@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 )
 
@@ -54,14 +55,10 @@ type Config struct {
 	StopAfterIdle time.Duration
 
 	// NetworkBackend selects the data-plane networking mode for libkrun VMs.
-	// "auto" (default): use gvproxy if binary found, else fall back to TSI.
-	// "gvproxy": require gvproxy (fail if not found).
-	// "tsi": use TSI unconditionally (known ~32KB outbound body limit).
+	// "auto" (default): gvproxy on darwin, tsi elsewhere.
+	// "gvproxy": in-process gvisor-tap-vsock (compiled into vmm-worker).
+	// "tsi": TSI unconditionally (known ~32KB outbound body limit).
 	NetworkBackend string
-
-	// GvproxyBin is the path to the gvproxy binary.
-	// Empty means not found / not available.
-	GvproxyBin string
 }
 
 // DefaultConfig returns the default configuration.
@@ -109,47 +106,21 @@ func (c *Config) EnsureDirs() error {
 	return nil
 }
 
-// ResolveNetworkBackend resolves "auto" to a concrete backend ("gvproxy" or "tsi")
-// and locates the gvproxy binary. Call this once at daemon startup.
+// ResolveNetworkBackend resolves "auto" to a concrete backend.
+// On darwin (macOS), gvproxy is always available (compiled into vmm-worker).
+// No external binary needed.
 func (c *Config) ResolveNetworkBackend() {
-	if c.GvproxyBin == "" {
-		c.GvproxyBin = findGvproxy()
-	}
-
 	switch c.NetworkBackend {
-	case "gvproxy":
-		// Explicit gvproxy — caller must handle missing binary as fatal
-	case "tsi":
-		// Explicit TSI — nothing to resolve
+	case "gvproxy", "tsi":
+		// Explicit choice — keep as-is
 	default:
-		// "auto" or unset: gvproxy if found, else TSI
-		if c.GvproxyBin != "" {
+		// "auto" or unset
+		if runtime.GOOS == "darwin" {
 			c.NetworkBackend = "gvproxy"
 		} else {
 			c.NetworkBackend = "tsi"
 		}
 	}
-}
-
-// findGvproxy searches for the gvproxy binary in common locations.
-func findGvproxy() string {
-	candidates := []string{
-		// Homebrew / system paths
-		"/opt/homebrew/bin/gvproxy",
-		"/usr/local/bin/gvproxy",
-		"/usr/bin/gvproxy",
-	}
-	// Also check alongside our own binaries
-	exe, err := os.Executable()
-	if err == nil {
-		candidates = append([]string{filepath.Join(filepath.Dir(exe), "gvproxy")}, candidates...)
-	}
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	return ""
 }
 
 // executableDir returns the directory containing the current executable.

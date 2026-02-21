@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // portProxy forwards TCP connections from guestIP:port to localhost:port.
@@ -27,9 +28,14 @@ type portProxy struct {
 	listeners []net.Listener
 }
 
-// startPortProxies starts a TCP proxy for each exposed guest port.
+// startPortProxies starts a TCP proxy for each exposed guest port after a delay.
 // Each proxy listens on guestIP:port and forwards to 127.0.0.1:port.
 // The guest IP is read from AEGIS_NET_IP (e.g. "192.168.127.2/24").
+//
+// The delay allows the app to bind first. If the app binds to 0.0.0.0:port,
+// the proxy's bind to guestIP:port will fail (EADDRINUSE) — which is correct,
+// the app handles traffic directly. If the app binds to 127.0.0.1:port, the
+// proxy succeeds and bridges the gap.
 //
 // Returns nil if not in gvproxy mode (no AEGIS_NET_IP set).
 func startPortProxies(ports []int) *portProxy {
@@ -40,22 +46,26 @@ func startPortProxies(ports []int) *portProxy {
 
 	pp := &portProxy{}
 
-	for _, port := range ports {
-		listenAddr := net.JoinHostPort(guestIP, strconv.Itoa(port))
-		ln, err := net.Listen("tcp", listenAddr)
-		if err != nil {
-			// App may already be listening on 0.0.0.0:port — that's fine
-			log.Printf("portproxy: skip %d (%v)", port, err)
-			continue
+	// Start proxies in a goroutine with a delay to let the app bind first.
+	go func() {
+		time.Sleep(2 * time.Second)
+		for _, port := range ports {
+			listenAddr := net.JoinHostPort(guestIP, strconv.Itoa(port))
+			ln, err := net.Listen("tcp", listenAddr)
+			if err != nil {
+				// App is listening on 0.0.0.0:port — no proxy needed
+				log.Printf("portproxy: skip %d (app bound to wildcard)", port)
+				continue
+			}
+
+			pp.mu.Lock()
+			pp.listeners = append(pp.listeners, ln)
+			pp.mu.Unlock()
+
+			log.Printf("portproxy: %s → 127.0.0.1:%d", listenAddr, port)
+			go pp.accept(ln, port)
 		}
-
-		pp.mu.Lock()
-		pp.listeners = append(pp.listeners, ln)
-		pp.mu.Unlock()
-
-		log.Printf("portproxy: %s → 127.0.0.1:%d", listenAddr, port)
-		go pp.accept(ln, port)
-	}
+	}()
 
 	return pp
 }
