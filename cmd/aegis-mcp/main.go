@@ -172,7 +172,9 @@ var tools = []mcpTool{
 				"workspace": {"type": "string", "description": "Absolute host directory path to mount inside the VM at /workspace/. Example: '/home/user/project' becomes /workspace/ in the VM."},
 				"image":     {"type": "string", "description": "OCI image reference for the VM root filesystem (e.g. 'python:3.12', 'node:20'). Default is a minimal Alpine Linux."},
 				"env":       {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment variables to set inside the VM."},
-				"secrets":   {"type": "array", "items": {"type": "string"}, "description": "Secret keys to inject as environment variables (must be set via secret_set first)."}
+				"secrets":   {"type": "array", "items": {"type": "string"}, "description": "Secret keys to inject as environment variables (must be set via secret_set first)."},
+				"memory_mb": {"type": "integer", "description": "VM memory in megabytes. Default: 512."},
+				"vcpus":     {"type": "integer", "description": "Number of virtual CPUs. Default: 1."}
 			},
 			"required": ["command"]
 		}`),
@@ -292,6 +294,8 @@ func handleInstanceStart(args json.RawMessage) *mcpToolResult {
 		Image     string            `json:"image"`
 		Env       map[string]string `json:"env"`
 		Secrets   []string          `json:"secrets"`
+		MemoryMB  int               `json:"memory_mb"`
+		VCPUs     int               `json:"vcpus"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return errorResult("invalid arguments: " + err.Error())
@@ -351,6 +355,12 @@ func handleInstanceStart(args json.RawMessage) *mcpToolResult {
 	}
 	if len(params.Secrets) > 0 {
 		body["secrets"] = params.Secrets
+	}
+	if params.MemoryMB > 0 {
+		body["memory_mb"] = params.MemoryMB
+	}
+	if params.VCPUs > 0 {
+		body["vcpus"] = params.VCPUs
 	}
 
 	status, data, err := doRequest("POST", "/v1/instances", body)

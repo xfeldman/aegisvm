@@ -54,6 +54,23 @@ func mountEssential() {
 		}
 	}
 
+	// Ensure /etc/resolv.conf exists (OCI images often lack it).
+	// Must happen before read-only remount since /etc lives on the rootfs.
+	if _, err := os.Stat("/etc/resolv.conf"); os.IsNotExist(err) {
+		if err := os.WriteFile("/etc/resolv.conf", []byte("nameserver 8.8.8.8\n"), 0644); err != nil {
+			log.Printf("write /etc/resolv.conf: %v (non-fatal, DNS may not work)", err)
+		}
+	}
+
+	// Ensure /etc/hosts exists (OCI images often lack it).
+	// Many apps and runtimes expect localhost to resolve via /etc/hosts.
+	if _, err := os.Stat("/etc/hosts"); os.IsNotExist(err) {
+		hosts := "127.0.0.1\tlocalhost\n::1\tlocalhost\n"
+		if err := os.WriteFile("/etc/hosts", []byte(hosts), 0644); err != nil {
+			log.Printf("write /etc/hosts: %v (non-fatal)", err)
+		}
+	}
+
 	// Phase 2: Remount / read-only to protect the release rootfs.
 	// MS_REMOUNT | MS_RDONLY changes an existing mount to read-only.
 	// This only affects the root virtiofs — /tmp, /run, /var, /workspace

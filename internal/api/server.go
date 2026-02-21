@@ -142,6 +142,8 @@ type createInstanceRequest struct {
 	Secrets   []string          `json:"secrets,omitempty"` // [] = none, ["*"] = all, ["KEY1","KEY2"] = allowlist
 	Handle    string            `json:"handle,omitempty"`
 	Workspace string            `json:"workspace,omitempty"`
+	MemoryMB  int               `json:"memory_mb,omitempty"`
+	VCPUs     int               `json:"vcpus,omitempty"`
 }
 
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
@@ -197,6 +199,12 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		req.Workspace = resolved
 		opts = append(opts, lifecycle.WithWorkspace(resolved))
 	}
+	if req.MemoryMB > 0 {
+		opts = append(opts, lifecycle.WithMemory(req.MemoryMB))
+	}
+	if req.VCPUs > 0 {
+		opts = append(opts, lifecycle.WithVCPUs(req.VCPUs))
+	}
 
 	// Create in lifecycle manager
 	s.lifecycle.CreateInstance(id, req.Command, exposePorts, opts...)
@@ -244,6 +252,8 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 			SecretKeys:  req.Secrets,
 			PublicPorts: publicPorts,
 			Enabled:     true,
+			MemoryMB:    req.MemoryMB,
+			VCPUs:       req.VCPUs,
 			CreatedAt:   time.Now(),
 			UpdatedAt:   time.Now(),
 		}

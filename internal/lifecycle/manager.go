@@ -68,6 +68,10 @@ type Instance struct {
 	RootfsPath    string // if set, used instead of cfg.BaseRootfsPath
 	WorkspacePath string // if set, passed to VMConfig.WorkspacePath
 
+	// Resource overrides (0 = use global default)
+	MemoryMB int
+	VCPUs    int
+
 	// Env holds environment variables to inject (including decrypted secrets).
 	Env map[string]string
 
@@ -169,6 +173,20 @@ func WithWorkspace(path string) InstanceOption {
 func WithEnv(env map[string]string) InstanceOption {
 	return func(inst *Instance) {
 		inst.Env = env
+	}
+}
+
+// WithMemory sets the VM memory in megabytes (0 = use global default).
+func WithMemory(mb int) InstanceOption {
+	return func(inst *Instance) {
+		inst.MemoryMB = mb
+	}
+}
+
+// WithVCPUs sets the number of virtual CPUs (0 = use global default).
+func WithVCPUs(n int) InstanceOption {
+	return func(inst *Instance) {
+		inst.VCPUs = n
 	}
 }
 
@@ -276,13 +294,22 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		rootfsPath = inst.RootfsPath
 	}
 
+	memoryMB := m.cfg.DefaultMemoryMB
+	if inst.MemoryMB > 0 {
+		memoryMB = inst.MemoryMB
+	}
+	vcpus := m.cfg.DefaultVCPUs
+	if inst.VCPUs > 0 {
+		vcpus = inst.VCPUs
+	}
+
 	vmCfg := vmm.VMConfig{
 		Rootfs: vmm.RootFS{
 			Type: m.vmm.Capabilities().RootFSType,
 			Path: rootfsPath,
 		},
-		MemoryMB:      m.cfg.DefaultMemoryMB,
-		VCPUs:         m.cfg.DefaultVCPUs,
+		MemoryMB:      memoryMB,
+		VCPUs:         vcpus,
 		ExposePorts:   inst.ExposePorts,
 		WorkspacePath: inst.WorkspacePath,
 	}

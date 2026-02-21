@@ -82,6 +82,8 @@ func (d *DB) migrate() error {
 		`ALTER TABLE instances ADD COLUMN secret_keys TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE instances ADD COLUMN public_ports TEXT NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE instances ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE instances ADD COLUMN memory_mb INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE instances ADD COLUMN vcpus INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE instances ADD COLUMN stopped_at TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, stmt := range migrations {

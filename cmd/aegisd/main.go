@@ -126,6 +126,12 @@ func main() {
 				opts = append(opts, lifecycle.WithEnv(ri.Env))
 			}
 			opts = append(opts, lifecycle.WithEnabled(ri.Enabled))
+			if ri.MemoryMB > 0 {
+				opts = append(opts, lifecycle.WithMemory(ri.MemoryMB))
+			}
+			if ri.VCPUs > 0 {
+				opts = append(opts, lifecycle.WithVCPUs(ri.VCPUs))
+			}
 
 			// Re-create in lifecycle manager (state = stopped)
 			inst := lm.CreateInstance(ri.ID, ri.Command, exposePorts, opts...)
