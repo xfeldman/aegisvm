@@ -11,7 +11,8 @@ Run OpenClaw (gateway + embedded agent) inside an Aegis VM with Telegram integra
 - npm install persisted to /workspace/.npm-global (survives restarts)
 - Secrets: ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, OPENAI_API_KEY via Aegis secrets
 - Exposed: port 18789 (gateway control UI/WebSocket)
-- Outbound: LLM APIs + Telegram API via TSI
+- Outbound: LLM APIs + Telegram API via gvproxy (virtio-net)
+- Gateway must use `--bind lan` (gvproxy forwards to guest IP, not localhost)
 
 ## Friction Points — Aegis Issues
 
@@ -79,7 +80,7 @@ Run OpenClaw (gateway + embedded agent) inside an Aegis VM with Telegram integra
 - `openclaw setup --non-interactive --accept-risk` works but has other requirements
 - **Workaround:** manually write config + auth files
 
-### #14 — "Connection error." on all LLM API calls [BLOCKING — ROOT CAUSE FOUND]
+### #14 — "Connection error." on all LLM API calls [FIXED — gvproxy]
 - **Symptom:** every agent run fails with `stopReason: "error"`, `errorMessage: "Connection error."`, `totalTokens: 0`
 - **Affects:** both Anthropic and OpenAI providers
 - **Root cause: libkrun TSI has a ~32KB limit on outbound HTTP request bodies.**
@@ -87,13 +88,26 @@ Run OpenClaw (gateway + embedded agent) inside an Aegis VM with Telegram integra
   - When request body exceeds ~32KB, the TSI vsock transport closes the socket
   - undici reports: `UND_ERR_SOCKET`, `cause: "other side closed"`
   - OpenAI SDK wraps this as `APIConnectionError("Connection error.")`
-- **Evidence:**
-  - Request bodies <30KB work (get valid API responses or 400 errors)
-  - Request bodies >35KB fail with socket close
-  - curl and small SDK calls work because their payloads are under the limit
-  - OpenClaw's 46KB payload consistently fails
-- **Fix needed:** libkrun TSI vsock transport needs to handle large outbound payloads
-- **Workaround:** none within Aegis — would need to either fix libkrun or use a proxy on the host side
+- **Fix:** gvproxy networking backend (virtio-net) — replaces TSI with a real NIC. No payload size limit.
+  - See `specs/GVPROXY_NETWORKING.md` for full design
+  - `brew install slp/krun/gvproxy`, restart aegisd
+  - Tested: 50KB and 100KB POST bodies work, Telegram bot + agent conversations work end-to-end
+
+### #15 — Apps binding to localhost unreachable via gvproxy [FIXED — --bind lan]
+- **Problem:** gvproxy forwards traffic to guest's eth0 IP (192.168.127.2), not localhost. Apps binding to 127.0.0.1 are unreachable from the host.
+- **Root cause:** TSI intercepted AF_INET at the kernel level, making all traffic appear local. gvproxy uses a real NIC, so traffic arrives at the guest's IP.
+- **Fix:** OpenClaw's `--bind lan` flag makes it listen on 0.0.0.0 instead of 127.0.0.1.
+- **Lesson:** Any app with exposed ports must bind to 0.0.0.0 (or the guest IP) in gvproxy mode. This is a common gotcha — consider documenting it or adding a socat forwarding layer in the harness.
+
+### #16 — Kernel OOM killer with default 512MB RAM [FIXED — memory_mb via API]
+- **Problem:** OpenClaw (Node.js) needs ~400MB heap + kernel overhead. Default 512MB VM RAM triggers kernel OOM killer silently.
+- **Symptom:** Process killed with no stdout/stderr output, only visible in `dmesg`.
+- **Fix:** `memory_mb: 2048` in API create request + `NODE_OPTIONS="--max-old-space-size=1536"` in command.
+- **Note:** CLI `--memory` flag doesn't exist yet — must use API directly.
+
+### #17 — `ip` command missing in Debian OCI images [FIXED — netlink syscalls]
+- **Problem:** Harness used `ip` commands to configure eth0 in gvproxy mode. Debian-slim (node:22) doesn't include iproute2.
+- **Fix:** Replaced `ip` commands with raw netlink syscalls in the harness. Zero dependency on rootfs tools for network setup.
 
 ## Current Status
 
@@ -102,22 +116,30 @@ Run OpenClaw (gateway + embedded agent) inside an Aegis VM with Telegram integra
 - OpenClaw installs and persists across restarts ✓
 - Gateway starts, serves control UI on port 18789 ✓
 - Telegram bot connects, receives messages, pairing works ✓
+- Agent conversations work end-to-end (46KB+ API payloads via gvproxy) ✓
 - OpenAI API reachable from VM (curl, Node.js fetch, SDK) ✓
-- DNS resolution works (harness fix) ✓
+- DNS resolution works (gvproxy built-in DNS at gateway) ✓
 - /etc/hosts works (harness fix) ✓
 - Wake-on-connect works for gateway port ✓
 - Auth profiles correctly configured ✓
+- Ingress via gvproxy port forwarding (with --bind lan) ✓
+- Network setup via netlink (works on any OCI image) ✓
 
-### Not Working
-- Agent fails on every LLM API call with "Connection error." (0 tokens)
-- Both Anthropic and OpenAI providers affected
-- Root cause unknown — SDK works directly but fails through OpenClaw's wrapper
+### Remaining Issues
+- #1 — Idle timer pauses VM during setup (keepalive workaround)
+- #7 — npm reinstalls on every restart (workspace workaround)
+- CLI `--memory` flag not implemented (must use API)
 
 ## Aegis Fixes Made During This Exercise
 
 1. **Harness: /etc/resolv.conf injection** — writes nameserver before read-only remount
 2. **Harness: /etc/hosts injection** — writes localhost entries before read-only remount
 3. **API: per-instance memory_mb and vcpus** — full stack (API, registry, MCP, daemon restore)
+4. **gvproxy networking backend** — virtio-net via gvproxy, eliminates TSI ~32KB outbound limit
+5. **Harness: vsock control channel** — AF_VSOCK replaces TCP/TSI for harness ↔ aegisd RPC
+6. **Harness: netlink network setup** — raw syscalls instead of `ip` commands (works on any OCI image)
+7. **gvproxy CLI flags fix** — corrected `--listen-vfkit unixgram://` (was `--listen vfkit:unixgram://`)
+8. **vsockConn wrapper** — Go's net.FileConn doesn't support AF_VSOCK, custom net.Conn wrapper
 
 ## Lessons for Kit System
 
@@ -129,21 +151,22 @@ Run OpenClaw (gateway + embedded agent) inside an Aegis VM with Telegram integra
 6. **Bundled apps are hard to debug** — patching node_modules doesn't work when the app bundles its deps
 7. **Per-instance env vars** would help for NODE_OPTIONS, debug flags etc. (Aegis already has this via --env)
 
-## Startup Command (working, minus the LLM issue)
+## Startup Command (working)
 
 ```sh
 export HOME=/workspace
 export OPENCLAW_HOME=/workspace/.openclaw
 export npm_config_prefix=/workspace/.npm-global
 export PATH=/workspace/.npm-global/bin:$PATH
+export NODE_OPTIONS="--max-old-space-size=1536"
 
 # First boot: install
 if [ ! -f /workspace/.npm-global/bin/openclaw ]; then
   npm install -g openclaw@latest
 fi
 
-# Run gateway
-exec openclaw gateway --allow-unconfigured
+# Run gateway (--bind lan required for gvproxy ingress)
+exec openclaw gateway --allow-unconfigured --bind lan
 ```
 
 ## Instance Creation (via API)
@@ -152,11 +175,17 @@ exec openclaw gateway --allow-unconfigured
 curl -s --unix-socket ~/.aegis/aegisd.sock -X POST http://aegis/v1/instances \
   -H 'Content-Type: application/json' -d '{
     "handle": "claw",
-    "command": ["sh", "-c", "...startup command..."],
+    "command": ["sh", "-c", "export HOME=/workspace && export OPENCLAW_HOME=/workspace/.openclaw && export npm_config_prefix=/workspace/.npm-global && export PATH=/workspace/.npm-global/bin:$PATH && export NODE_OPTIONS=\"--max-old-space-size=1536\" && if [ -f /workspace/.npm-global/bin/openclaw ]; then true; else npm install -g openclaw@latest; fi && exec openclaw gateway --allow-unconfigured --bind lan"],
     "image_ref": "node:22",
     "workspace": "/Users/user/openclaw-workspace",
-    "exposes": [{"port": 18789, "public_port": 18789}],
+    "exposes": [{"port": 18789}],
     "secrets": ["ANTHROPIC_API_KEY", "TELEGRAM_BOT_TOKEN", "OPENAI_API_KEY"],
     "memory_mb": 2048
   }'
+```
+
+## Prerequisites
+
+```bash
+brew install slp/krun/gvproxy   # required for large payload support
 ```

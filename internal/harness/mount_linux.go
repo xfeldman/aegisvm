@@ -3,9 +3,8 @@ package harness
 import (
 	"fmt"
 	"log"
+	"net"
 	"os"
-	"os/exec"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -96,7 +95,9 @@ func mountEssential() {
 // setupNetwork configures eth0 when AEGIS_NET_IP is set (gvproxy mode).
 // In TSI mode (no AEGIS_NET_IP), this is a no-op.
 //
-// Uses `ip` commands from iproute2/busybox, available in all supported rootfs.
+// Uses netlink syscalls directly — no dependency on iproute2 or busybox in the
+// guest rootfs. This ensures networking works with any OCI image (Debian-slim,
+// Alpine, distroless, etc.).
 func setupNetwork() {
 	ip := os.Getenv("AEGIS_NET_IP")
 	gw := os.Getenv("AEGIS_NET_GW")
@@ -115,22 +116,29 @@ func setupNetwork() {
 		return
 	}
 
-	// Bring up the interface
-	cmds := []struct {
-		args []string
-		desc string
-	}{
-		{[]string{"ip", "link", "set", "eth0", "up"}, "link up"},
-		{[]string{"ip", "addr", "add", ip, "dev", "eth0"}, "add address"},
-		{[]string{"ip", "route", "add", "default", "via", gw}, "add default route"},
+	// Get eth0 interface index
+	iface, err := net.InterfaceByName("eth0")
+	if err != nil {
+		log.Printf("setupNetwork: get eth0: %v (network may not work)", err)
+		return
 	}
 
-	for _, c := range cmds {
-		out, err := exec.Command(c.args[0], c.args[1:]...).CombinedOutput()
-		if err != nil {
-			log.Printf("setupNetwork %s: %v: %s", c.desc, err, strings.TrimSpace(string(out)))
-			return
-		}
+	// 1. Bring interface up
+	if err := netlinkSetLinkUp(iface.Index); err != nil {
+		log.Printf("setupNetwork link up: %v", err)
+		return
+	}
+
+	// 2. Add IP address
+	if err := netlinkAddAddr(iface.Index, ip); err != nil {
+		log.Printf("setupNetwork add addr: %v", err)
+		return
+	}
+
+	// 3. Add default route
+	if err := netlinkAddDefaultRoute(gw); err != nil {
+		log.Printf("setupNetwork add route: %v", err)
+		return
 	}
 
 	// Write resolv.conf with gvproxy's DNS server (overwrites any existing one).

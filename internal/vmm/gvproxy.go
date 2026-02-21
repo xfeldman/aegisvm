@@ -39,7 +39,7 @@ func startGvproxy(gvproxyBin, vmID, sockDir string) (*gvproxyInstance, error) {
 	os.Remove(apiSock)
 
 	cmd := exec.Command(gvproxyBin,
-		"--listen", "vfkit:unixgram://"+netSock,
+		"--listen-vfkit", "unixgram://"+netSock,
 		"--listen", "unix://"+apiSock,
 	)
 	cmd.Stdout = os.Stdout

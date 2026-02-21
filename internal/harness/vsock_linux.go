@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -63,12 +64,42 @@ func dialVsock(portStr, cidStr string) (net.Conn, error) {
 		return nil, fmt.Errorf("connect(AF_VSOCK, cid=%d, port=%d): %w", cid, port, errno)
 	}
 
+	// net.FileConn doesn't understand AF_VSOCK (getsockname fails).
+	// Wrap the fd in os.File which provides Read/Write/Close, then
+	// wrap that in vsockConn to satisfy net.Conn.
 	f := os.NewFile(uintptr(fd), fmt.Sprintf("vsock:%d:%d", cid, port))
-	conn, err := net.FileConn(f)
-	f.Close() // FileConn dups the fd
-	if err != nil {
-		return nil, fmt.Errorf("FileConn from vsock fd: %w", err)
-	}
-
-	return conn, nil
+	return &vsockConn{file: f, cid: cid, port: uint32(port)}, nil
 }
+
+// vsockConn wraps an os.File over a vsock fd to implement net.Conn.
+// Go's net.FileConn doesn't support AF_VSOCK, so we provide a minimal wrapper.
+type vsockConn struct {
+	file *os.File
+	cid  uint32
+	port uint32
+}
+
+func (c *vsockConn) Read(b []byte) (int, error)  { return c.file.Read(b) }
+func (c *vsockConn) Write(b []byte) (int, error) { return c.file.Write(b) }
+func (c *vsockConn) Close() error                { return c.file.Close() }
+
+func (c *vsockConn) LocalAddr() net.Addr {
+	return &vsockAddr{cid: 3, port: 0} // CID 3 = guest
+}
+
+func (c *vsockConn) RemoteAddr() net.Addr {
+	return &vsockAddr{cid: c.cid, port: c.port}
+}
+
+func (c *vsockConn) SetDeadline(t time.Time) error      { return c.file.SetDeadline(t) }
+func (c *vsockConn) SetReadDeadline(t time.Time) error   { return c.file.SetReadDeadline(t) }
+func (c *vsockConn) SetWriteDeadline(t time.Time) error  { return c.file.SetWriteDeadline(t) }
+
+// vsockAddr implements net.Addr for AF_VSOCK.
+type vsockAddr struct {
+	cid  uint32
+	port uint32
+}
+
+func (a *vsockAddr) Network() string { return "vsock" }
+func (a *vsockAddr) String() string  { return fmt.Sprintf("vsock:%d:%d", a.cid, a.port) }
