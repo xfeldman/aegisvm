@@ -174,7 +174,8 @@ var tools = []mcpTool{
 				"env":       {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment variables to set inside the VM."},
 				"secrets":   {"type": "array", "items": {"type": "string"}, "description": "Secret keys to inject as environment variables (must be set via secret_set first)."},
 				"memory_mb": {"type": "integer", "description": "VM memory in megabytes. Default: 512."},
-				"vcpus":     {"type": "integer", "description": "Number of virtual CPUs. Default: 1."}
+				"vcpus":     {"type": "integer", "description": "Number of virtual CPUs. Default: 1."},
+				"capabilities": {"type": "object", "description": "Guest orchestration capabilities. When set, the VM gets a Guest API on http://127.0.0.1:7777 that allows it to spawn and manage child instances. This is how bot/orchestrator instances create work instances on demand. The capabilities define what the VM is allowed to do — resource ceilings, allowed images, max children. Child instances inherit the same or stricter capabilities (no escalation possible). Without capabilities, the Guest API is read-only (self-info only, no spawning).", "properties": {"spawn": {"type": "boolean", "description": "Allow this instance to spawn child instances via the Guest API."}, "spawn_depth": {"type": "integer", "description": "Maximum nesting depth. 1 = can spawn children, but children cannot spawn grandchildren. 2 = children can also spawn."}, "max_children": {"type": "integer", "description": "Maximum number of concurrent child instances."}, "allowed_images": {"type": "array", "items": {"type": "string"}, "description": "OCI image refs children can use. Use [\"*\"] for any image."}, "max_memory_mb": {"type": "integer", "description": "Maximum memory per child instance in MB."}, "max_vcpus": {"type": "integer", "description": "Maximum vCPUs per child instance."}, "max_expose_ports": {"type": "integer", "description": "Maximum exposed ports per child instance."}}}
 			},
 			"required": ["command"]
 		}`),
@@ -287,15 +288,16 @@ func rawJSON(s string) json.RawMessage {
 
 func handleInstanceStart(args json.RawMessage) *mcpToolResult {
 	var params struct {
-		Command   []string          `json:"command"`
-		Name      string            `json:"name"`
-		Expose    []string          `json:"expose"`
-		Workspace string            `json:"workspace"`
-		Image     string            `json:"image"`
-		Env       map[string]string `json:"env"`
-		Secrets   []string          `json:"secrets"`
-		MemoryMB  int               `json:"memory_mb"`
-		VCPUs     int               `json:"vcpus"`
+		Command      []string               `json:"command"`
+		Name         string                 `json:"name"`
+		Expose       []string               `json:"expose"`
+		Workspace    string                 `json:"workspace"`
+		Image        string                 `json:"image"`
+		Env          map[string]string      `json:"env"`
+		Secrets      []string               `json:"secrets"`
+		MemoryMB     int                    `json:"memory_mb"`
+		VCPUs        int                    `json:"vcpus"`
+		Capabilities map[string]interface{} `json:"capabilities"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return errorResult("invalid arguments: " + err.Error())
@@ -361,6 +363,9 @@ func handleInstanceStart(args json.RawMessage) *mcpToolResult {
 	}
 	if params.VCPUs > 0 {
 		body["vcpus"] = params.VCPUs
+	}
+	if len(params.Capabilities) > 0 {
+		body["capabilities"] = params.Capabilities
 	}
 
 	status, data, err := doRequest("POST", "/v1/instances", body)
@@ -694,6 +699,7 @@ Key concepts:
 - The base VM has basic tools (sh, ls, cat, etc). For Python, Node, or other runtimes, use the "image" parameter with an OCI image ref (e.g. "python:3.12", "node:20").
 - Use "exec" to run commands inside a running instance. Use "logs" to see instance output.
 - Use "name" to give instances human-friendly handles for easy reference.
+- Capabilities: pass "capabilities" to allow an instance to spawn child instances from inside the VM via a Guest API (http://127.0.0.1:7777). This enables orchestrator patterns where a bot or controller spawns work instances on demand. Children inherit the parent's capability limits — no escalation possible.
 
 Example — run a Python script from the host:
   1. instance_start with workspace="/path/to/project", command=["python3", "/workspace/script.py"], expose=[8080], name="myapp"
