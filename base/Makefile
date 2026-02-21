@@ -39,6 +39,13 @@ rootfs: $(HARNESS_BIN)
 	cp $(HARNESS_BIN) $(ROOTFS_DIR)/usr/bin/aegis-harness
 	chmod 755 $(ROOTFS_DIR)/usr/bin/aegis-harness
 
+	# Add aegis-mcp-guest binary (MCP server for agents inside VMs)
+	@if [ -f ../bin/aegis-mcp-guest ]; then \
+		echo "==> Installing aegis-mcp-guest..."; \
+		cp ../bin/aegis-mcp-guest $(ROOTFS_DIR)/usr/bin/aegis-mcp-guest; \
+		chmod 755 $(ROOTFS_DIR)/usr/bin/aegis-mcp-guest; \
+	fi
+
 	# Create required directories
 	@mkdir -p $(ROOTFS_DIR)/workspace
 	@mkdir -p $(ROOTFS_DIR)/run/secrets

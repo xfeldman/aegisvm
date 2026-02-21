@@ -30,9 +30,9 @@ ifeq ($(HOST_OS),darwin)
 	CGO_LDFLAGS := -L/opt/homebrew/lib
 endif
 
-.PHONY: all aegisd aegis harness vmm-worker mcp base-rootfs clean test test-unit test-m2 test-m3 test-network integration
+.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest base-rootfs clean test test-unit test-m2 test-m3 test-network integration
 
-all: aegisd aegis harness vmm-worker mcp
+all: aegisd aegis harness vmm-worker mcp mcp-guest
 
 # aegisd — the daemon (no cgo needed in M0, cgo is in vmm-worker)
 aegisd:
@@ -62,10 +62,16 @@ ifeq ($(HOST_OS),darwin)
 	codesign --sign - --entitlements entitlements.plist --force $(BIN_DIR)/aegis-vmm-worker
 endif
 
-# aegis-mcp — MCP server for LLM integration
+# aegis-mcp — MCP server for LLM integration (host-side)
 mcp:
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BIN_DIR)/aegis-mcp ./cmd/aegis-mcp
+
+# aegis-mcp-guest — MCP server for agents inside VMs (guest-side, Linux ARM64)
+mcp-guest:
+	@mkdir -p $(BIN_DIR)
+	GOOS=$(HARNESS_OS) GOARCH=$(HARNESS_ARCH) CGO_ENABLED=0 \
+		$(GO) build $(GOFLAGS) -o $(BIN_DIR)/aegis-mcp-guest ./cmd/aegis-mcp-guest
 
 # Base rootfs — Alpine ARM64 with harness baked in
 # Requires: brew install e2fsprogs (for mkfs.ext4)

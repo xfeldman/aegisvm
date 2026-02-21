@@ -207,3 +207,69 @@ async function handleBuildRequest(chatId, repoUrl) {
   }
 }
 ```
+
+## MCP Server for LLM Agents
+
+For LLM agents (Claude, OpenClaw, etc.) running inside a VM, the Guest API is also available as an MCP server: `aegis-mcp-guest`.
+
+This binary is pre-installed at `/usr/bin/aegis-mcp-guest` in every Aegis VM. It communicates over stdio (JSON-RPC 2.0) and calls the Guest API on localhost:7777.
+
+### Available MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `instance_spawn` | Spawn a child VM with command, image, workspace, exposed ports |
+| `instance_list` | List children of this instance (only your children, not all instances) |
+| `instance_stop` | Stop a child instance |
+| `self_info` | Get this instance's ID, handle, state, endpoints |
+| `keepalive_acquire` | Prevent idle pause during long work (with TTL) |
+| `keepalive_release` | Release keepalive, allow idle pause |
+
+### Registering with Claude Code
+
+To use the Guest API from Claude Code running inside an Aegis VM, add the MCP server to your project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "aegis": {
+      "command": "/usr/bin/aegis-mcp-guest",
+      "args": []
+    }
+  }
+}
+```
+
+Or register it via the CLI:
+
+```bash
+claude mcp add aegis /usr/bin/aegis-mcp-guest
+```
+
+Claude will then have access to all 6 tools and can spawn child instances, monitor their state, and manage their lifecycle.
+
+### Registering with OpenClaw
+
+For OpenClaw agents, add the MCP server as a tool provider in the agent config. The exact configuration depends on OpenClaw's MCP tool integration — consult OpenClaw's documentation for registering external MCP servers.
+
+### Example: Claude Spawning a Build Instance
+
+When Claude Code runs inside an Aegis VM with spawn capabilities, it can use the MCP tools directly:
+
+```
+User: Build and serve my React app at /workspace/my-app
+
+Claude: I'll spawn a dedicated build instance with Node.js.
+
+[Calls instance_spawn with command=["sh", "-c", "cd /workspace/my-app && npm install && npm run build && npx serve -s build -l 3000"], image_ref="node:22", workspace="/Users/me/my-app", exposes=[3000], handle="react-build"]
+
+The build instance is starting. Let me check its status.
+
+[Calls instance_list]
+
+It's running. The app will be available at the public port shown in the response once the build completes.
+```
+
+### Security Note
+
+`instance_list` only returns instances spawned by the calling VM — it does NOT show all Aegis instances. Each VM can only see and manage its own children. This prevents information leakage between unrelated instances.

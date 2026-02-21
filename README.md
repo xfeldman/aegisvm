@@ -178,7 +178,9 @@ Common flags: `--name`, `--expose [PUBLIC:]GUEST[/proto]`, `--env K=V`, `--secre
 
 **aegis** — CLI. Talks to aegisd over the unix socket.
 
-**aegis-mcp** — MCP server. Exposes aegisd as tools for LLMs over stdio JSON-RPC.
+**aegis-mcp** — MCP server (host-side). Exposes aegisd as tools for LLMs over stdio JSON-RPC.
+
+**aegis-mcp-guest** — MCP server (guest-side). Runs inside VMs, lets agents spawn and manage child instances via the Guest API.
 
 ## What AegisVM is not
 
@@ -212,6 +214,7 @@ make integration SHORT=1  # skip pause/resume test
 
 - [Quickstart](docs/QUICKSTART.md) — zero to running agent in 5 minutes
 - [CLI Reference](docs/CLI.md) — complete command reference
+- [Guest Orchestration API](docs/GUEST_API.md) — spawn and manage instances from inside a VM (HTTP + MCP)
 - [Agent Conventions](docs/AGENT_CONVENTIONS.md) — guest environment contract
 - [Router](docs/ROUTER.md) — always-proxy ingress, wake-on-connect, idle behavior
 - [Workspaces](docs/WORKSPACES.md) — persistent volumes, lifecycle
@@ -221,8 +224,12 @@ make integration SHORT=1  # skip pause/resume test
 ## Specs
 
 - [v3 Platform Spec](specs/AEGIS_v3_PLATFORM_SPEC.md) — current spec (instance-centric, post-pivot)
+- [Guest Orchestration API](specs/GUEST_ORCHESTRATION_API.md) — capability tokens, parent-child model, security
+- [Idle & Power States](specs/IDLE_POWER_STATES.md) — activity detection, keepalive leases, idle policy
+- [gvproxy Networking](specs/GVPROXY_NETWORKING.md) — in-process virtio-net, vsock control channel
+- [Kit Boundary](specs/KIT_BOUNDARY_SPEC.md) — what's core vs what's a kit
+- [OpenClaw Kit](specs/OPENCLAW_KIT_SPEC.md) — Telegram bot + work instances design
 - [Architectural Pivot](specs/aegis_architectural_pivot_spec.md) — pivot from app-centric to instance-centric
-- [Platform Spec (pre-pivot)](specs/AEGIS_PLATFORM_SPEC.md) — original architecture
 
 ## License
 
