@@ -271,6 +271,10 @@ func handleRun(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *pro
 		}
 	}
 
+	// Start activity monitor — sends periodic heartbeats to aegisd when the
+	// guest has outbound connections, CPU usage, or network traffic.
+	go monitorActivity(ctx, cmd.Process.Pid, conn)
+
 	return &rpcResponse{
 		JSONRPC: "2.0",
 		Result: runResult{
@@ -278,6 +282,54 @@ func handleRun(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *pro
 			StartedAt: time.Now().Format(time.RFC3339),
 		},
 		ID: req.ID,
+	}
+}
+
+// monitorActivity periodically checks guest activity and sends "activity"
+// notifications to aegisd. Only sends when activity is detected — silence
+// means idle, which lets the idle timer run naturally.
+func monitorActivity(ctx context.Context, pid int, conn net.Conn) {
+	// Baseline samples for deltas
+	prevCPU := processUsedCPUTicks(pid)
+	prevTx, prevRx := ethByteCounters()
+
+	for {
+		// 5s ± 500ms jitter to avoid synchronizing multiple VMs
+		jitter := time.Duration(time.Now().UnixNano()%1000-500) * time.Millisecond
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5*time.Second + jitter):
+		}
+
+		// Sample current values
+		curCPU := processUsedCPUTicks(pid)
+		curTx, curRx := ethByteCounters()
+		tcp := countEstablishedTCP()
+
+		// Compute deltas
+		cpuDelta := curCPU - prevCPU
+		netDelta := (curTx - prevTx) + (curRx - prevRx)
+		prevCPU = curCPU
+		prevTx = curTx
+		prevRx = curRx
+
+		// Convert CPU ticks to approximate milliseconds (assuming 100 HZ = 10ms/tick)
+		cpuMs := cpuDelta * 10
+
+		// Only send if meaningful activity detected.
+		// net_bytes threshold filters out background ARP/keepalive noise (~70 bytes/5s).
+		const netBytesThreshold = 512
+		if tcp > 0 || cpuMs > 0 || netDelta > netBytesThreshold {
+			err := sendNotification(conn, "activity", map[string]interface{}{
+				"tcp":       tcp,
+				"cpu_ms":    cpuMs,
+				"net_bytes": netDelta,
+			})
+			if err != nil {
+				return // connection dead
+			}
+		}
 	}
 }
 

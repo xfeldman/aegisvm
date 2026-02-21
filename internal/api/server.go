@@ -143,8 +143,9 @@ type createInstanceRequest struct {
 	Secrets   []string          `json:"secrets,omitempty"` // [] = none, ["*"] = all, ["KEY1","KEY2"] = allowlist
 	Handle    string            `json:"handle,omitempty"`
 	Workspace string            `json:"workspace,omitempty"`
-	MemoryMB  int               `json:"memory_mb,omitempty"`
-	VCPUs     int               `json:"vcpus,omitempty"`
+	MemoryMB   int               `json:"memory_mb,omitempty"`
+	VCPUs      int               `json:"vcpus,omitempty"`
+	IdlePolicy string            `json:"idle_policy,omitempty"` // "default" or "leases_only"
 }
 
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
@@ -205,6 +206,9 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.VCPUs > 0 {
 		opts = append(opts, lifecycle.WithVCPUs(req.VCPUs))
+	}
+	if req.IdlePolicy != "" {
+		opts = append(opts, lifecycle.WithIdlePolicy(req.IdlePolicy))
 	}
 
 	// Create in lifecycle manager
@@ -372,6 +376,15 @@ func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	if !inst.StoppedAt.IsZero() {
 		resp["stopped_at"] = inst.StoppedAt.Format(time.RFC3339)
+	}
+
+	if inst.IdlePolicy != "" {
+		resp["idle_policy"] = inst.IdlePolicy
+	}
+	if held, reason, expiresAt := s.lifecycle.LeaseInfo(inst.ID); held {
+		resp["lease_held"] = true
+		resp["lease_reason"] = reason
+		resp["lease_expires_at"] = expiresAt.Format(time.RFC3339)
 	}
 
 	if len(inst.ExposePorts) > 0 {

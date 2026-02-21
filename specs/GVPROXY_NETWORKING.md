@@ -336,5 +336,5 @@ See `test/integration/network_test.go` for automated verification.
 - **Remove TSI fallback** once gvproxy is proven stable across all workloads
 - **Make vsock the only control channel** (drop TCP/TSI legacy path in harness)
 - **Per-VM unique MAC addresses** if multi-VM networking is added
-- **Activity-based idle detection** — track network activity (not just inbound connections) to avoid pausing active workloads
-- **Wake on outbound data** — detect packets queued for a paused guest and resume the VM
+- **Activity-based idle detection** — implemented: harness sends periodic heartbeats with TCP connection count, CPU delta, and eth0 byte counters. aegisd resets idle timer on activity.
+- **Keepalive leases** — implemented: kit/app can acquire a lease via JSON-RPC to prevent pause for a TTL duration. Per-instance `idle_policy` controls whether heartbeats are authoritative.

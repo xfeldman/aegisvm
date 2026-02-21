@@ -84,6 +84,15 @@ type Instance struct {
 
 	lastActivity time.Time
 
+	// Idle policy: "default" (heartbeat + lease + inbound), "leases_only" (lease + inbound only)
+	IdlePolicy string
+
+	// Keepalive lease — prevents pause while held, auto-expires after TTL
+	leaseHeld   bool
+	leaseExpiry time.Time
+	leaseReason string
+	leaseTimer  *time.Timer
+
 	// Demuxer for persistent channel Recv loop (nil when stopped)
 	demuxer    *channelDemuxer
 	logCapture bool // guard against double-attach
@@ -187,6 +196,18 @@ func WithMemory(mb int) InstanceOption {
 func WithVCPUs(n int) InstanceOption {
 	return func(inst *Instance) {
 		inst.VCPUs = n
+	}
+}
+
+// WithIdlePolicy sets the idle detection policy.
+// "default": heartbeat + lease + inbound connections prevent pause.
+// "leases_only": only leases and inbound connections prevent pause (heartbeat ignored).
+func WithIdlePolicy(policy string) InstanceOption {
+	return func(inst *Instance) {
+		if policy == "leases_only" {
+			inst.IdlePolicy = policy
+		}
+		// "default" or empty = default behavior
 	}
 }
 
@@ -378,6 +399,18 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 				}
 				inst.mu.Unlock()
 			}
+		case "activity":
+			m.bumpActivity(inst)
+		case "keepalive":
+			var kp struct {
+				TTLMs  int    `json:"ttl_ms"`
+				Reason string `json:"reason"`
+			}
+			if json.Unmarshal(params, &kp) == nil && kp.TTLMs > 0 {
+				m.acquireLease(inst, kp.TTLMs, kp.Reason)
+			}
+		case "keepalive.release":
+			m.releaseLease(inst)
 		}
 	})
 
@@ -471,6 +504,11 @@ func (m *Manager) handleProcessExited(inst *Instance, exitCode int) {
 		inst.stopTimer.Stop()
 		inst.stopTimer = nil
 	}
+	if inst.leaseTimer != nil {
+		inst.leaseTimer.Stop()
+		inst.leaseTimer = nil
+	}
+	inst.leaseHeld = false
 
 	// Close exec waiters so handlers unblock
 	for eid, ch := range inst.execWaiters {
@@ -609,9 +647,85 @@ func (m *Manager) startIdleTimer(inst *Instance) {
 	})
 }
 
+// bumpActivity resets the idle timer when the harness reports guest activity.
+// Called on "activity" notifications from the harness (outbound connections, CPU, network).
+// Only effective when idle_policy is "default" (not "leases_only").
+func (m *Manager) bumpActivity(inst *Instance) {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+
+	// leases_only policy ignores heartbeat activity
+	if inst.IdlePolicy == "leases_only" {
+		return
+	}
+
+	inst.lastActivity = time.Now()
+	if inst.State == StateRunning && inst.activeConns == 0 && !inst.leaseHeld {
+		if inst.idleTimer != nil {
+			inst.idleTimer.Stop()
+		}
+		inst.idleTimer = time.AfterFunc(m.cfg.PauseAfterIdle, func() {
+			m.pauseInstance(inst)
+		})
+	}
+}
+
+// acquireLease prevents the instance from pausing until the lease expires or is released.
+func (m *Manager) acquireLease(inst *Instance, ttlMs int, reason string) {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+
+	inst.leaseHeld = true
+	inst.leaseReason = reason
+	inst.leaseExpiry = time.Now().Add(time.Duration(ttlMs) * time.Millisecond)
+	inst.lastActivity = time.Now()
+
+	// Cancel idle timer while lease is held
+	if inst.idleTimer != nil {
+		inst.idleTimer.Stop()
+	}
+
+	// Set lease expiry timer
+	if inst.leaseTimer != nil {
+		inst.leaseTimer.Stop()
+	}
+	inst.leaseTimer = time.AfterFunc(time.Duration(ttlMs)*time.Millisecond, func() {
+		m.releaseLease(inst)
+	})
+
+	log.Printf("instance %s: lease acquired (ttl=%dms, reason=%s)", inst.ID, ttlMs, reason)
+}
+
+// releaseLease clears the lease and restarts the idle timer if appropriate.
+func (m *Manager) releaseLease(inst *Instance) {
+	inst.mu.Lock()
+	wasHeld := inst.leaseHeld
+	inst.leaseHeld = false
+	inst.leaseReason = ""
+	if inst.leaseTimer != nil {
+		inst.leaseTimer.Stop()
+		inst.leaseTimer = nil
+	}
+
+	// Restart idle timer now that lease is gone
+	if inst.State == StateRunning && inst.activeConns == 0 {
+		if inst.idleTimer != nil {
+			inst.idleTimer.Stop()
+		}
+		inst.idleTimer = time.AfterFunc(m.cfg.PauseAfterIdle, func() {
+			m.pauseInstance(inst)
+		})
+	}
+	inst.mu.Unlock()
+
+	if wasHeld {
+		log.Printf("instance %s: lease released", inst.ID)
+	}
+}
+
 func (m *Manager) pauseInstance(inst *Instance) {
 	inst.mu.Lock()
-	if inst.State != StateRunning || inst.activeConns > 0 {
+	if inst.State != StateRunning || inst.activeConns > 0 || inst.leaseHeld {
 		inst.mu.Unlock()
 		return
 	}
@@ -1102,6 +1216,19 @@ func (m *Manager) ActiveConns(id string) int {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 	return inst.activeConns
+}
+
+// LeaseInfo returns lease state for an instance. Returns held=false if not found.
+func (m *Manager) LeaseInfo(id string) (held bool, reason string, expiresAt time.Time) {
+	m.mu.Lock()
+	inst, ok := m.instances[id]
+	m.mu.Unlock()
+	if !ok {
+		return false, "", time.Time{}
+	}
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	return inst.leaseHeld, inst.leaseReason, inst.leaseExpiry
 }
 
 // LastActivity returns the last activity time for an instance.
