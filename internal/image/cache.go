@@ -144,25 +144,49 @@ func (c *Cache) rebuildIndex() {
 // of the OCI image's ENTRYPOINT or CMD. Any existing file at this path in
 // the image is intentionally overwritten.
 func InjectHarness(rootfsDir, harnessBin string) error {
-	destPath := filepath.Join(rootfsDir, "usr", "bin", "aegis-harness")
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-		return fmt.Errorf("create harness dir: %w", err)
+	return injectBinary(rootfsDir, harnessBin, "aegis-harness")
+}
+
+// InjectGuestBinaries copies all guest-side aegis binaries into the rootfs.
+// Harness is required; agent and mcp-guest are best-effort (skipped if not found).
+func InjectGuestBinaries(rootfsDir, binDir string) error {
+	// Harness is mandatory
+	if err := injectBinary(rootfsDir, filepath.Join(binDir, "aegis-harness"), "aegis-harness"); err != nil {
+		return err
 	}
 
-	src, err := os.Open(harnessBin)
+	// Optional guest binaries — skip silently if not built
+	for _, name := range []string{"aegis-agent", "aegis-mcp-guest"} {
+		src := filepath.Join(binDir, name)
+		if _, err := os.Stat(src); err == nil {
+			if err := injectBinary(rootfsDir, src, name); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func injectBinary(rootfsDir, srcPath, name string) error {
+	destPath := filepath.Join(rootfsDir, "usr", "bin", name)
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return fmt.Errorf("create dir for %s: %w", name, err)
+	}
+
+	src, err := os.Open(srcPath)
 	if err != nil {
-		return fmt.Errorf("open harness binary: %w", err)
+		return fmt.Errorf("open %s: %w", name, err)
 	}
 	defer src.Close()
 
 	dst, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
 	if err != nil {
-		return fmt.Errorf("create harness in rootfs: %w", err)
+		return fmt.Errorf("create %s in rootfs: %w", name, err)
 	}
 	defer dst.Close()
 
 	if _, err := io.Copy(dst, src); err != nil {
-		return fmt.Errorf("copy harness: %w", err)
+		return fmt.Errorf("copy %s: %w", name, err)
 	}
 
 	return nil

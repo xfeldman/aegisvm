@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1000,8 +999,7 @@ func (m *Manager) prepareImageRootfs(ctx context.Context, inst *Instance) (strin
 		return "", fmt.Errorf("create overlay: %w", err)
 	}
 
-	harnessBin := filepath.Join(m.cfg.BinDir, "aegis-harness")
-	if err := image.InjectHarness(overlayDir, harnessBin); err != nil {
+	if err := image.InjectGuestBinaries(overlayDir, m.cfg.BinDir); err != nil {
 		m.overlay.Remove(overlayID)
 		return "", fmt.Errorf("inject harness: %w", err)
 	}

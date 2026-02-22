@@ -39,6 +39,13 @@ rootfs: $(HARNESS_BIN)
 	cp $(HARNESS_BIN) $(ROOTFS_DIR)/usr/bin/aegis-harness
 	chmod 755 $(ROOTFS_DIR)/usr/bin/aegis-harness
 
+	# Add aegis-agent binary (guest agent runtime for Agent Kit)
+	@if [ -f ../bin/aegis-agent ]; then \
+		echo "==> Installing aegis-agent..."; \
+		cp ../bin/aegis-agent $(ROOTFS_DIR)/usr/bin/aegis-agent; \
+		chmod 755 $(ROOTFS_DIR)/usr/bin/aegis-agent; \
+	fi
+
 	# Add aegis-mcp-guest binary (MCP server for agents inside VMs)
 	@if [ -f ../bin/aegis-mcp-guest ]; then \
 		echo "==> Installing aegis-mcp-guest..."; \
