@@ -43,6 +43,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/xfeldman/aegisvm/internal/kit"
 	"github.com/xfeldman/aegisvm/internal/version"
 )
 
@@ -1633,10 +1634,8 @@ Commands:
 }
 
 func cmdKitList() {
-	home, _ := os.UserHomeDir()
-	kitsDir := filepath.Join(home, ".aegis", "kits")
-	entries, err := os.ReadDir(kitsDir)
-	if err != nil || len(entries) == 0 {
+	manifests, _ := kit.ListManifests()
+	if len(manifests) == 0 {
 		fmt.Println("No kits installed.")
 		return
 	}
@@ -1646,71 +1645,39 @@ func cmdKitList() {
 	binDir := filepath.Dir(exe)
 
 	fmt.Printf("%-12s %-10s %-10s %s\n", "NAME", "VERSION", "STATUS", "DESCRIPTION")
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		name := strings.TrimSuffix(e.Name(), ".json")
-		data, err := os.ReadFile(filepath.Join(kitsDir, e.Name()))
-		if err != nil {
-			continue
-		}
-		var manifest struct {
-			Name            string   `json:"name"`
-			Version         string   `json:"version"`
-			Description     string   `json:"description"`
-			InstanceDaemons []string `json:"instance_daemons"`
-			Image           struct {
-				Inject []string `json:"inject"`
-			} `json:"image"`
-		}
-		if json.Unmarshal(data, &manifest) != nil {
-			continue
-		}
-
-		// Validate binaries exist
-		var missing []string
-		for _, d := range manifest.InstanceDaemons {
-			if _, err := os.Stat(filepath.Join(binDir, d)); err != nil {
-				missing = append(missing, d)
-			}
-		}
-		for _, b := range manifest.Image.Inject {
-			if _, err := os.Stat(filepath.Join(binDir, b)); err != nil {
-				missing = append(missing, b)
-			}
-		}
-
+	for _, m := range manifests {
+		missing := kit.ValidateManifest(m, binDir)
 		status := colorGreen + "ok" + colorReset
-		desc := manifest.Description
+		desc := m.Description
 		if len(missing) > 0 {
 			status = colorRed + "broken" + colorReset
-			desc = fmt.Sprintf("%s (missing: %s)", manifest.Description, strings.Join(missing, ", "))
+			desc = fmt.Sprintf("%s (missing: %s)", m.Description, strings.Join(missing, ", "))
 		}
 
-		if manifest.Name == "" {
-			manifest.Name = name
-		}
-		fmt.Printf("%-12s %-10s %-*s %s\n", manifest.Name, manifest.Version,
+		name := m.Name
+		fmt.Printf("%-12s %-10s %-*s %s\n", name, m.Version,
 			10+len(status)-len("ok"), status, desc)
 	}
 }
 
 // loadKitManifestOrDie loads a kit manifest or exits with an error.
 func loadKitManifestOrDie(name string) *kitManifest {
-	home, _ := os.UserHomeDir()
-	path := filepath.Join(home, ".aegis", "kits", name+".json")
-	data, err := os.ReadFile(path)
+	m, err := kit.LoadManifest(name)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "kit %q not found (expected %s)\n", name, path)
+		fmt.Fprintf(os.Stderr, "kit %q: %v\n", name, err)
 		os.Exit(1)
 	}
-	var m kitManifest
-	if err := json.Unmarshal(data, &m); err != nil {
-		fmt.Fprintf(os.Stderr, "invalid kit manifest %q: %v\n", name, err)
-		os.Exit(1)
-	}
-	return &m
+	// Convert to CLI's kitManifest type
+	var cm kitManifest
+	cm.Name = m.Name
+	cm.Version = m.Version
+	cm.Description = m.Description
+	cm.InstanceDaemons = m.InstanceDaemons
+	cm.Image.Base = m.Image.Base
+	cm.Image.Inject = m.Image.Inject
+	cm.Defaults.Command = m.Defaults.Command
+	cm.Defaults.Capabilities = m.Defaults.Capabilities
+	return &cm
 }
 
 // kitManifest mirrors the kit manifest structure for CLI use.
