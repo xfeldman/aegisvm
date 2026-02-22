@@ -30,9 +30,9 @@ ifeq ($(HOST_OS),darwin)
 	CGO_LDFLAGS := -L/opt/homebrew/lib
 endif
 
-.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest base-rootfs clean test test-unit test-m2 test-m3 test-network integration
+.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent base-rootfs clean test test-unit test-m2 test-m3 test-network integration
 
-all: aegisd aegis harness vmm-worker mcp mcp-guest
+all: aegisd aegis harness vmm-worker mcp mcp-guest gateway agent
 
 # aegisd — the daemon (no cgo needed in M0, cgo is in vmm-worker)
 aegisd:
@@ -72,6 +72,17 @@ mcp-guest:
 	@mkdir -p $(BIN_DIR)
 	GOOS=$(HARNESS_OS) GOARCH=$(HARNESS_ARCH) CGO_ENABLED=0 \
 		$(GO) build $(GOFLAGS) -o $(BIN_DIR)/aegis-mcp-guest ./cmd/aegis-mcp-guest
+
+# aegis-gateway — host-side messaging adapter (Telegram + tether)
+gateway:
+	@mkdir -p $(BIN_DIR)
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BIN_DIR)/aegis-gateway ./cmd/aegis-gateway
+
+# aegis-agent — guest agent runtime (LLM bridge, Linux ARM64)
+agent:
+	@mkdir -p $(BIN_DIR)
+	GOOS=$(HARNESS_OS) GOARCH=$(HARNESS_ARCH) CGO_ENABLED=0 \
+		$(GO) build $(GOFLAGS) -o $(BIN_DIR)/aegis-agent ./cmd/aegis-agent
 
 # Base rootfs — Alpine ARM64 with harness baked in
 # Requires: brew install e2fsprogs (for mkfs.ext4)

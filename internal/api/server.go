@@ -18,6 +18,7 @@ import (
 	"github.com/xfeldman/aegisvm/internal/registry"
 	"github.com/xfeldman/aegisvm/internal/router"
 	"github.com/xfeldman/aegisvm/internal/secrets"
+	"github.com/xfeldman/aegisvm/internal/tether"
 	"github.com/xfeldman/aegisvm/internal/vmm"
 )
 
@@ -65,6 +66,10 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v1/instances/{id}/resume", s.handleResumeInstance)
 	s.mux.HandleFunc("DELETE /v1/instances/{id}", s.handleDeleteInstance)
 	s.mux.HandleFunc("POST /v1/instances/prune", s.handlePruneInstances)
+
+	// Tether routes (Agent Kit messaging)
+	s.mux.HandleFunc("POST /v1/instances/{id}/tether", s.handleTetherIngress)
+	s.mux.HandleFunc("GET /v1/instances/{id}/tether/stream", s.handleTetherStream)
 
 	// Secret routes (workspace-scoped key-value store)
 	s.mux.HandleFunc("PUT /v1/secrets/{name}", s.handleSetSecret)
@@ -777,6 +782,99 @@ func parseDuration(s string) (time.Duration, error) {
 		return time.Duration(d) * 24 * time.Hour, nil
 	}
 	return time.ParseDuration(s)
+}
+
+// Tether handlers — Agent Kit messaging
+
+func (s *Server) handleTetherIngress(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+
+	// Resolve by ID or handle
+	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	if !inst.Enabled {
+		writeError(w, http.StatusConflict, "instance is disabled")
+		return
+	}
+
+	var frame tether.Frame
+	if err := json.NewDecoder(r.Body).Decode(&frame); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid frame: %v", err))
+		return
+	}
+
+	// Wake-on-message: ensure instance is running before delivering
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := s.lifecycle.EnsureInstance(ctx, inst.ID); err != nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("wake failed: %v", err))
+		return
+	}
+
+	if err := s.lifecycle.SendTetherFrame(inst.ID, frame); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("send frame: %v", err))
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Server) handleTetherStream(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+
+	// Resolve by ID or handle
+	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	ts := s.lifecycle.TetherStore()
+	if ts == nil {
+		writeError(w, http.StatusServiceUnavailable, "tether not available")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Transfer-Encoding", "chunked")
+	w.WriteHeader(http.StatusOK)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+
+	// Stream recent frames first
+	recent := ts.Recent(inst.ID, 50)
+	for _, frame := range recent {
+		streamJSON(w, frame)
+	}
+
+	// Subscribe to live frames
+	ch, unsub := ts.Subscribe(inst.ID)
+	defer unsub()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case frame, ok := <-ch:
+			if !ok {
+				return
+			}
+			streamJSON(w, frame)
+		}
+	}
 }
 
 // Secret handlers — dumb key-value store with encryption.

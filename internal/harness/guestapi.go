@@ -28,6 +28,11 @@ func startGuestAPIServer(hrpc *harnessRPC) {
 		handleGuestStopChild(w, r, hrpc)
 	})
 
+	// Tether egress (agent runtime → host)
+	mux.HandleFunc("POST /v1/tether/send", func(w http.ResponseWriter, r *http.Request) {
+		handleGuestTetherSend(w, r, hrpc)
+	})
+
 	// Self
 	mux.HandleFunc("GET /v1/self", func(w http.ResponseWriter, r *http.Request) {
 		handleGuestSelfInfo(w, r, hrpc)
@@ -123,6 +128,24 @@ func handleGuestKeepalive(w http.ResponseWriter, r *http.Request, hrpc *harnessR
 // handleGuestKeepaliveRelease releases the keepalive lease.
 func handleGuestKeepaliveRelease(w http.ResponseWriter, r *http.Request, hrpc *harnessRPC) {
 	sendNotification(hrpc.conn, "keepalive.release", nil)
+
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"ok":true}`)
+}
+
+// handleGuestTetherSend forwards a tether frame from the agent runtime to aegisd.
+func handleGuestTetherSend(w http.ResponseWriter, r *http.Request, hrpc *harnessRPC) {
+	var frame json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&frame); err != nil {
+		writeGuestError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Send as a tether.frame notification to aegisd (no response expected)
+	if err := sendNotification(hrpc.conn, "tether.frame", frame); err != nil {
+		writeGuestError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"ok":true}`)

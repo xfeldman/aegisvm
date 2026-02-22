@@ -2,11 +2,13 @@ package harness
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os/exec"
 	"sync"
 	"time"
@@ -245,6 +247,12 @@ func handleConnection(ctx context.Context, conn net.Conn, hrpc *harnessRPC) {
 		}
 
 		if msg.Method == "" {
+			continue
+		}
+
+		// Notification from aegisd (no ID) — check for tether.frame
+		if msg.ID == nil && msg.Method == "tether.frame" {
+			go forwardTetherToAgent(msg.Params)
 			continue
 		}
 
@@ -508,6 +516,20 @@ func handleExec(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *pr
 		},
 		ID: req.ID,
 	}
+}
+
+// agentRuntimeAddr is where the guest agent runtime listens for tether frames.
+const agentRuntimeAddr = "http://127.0.0.1:7778"
+
+// forwardTetherToAgent forwards a tether.frame notification to the agent runtime.
+// Best-effort: if the agent runtime is not running, the frame is dropped silently.
+func forwardTetherToAgent(params json.RawMessage) {
+	resp, err := http.Post(agentRuntimeAddr+"/v1/tether/recv", "application/json", bytes.NewReader(params))
+	if err != nil {
+		// Agent runtime not running — expected when no agent is configured
+		return
+	}
+	resp.Body.Close()
 }
 
 // sendNotification sends a JSON-RPC notification (no ID, no response expected).

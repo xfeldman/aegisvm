@@ -23,6 +23,7 @@ import (
 	"github.com/xfeldman/aegisvm/internal/registry"
 	"github.com/xfeldman/aegisvm/internal/router"
 	"github.com/xfeldman/aegisvm/internal/secrets"
+	"github.com/xfeldman/aegisvm/internal/tether"
 	"github.com/xfeldman/aegisvm/internal/vmm"
 )
 
@@ -100,9 +101,10 @@ func main() {
 	}
 	log.Printf("secret store: %s", cfg.MasterKeyPath)
 
-	// Pass secret store and registry to lifecycle manager
+	// Pass secret store, registry, and tether store to lifecycle manager
 	lm.SetSecretStore(ss)
 	lm.SetRegistry(reg)
+	lm.SetTetherStore(tether.NewStore())
 
 	// Start router (handle-based routing, no app resolver)
 	rtr := router.New(lm, cfg.RouterAddr)

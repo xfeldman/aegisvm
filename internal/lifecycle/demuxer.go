@@ -189,6 +189,24 @@ func (d *channelDemuxer) Stop() {
 	<-d.done
 }
 
+// SendNotification sends a JSON-RPC notification (no ID, no response expected)
+// from the host to the guest. Used for tether.frame forwarding.
+func (d *channelDemuxer) SendNotification(method string, params interface{}) error {
+	msg, err := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  method,
+		"params":  params,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal notification: %w", err)
+	}
+
+	d.mu.Lock()
+	err = d.ch.Send(context.Background(), msg)
+	d.mu.Unlock()
+	return err
+}
+
 // Done returns a channel that is closed when the recv loop exits.
 func (d *channelDemuxer) Done() <-chan struct{} {
 	return d.done

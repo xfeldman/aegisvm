@@ -29,6 +29,7 @@ import (
 	"github.com/xfeldman/aegisvm/internal/overlay"
 	"github.com/xfeldman/aegisvm/internal/registry"
 	"github.com/xfeldman/aegisvm/internal/secrets"
+	"github.com/xfeldman/aegisvm/internal/tether"
 	"github.com/xfeldman/aegisvm/internal/vmm"
 )
 
@@ -133,6 +134,7 @@ type Manager struct {
 	overlay     overlay.Overlay
 	secretStore *secrets.Store
 	registry    *registry.DB
+	tetherStore *tether.Store
 
 	// Callbacks
 	onStateChange   func(id, state string)
@@ -217,6 +219,35 @@ func (m *Manager) GetPublicPorts(id string) map[int]int {
 // SetRegistry sets the registry for instance persistence.
 func (m *Manager) SetRegistry(reg *registry.DB) {
 	m.registry = reg
+}
+
+// SetTetherStore sets the tether store for agent kit messaging.
+func (m *Manager) SetTetherStore(ts *tether.Store) {
+	m.tetherStore = ts
+}
+
+// TetherStore returns the tether store (for API layer access).
+func (m *Manager) TetherStore() *tether.Store {
+	return m.tetherStore
+}
+
+// SendTetherFrame sends an ingress tether frame to a running instance.
+func (m *Manager) SendTetherFrame(instanceID string, frame tether.Frame) error {
+	m.mu.Lock()
+	inst, ok := m.instances[instanceID]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("instance %s not found", instanceID)
+	}
+
+	inst.mu.Lock()
+	demux := inst.demuxer
+	inst.mu.Unlock()
+	if demux == nil {
+		return fmt.Errorf("instance %s not connected", instanceID)
+	}
+
+	return demux.SendNotification("tether.frame", frame)
 }
 
 // InstanceOption configures an instance at creation time.
@@ -509,6 +540,13 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 			}
 		case "keepalive.release":
 			m.releaseLease(inst)
+		case "tether.frame":
+			if m.tetherStore != nil {
+				var frame tether.Frame
+				if json.Unmarshal(params, &frame) == nil && frame.IsEgress() {
+					m.tetherStore.Append(inst.ID, frame)
+				}
+			}
 		}
 	})
 
