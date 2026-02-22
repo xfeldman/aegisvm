@@ -18,11 +18,17 @@ class Aegisvm < Formula
   depends_on :macos
 
   def install
+    # Core binaries
     bin.install "aegis"
     bin.install "aegisd"
     bin.install "aegis-mcp"
+    bin.install "aegis-mcp-guest"
     bin.install "aegis-vmm-worker"
     bin.install "aegis-harness"
+
+    # Agent Kit binaries
+    bin.install "aegis-gateway"
+    bin.install "aegis-agent"
 
     # Re-sign vmm-worker with hypervisor entitlement for this machine
     entitlements = buildpath/"entitlements.plist"
@@ -46,6 +52,11 @@ class Aegisvm < Formula
 
       To configure as an MCP server for Claude Code:
         aegis mcp install
+
+      To set up Agent Kit (Telegram bot):
+        aegis secret set TELEGRAM_BOT_TOKEN <token>
+        aegis secret set OPENAI_API_KEY <key>
+        See: https://github.com/xfeldman/aegisvm/blob/main/docs/AGENT_KIT.md
     EOS
   end
 
@@ -57,7 +68,7 @@ class Aegisvm < Formula
   end
 
   test do
-    assert_match "aegis", shell_output("#{bin}/aegis help 2>&1")
+    assert_match version.to_s, shell_output("#{bin}/aegis version")
     # Verify MCP server responds to initialize
     output = pipe_output(
       "#{bin}/aegis-mcp",

@@ -12,6 +12,8 @@ jobs:
     runs-on: macos-14  # M-series ARM64
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed for git describe version
 
       - uses: actions/setup-go@v5
         with:
@@ -27,11 +29,23 @@ jobs:
       - name: Run tests
         run: make test
 
+      - name: Verify version
+        run: |
+          EXPECTED="${GITHUB_REF#refs/tags/}"
+          ACTUAL=$(./bin/aegis version | awk '{print $2}')
+          echo "Expected: ${EXPECTED}, Actual: ${ACTUAL}"
+          if [ "${ACTUAL}" != "${EXPECTED}" ]; then
+            echo "Version mismatch!" >&2
+            exit 1
+          fi
+
       - name: Package release tarball
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
           TARBALL="aegisvm-${VERSION}-darwin-arm64.tar.gz"
-          tar czf "${TARBALL}" -C bin aegis aegisd aegis-mcp aegis-vmm-worker aegis-harness
+          tar czf "${TARBALL}" -C bin \
+            aegis aegisd aegis-mcp aegis-mcp-guest aegis-vmm-worker \
+            aegis-harness aegis-gateway aegis-agent
           echo "TARBALL=${TARBALL}" >> $GITHUB_ENV
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
           shasum -a 256 "${TARBALL}" | awk '{print $1}' > "${TARBALL}.sha256"

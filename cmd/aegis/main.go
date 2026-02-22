@@ -41,6 +41,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/xfeldman/aegisvm/internal/version"
 )
 
 func main() {
@@ -70,6 +72,8 @@ func main() {
 		cmdSecret()
 	case "mcp":
 		cmdMCP()
+	case "version", "--version", "-v":
+		fmt.Printf("aegis %s\n", version.Version())
 	case "help", "--help", "-h":
 		usage()
 	default:
@@ -203,7 +207,7 @@ func startDaemon() {
 
 	for i := 0; i < 10; i++ {
 		if isDaemonRunning() {
-			fmt.Printf("aegisd started (pid %d)\n", cmd.Process.Pid)
+			fmt.Printf("aegisd %s started (pid %d)\n", version.Version(), cmd.Process.Pid)
 			return
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -618,6 +622,8 @@ func cmdRun() {
 }
 
 func cmdStatus() {
+	fmt.Printf("aegis %s\n", version.Version())
+
 	if !isDaemonRunning() {
 		fmt.Println("aegisd: not running")
 		return
@@ -636,6 +642,10 @@ func cmdStatus() {
 
 	fmt.Printf("aegisd: %s\n", status["status"])
 	fmt.Printf("backend: %s\n", status["backend"])
+
+	if isGatewayRunning() {
+		fmt.Println("gateway: running")
+	}
 }
 
 func cmdDoctor() {
@@ -643,6 +653,7 @@ func cmdDoctor() {
 	fmt.Println("============")
 	fmt.Println()
 
+	fmt.Printf("Version:  %s\n", version.Version())
 	fmt.Printf("Go:       installed\n")
 
 	_, err := exec.LookPath("krunvm")

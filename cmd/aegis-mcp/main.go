@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/xfeldman/aegisvm/internal/version"
 )
 
 // --- JSON-RPC types ---
@@ -684,7 +686,7 @@ func main() {
 				ProtocolVersion: "2024-11-05",
 				ServerInfo: mcpServerInfo{
 					Name:    "aegisvm",
-					Version: "1.0.0",
+					Version: version.Version(),
 				},
 				Capabilities: mcpCapabilities{
 					Tools: &struct{}{},

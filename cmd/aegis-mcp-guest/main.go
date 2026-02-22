@@ -16,6 +16,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/xfeldman/aegisvm/internal/version"
 )
 
 // Guest API base URL (harness-provided HTTP server inside the VM)
@@ -303,7 +305,7 @@ func main() {
 		case "initialize":
 			result = mcpInitResult{
 				ProtocolVersion: "2024-11-05",
-				ServerInfo:      mcpServerInfo{Name: "aegis-guest", Version: "1.0.0"},
+				ServerInfo:      mcpServerInfo{Name: "aegis-guest", Version: version.Version()},
 				Capabilities:    mcpCapabilities{Tools: &struct{}{}},
 				Instructions: `Aegis Guest Orchestration — spawn and manage child VM instances from inside this VM.
 

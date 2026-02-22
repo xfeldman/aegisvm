@@ -5,7 +5,10 @@ SHELL := /bin/bash
 
 # Go settings
 GO := go
-GOFLAGS := -trimpath
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+VERSION_PKG := github.com/xfeldman/aegisvm/internal/version
+LDFLAGS := -X $(VERSION_PKG).version=$(VERSION)
+GOFLAGS := -trimpath -ldflags "$(LDFLAGS)"
 
 # Output directory
 BIN_DIR := bin
