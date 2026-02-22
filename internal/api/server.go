@@ -153,6 +153,7 @@ type createInstanceRequest struct {
 	VCPUs      int               `json:"vcpus,omitempty"`
 	IdlePolicy   string                   `json:"idle_policy,omitempty"`
 	Capabilities *lifecycle.CapabilityToken `json:"capabilities,omitempty"` // guest orchestration capabilities
+	Kit          string                    `json:"kit,omitempty"`
 }
 
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
@@ -220,6 +221,9 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	if req.Capabilities != nil {
 		opts = append(opts, lifecycle.WithCapabilities(req.Capabilities))
 	}
+	if req.Kit != "" {
+		opts = append(opts, lifecycle.WithKit(req.Kit))
+	}
 
 	// Create in lifecycle manager.
 	// This triggers onInstanceCreated which handles router port allocation
@@ -248,6 +252,9 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ImageRef != "" {
 		resp["image_ref"] = req.ImageRef
+	}
+	if req.Kit != "" {
+		resp["kit"] = req.Kit
 	}
 	if len(publicEndpoints) > 0 {
 		eps := make([]map[string]interface{}, len(publicEndpoints))
@@ -336,6 +343,9 @@ func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 	if inst.ImageRef != "" {
 		resp["image_ref"] = inst.ImageRef
 	}
+	if inst.Kit != "" {
+		resp["kit"] = inst.Kit
+	}
 	if !inst.StoppedAt.IsZero() {
 		resp["stopped_at"] = inst.StoppedAt.Format(time.RFC3339)
 	}
@@ -400,6 +410,9 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 		}
 		if inst.ImageRef != "" {
 			entry["image_ref"] = inst.ImageRef
+		}
+		if inst.Kit != "" {
+			entry["kit"] = inst.Kit
 		}
 		if !inst.StoppedAt.IsZero() {
 			entry["stopped_at"] = inst.StoppedAt.Format(time.RFC3339)

@@ -1,0 +1,23 @@
+{
+  "name": "agent",
+  "version": "0.1.0",
+  "description": "Messaging-driven LLM agent with Telegram integration",
+  "daemons": ["aegis-gateway"],
+  "image": {
+    "base": "python:3.12-alpine",
+    "inject": ["aegis-agent"]
+  },
+  "defaults": {
+    "command": ["aegis-agent"],
+    "capabilities": {
+      "spawn": true,
+      "spawn_depth": 2,
+      "max_children": 5,
+      "allowed_images": ["*"],
+      "max_memory_mb": 1024,
+      "max_vcpus": 2,
+      "max_expose_ports": 5,
+      "allowed_secrets": ["*"]
+    }
+  }
+}

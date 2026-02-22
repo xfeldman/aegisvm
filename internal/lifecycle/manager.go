@@ -24,6 +24,7 @@ import (
 
 	"github.com/xfeldman/aegisvm/internal/config"
 	"github.com/xfeldman/aegisvm/internal/image"
+	"github.com/xfeldman/aegisvm/internal/kit"
 	"github.com/xfeldman/aegisvm/internal/logstore"
 	"github.com/xfeldman/aegisvm/internal/overlay"
 	"github.com/xfeldman/aegisvm/internal/registry"
@@ -85,6 +86,9 @@ type Instance struct {
 	stopTimer *time.Timer
 
 	lastActivity time.Time
+
+	// Kit is the name of the kit used to create this instance (empty = no kit).
+	Kit string
 
 	// Idle policy: "default" (heartbeat + lease + inbound), "leases_only" (lease + inbound only)
 	IdlePolicy string
@@ -188,6 +192,7 @@ func (m *Manager) saveToRegistry(inst *Instance) {
 		VCPUs:        inst.VCPUs,
 		ParentID:     inst.ParentID,
 		Capabilities: capsJSON,
+		Kit:          inst.Kit,
 		CreatedAt:    inst.CreatedAt,
 	}
 	if err := m.registry.SaveInstance(regInst); err != nil {
@@ -335,6 +340,13 @@ func WithIdlePolicy(policy string) InstanceOption {
 func WithEnabled(enabled bool) InstanceOption {
 	return func(inst *Instance) {
 		inst.Enabled = enabled
+	}
+}
+
+// WithKit sets the kit name for this instance.
+func WithKit(name string) InstanceOption {
+	return func(inst *Instance) {
+		inst.Kit = name
 	}
 }
 
@@ -1030,6 +1042,19 @@ func (m *Manager) prepareImageRootfs(ctx context.Context, inst *Instance) (strin
 	if err := image.InjectGuestBinaries(overlayDir, m.cfg.BinDir); err != nil {
 		m.overlay.Remove(overlayID)
 		return "", fmt.Errorf("inject harness: %w", err)
+	}
+
+	// Inject kit binaries if this instance uses a kit
+	if inst.Kit != "" {
+		manifest, err := kit.LoadManifest(inst.Kit)
+		if err != nil {
+			m.overlay.Remove(overlayID)
+			return "", fmt.Errorf("kit %q: %w", inst.Kit, err)
+		}
+		if err := image.InjectKitBinaries(overlayDir, m.cfg.BinDir, manifest.Image.Inject); err != nil {
+			m.overlay.Remove(overlayID)
+			return "", fmt.Errorf("inject kit binaries: %w", err)
+		}
 	}
 
 	return overlayDir, nil

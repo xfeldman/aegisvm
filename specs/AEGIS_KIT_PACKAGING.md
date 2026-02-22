@@ -56,7 +56,7 @@ Plus a kit manifest at `~/.aegis/kits/agent.json` (created on first use or by po
   "daemons": ["aegis-gateway"],
   "image": {
     "base": "python:3.12-alpine",
-    "inject": ["aegis-agent", "aegis-mcp-guest"]
+    "inject": ["aegis-agent"]
   },
   "defaults": {
     "command": ["aegis-agent"],
@@ -73,6 +73,8 @@ Plus a kit manifest at `~/.aegis/kits/agent.json` (created on first use or by po
   }
 }
 ```
+
+Note: `aegis-mcp-guest` is a core binary injected into every OCI overlay by default — kits don't need to list it. The `version` field is stamped from git tags at build time (CI release of `aegisvm-agent-kit`). For development, `make install-kit` stamps the local git version.
 
 ---
 
@@ -162,24 +164,27 @@ Kits don't ship pre-built OCI images. Instead, the kit manifest describes a reci
 {
   "image": {
     "base": "python:3.12-alpine",
-    "inject": ["aegis-agent", "aegis-mcp-guest"]
+    "inject": ["aegis-agent"]
   }
 }
 ```
+
+Core guest binaries (`aegis-harness`, `aegis-mcp-guest`) are always injected into every OCI overlay. Kit inject lists only need to specify kit-specific binaries.
 
 When `--kit agent` is used:
 
 1. Pull the base image (`python:3.12-alpine`) — cached by the existing image cache
 2. Create an overlay — same as any OCI instance
-3. Inject the kit's binaries (`aegis-agent`, `aegis-mcp-guest`) into the overlay — in addition to the standard harness injection
-4. Boot the VM
+3. Inject core guest binaries (harness + mcp-guest) — standard for all overlays
+4. Inject the kit's binaries (`aegis-agent`) into the overlay
+5. Boot the VM
 
 The kit binaries are resolved from the same `BinDir` as the harness. The injection happens in `prepareImageRootfs` when the instance has a `kit` field — aegisd looks up the kit manifest's `image.inject` list.
 
 **No magic in aegisd.** The `--kit` flag is expanded entirely in the CLI:
 - CLI reads the manifest
 - CLI builds a normal API request with command, image_ref, capabilities, and a `kit` field
-- aegisd treats it as a regular instance — the only kit-aware behavior is: if `kit` is set, inject the kit's binaries into the overlay in addition to the standard harness
+- aegisd treats it as a regular instance — the only kit-aware behavior is: if `kit` is set, inject the kit's binaries into the overlay in addition to the standard core binaries
 
 This means:
 - No separate image build step
@@ -253,13 +258,15 @@ Each brings its own binaries, OCI recipe, and `--kit` preset. Core aegis stays m
 
 ## 9. Implementation Phases
 
-### Phase 1 (v0.1)
-- [ ] Remove `aegis-agent` from `InjectGuestBinaries` (core injection)
-- [ ] Add `InjectKitBinaries` for kit-aware overlay injection
-- [ ] Add `--kit` flag to `aegis instance start`
-- [ ] Add `aegis kit list` command
-- [ ] Kit manifest format + loading
-- [ ] Instance `kit` field in registry
+### Phase 1 (v0.1) — completed
+- [x] Remove `aegis-agent` from `InjectGuestBinaries` (core injection)
+- [x] Add `InjectKitBinaries` for kit-aware overlay injection
+- [x] Add `--kit` flag to `aegis instance start` and `aegis run`
+- [x] Add `aegis kit list` command
+- [x] Kit manifest format + loading (`internal/kit/kit.go`)
+- [x] Instance `kit` field in registry
+- [x] Manifest-driven daemon startup in `aegis up` / `aegis down`
+- [x] Kit version stamped from git tags at build time
 
 ### Phase 2 (v0.2)
 - [ ] Separate Homebrew formula `aegisvm-agent-kit`

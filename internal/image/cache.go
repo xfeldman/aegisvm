@@ -148,7 +148,8 @@ func InjectHarness(rootfsDir, harnessBin string) error {
 }
 
 // InjectGuestBinaries copies all guest-side aegis binaries into the rootfs.
-// Harness is required; agent and mcp-guest are best-effort (skipped if not found).
+// Harness is required; mcp-guest is best-effort (skipped if not found).
+// Kit-specific binaries (e.g. aegis-agent) are injected separately via InjectKitBinaries.
 func InjectGuestBinaries(rootfsDir, binDir string) error {
 	// Harness is mandatory
 	if err := injectBinary(rootfsDir, filepath.Join(binDir, "aegis-harness"), "aegis-harness"); err != nil {
@@ -156,12 +157,28 @@ func InjectGuestBinaries(rootfsDir, binDir string) error {
 	}
 
 	// Optional guest binaries — skip silently if not built
-	for _, name := range []string{"aegis-agent", "aegis-mcp-guest"} {
+	for _, name := range []string{"aegis-mcp-guest"} {
 		src := filepath.Join(binDir, name)
 		if _, err := os.Stat(src); err == nil {
 			if err := injectBinary(rootfsDir, src, name); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+// InjectKitBinaries copies kit-specified binaries into the rootfs.
+// Unlike InjectGuestBinaries, this fails hard if any binary is missing —
+// a kit's binaries are required, not optional.
+func InjectKitBinaries(rootfsDir, binDir string, binaries []string) error {
+	for _, name := range binaries {
+		src := filepath.Join(binDir, name)
+		if _, err := os.Stat(src); err != nil {
+			return fmt.Errorf("kit binary %q not found at %s", name, src)
+		}
+		if err := injectBinary(rootfsDir, src, name); err != nil {
+			return err
 		}
 	}
 	return nil

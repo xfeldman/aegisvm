@@ -35,44 +35,62 @@ guest environment contract.
 
 ### aegis up
 
-Start the aegisd daemon.
+Start the aegisd daemon and any kit daemons.
 
 ```
-aegis up
+aegis up [--no-daemons]
 ```
 
 Locates the `aegisd` binary next to the `aegis` binary, starts it as a
 subprocess, and waits up to 2 seconds for the PID file to appear. If the
 daemon is already running, prints a message and exits without error.
 
+After starting aegisd, scans installed kit manifests (`~/.aegis/kits/*.json`)
+and starts each kit daemon that has a config file present. For example, the
+Agent Kit's `aegis-gateway` daemon starts if `~/.aegis/gateway.json` exists.
+Daemons without a config file are reported but not started. Daemons whose
+binary is missing are silently skipped.
+
+Use `--no-daemons` to suppress all kit daemon startup.
+
 If no base rootfs is installed at `~/.aegis/base-rootfs/`, automatically
 downloads the default variant (`python` — Alpine + Python 3.12) before
 starting the daemon. See `aegis rootfs` for managing rootfs variants.
 
-**Example:**
+**Examples:**
 
 ```
 $ aegis up
-aegisd started (pid 48201)
+aegis v0.4.0
+aegisd: started
+aegis-gateway: started (agent kit)
+
+$ aegis up --no-daemons
+aegis v0.4.0
+aegisd: started
 ```
 
 ---
 
 ### aegis down
 
-Stop the aegisd daemon.
+Stop the aegisd daemon and all kit daemons.
 
 ```
 aegis down
 ```
 
-Reads the PID file, sends SIGTERM, and waits up to 5 seconds for the process
-to exit. If the daemon is not running, prints a message and exits without error.
+First stops all kit daemons (by scanning installed kit manifests and their PID
+files), then stops aegisd. Sends SIGTERM and waits up to 5 seconds for each
+process to exit. If the daemon is not running, prints a message and exits
+without error.
 
 **Example:**
 
 ```
 $ aegis down
+aegis-gateway stopping (pid 48202)
+aegis-gateway stopped
 aegisd stopping (pid 48201)
 aegisd stopped
 ```
@@ -125,7 +143,7 @@ the instance. If `--workspace` is omitted, a temporary workspace is allocated
 and deleted after. If `--workspace` is provided, that workspace is preserved.
 
 ```
-aegis run [--expose [PUBLIC:]GUEST[/PROTO]] [--name NAME] [--image IMAGE] [--env K=V] [--secret KEY] [--workspace NAME_OR_PATH] -- COMMAND [ARGS...]
+aegis run [--expose [PUBLIC:]GUEST[/PROTO]] [--name NAME] [--image IMAGE] [--kit KIT] [--env K=V] [--secret KEY] [--workspace NAME_OR_PATH] -- COMMAND [ARGS...]
 ```
 
 **Flags:**
@@ -135,6 +153,7 @@ aegis run [--expose [PUBLIC:]GUEST[/PROTO]] [--name NAME] [--image IMAGE] [--env
 | `--image IMAGE` | OCI image reference (e.g., `alpine:3.21`). Without this, the base rootfs is used. |
 | `--expose [PUBLIC:]GUEST[/PROTO]` | Port to expose. `8080:80` maps public 8080 to guest 80. `80` assigns a random public port. Optional `/tcp` or `/http` protocol hint. May be specified multiple times. |
 | `--name NAME` | Handle alias for the instance. |
+| `--kit KIT` | Kit preset name (e.g., `agent`). Supplies defaults for command, image, and capabilities from the kit manifest. Explicit flags override kit defaults. See `aegis kit list`. |
 | `--env K=V` | Environment variable to inject. May be specified multiple times. |
 | `--secret KEY` | Secret to inject (by name). May be specified multiple times. Use `--secret '*'` for all. Default: none. |
 | `--workspace NAME_OR_PATH` | Named workspace (e.g., `claw`) or host path (e.g., `./myapp`). Named workspaces resolve to `~/.aegis/data/workspaces/<name>`. |
@@ -176,7 +195,7 @@ Run `aegis instance help` to print subcommand usage.
 Start a new instance, or restart a stopped instance by handle.
 
 ```
-aegis instance start [--name NAME] [--expose [PUBLIC:]GUEST[/PROTO]] [--image IMAGE] [--env K=V] [--secret KEY] [--workspace NAME_OR_PATH] -- COMMAND [ARGS...]
+aegis instance start [--name NAME] [--expose [PUBLIC:]GUEST[/PROTO]] [--image IMAGE] [--kit KIT] [--env K=V] [--secret KEY] [--workspace NAME_OR_PATH] -- COMMAND [ARGS...]
 aegis instance start --name NAME                          (restart stopped instance)
 ```
 
@@ -191,6 +210,7 @@ is RUNNING or STARTING, returns 409. If not found, creates a new instance.
 | `--name NAME` | Handle alias (used for routing, exec, logs, restart). |
 | `--expose [PUBLIC:]GUEST[/PROTO]` | Port to expose. `8080:80` maps public 8080 to guest 80. `80` assigns random. May be specified multiple times. |
 | `--image IMAGE` | OCI image reference. |
+| `--kit KIT` | Kit preset. Supplies defaults for command, image, and capabilities from the kit manifest. Explicit flags override. |
 | `--env K=V` | Environment variable. May be specified multiple times. |
 | `--secret KEY` | Secret to inject. May be specified multiple times. `'*'` for all. Default: none. |
 | `--workspace NAME_OR_PATH` | Named workspace or host path. Named workspaces resolve to `~/.aegis/data/workspaces/<name>`. |
@@ -198,11 +218,20 @@ is RUNNING or STARTING, returns 409. If not found, creates a new instance.
 **Examples:**
 
 ```
+# Start with a kit (supplies command, image, capabilities from manifest)
+$ aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
+Instance started: inst-173f...
+Handle: my-agent
+
+# Kit with command override (debug shell in a kit-configured VM)
+$ aegis instance start --kit agent --name debug --secret OPENAI_API_KEY -- sh
+
+# Start without a kit
 $ aegis instance start --name web --expose 8080:80 --workspace myapp -- python3 -m http.server 80
 Instance started: inst-173f...
 Handle: web
-Router: http://127.0.0.1:8099
 
+# Restart a stopped instance
 $ aegis instance disable web
 $ aegis instance start --name web
 Instance restarted: inst-173f...
@@ -247,21 +276,38 @@ aegis instance info HANDLE_OR_ID
 
 Accepts either a handle alias or instance ID.
 
-**Example:**
+**Examples:**
 
 ```
-$ aegis instance info web
+$ aegis instance info my-agent
+Handle:      my-agent
 ID:          inst-1739893456789012345
 State:       running
 Enabled:     true
-Handle:      web
-Command:     python3 -m http.server 80
-Ports:       80
-Endpoints:
-  :80 → :49152 (http)
+Image:       python:3.12-alpine
+Kit:         agent
+Command:     aegis-agent
 Connections: 0
 Created:     2026-02-19T10:30:00Z
 Last Active: 2026-02-19T10:35:00Z
+
+$ aegis instance info web
+Handle:      web
+ID:          inst-1739893456789054321
+State:       running
+Enabled:     true
+Command:     python3 -m http.server 80
+Endpoints:
+  http://127.0.0.1:49152 → vm:80
+Connections: 0
+Created:     2026-02-19T10:30:00Z
+Last Active: 2026-02-19T10:35:00Z
+```
+
+If a kit has been uninstalled but the instance still references it:
+
+```
+Kit:         agent (not installed)
 ```
 
 ---
@@ -491,6 +537,46 @@ Secret API_KEY deleted
 
 ---
 
+## Kit Commands
+
+Manage kits — optional add-on bundles that extend AegisVM with specific
+capabilities. Kit manifests live at `~/.aegis/kits/<name>.json`.
+
+Run `aegis kit help` to print subcommand usage.
+
+### aegis kit list
+
+List installed kits with validation status.
+
+```
+aegis kit list
+```
+
+Shows each kit's name, version, status, and description. Status is `ok` if all
+required binaries (daemons + inject) are present, or `broken` with a list of
+missing binaries.
+
+**Examples:**
+
+```
+$ aegis kit list
+NAME         VERSION    STATUS     DESCRIPTION
+agent        v0.4.0     ok         Messaging-driven LLM agent with Telegram integration
+
+$ aegis kit list
+NAME         VERSION    STATUS     DESCRIPTION
+agent        v0.4.0     broken     Messaging-driven LLM agent (missing: aegis-agent)
+```
+
+No kits installed:
+
+```
+$ aegis kit list
+No kits installed.
+```
+
+---
+
 ## MCP Commands
 
 Manage the MCP (Model Context Protocol) server integration with Claude Code.
@@ -531,8 +617,8 @@ aegis mcp uninstall
 
 | Command | Description |
 |---|---|
-| `aegis up` | Start the daemon |
-| `aegis down` | Stop the daemon |
+| `aegis up` | Start daemon + kit daemons (`--no-daemons` to suppress) |
+| `aegis down` | Stop daemon + kit daemons |
 | `aegis status` | Show daemon status |
 | `aegis doctor` | Diagnose environment |
 | `aegis run [...] -- CMD` | Ephemeral: start + follow + delete |
@@ -549,7 +635,6 @@ aegis mcp uninstall
 | `aegis secret set` | Set a secret |
 | `aegis secret list` | List secret names |
 | `aegis secret delete` | Delete a secret |
-| `aegis rootfs list` | Show available rootfs variants |
-| `aegis rootfs pull` | Download a rootfs variant |
+| `aegis kit list` | List installed kits |
 | `aegis mcp install` | Register MCP server in Claude Code |
 | `aegis mcp uninstall` | Remove MCP server from Claude Code |

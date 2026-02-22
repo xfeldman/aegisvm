@@ -47,17 +47,23 @@ aegis run --workspace ./myapp --expose 8080:80 -- python3 /workspace/server.py
 aegis down
 ```
 
-## Agent Kit
+## Kits
+
+Kits are optional add-on bundles that extend AegisVM with specific capabilities. Core aegis provides the VM runtime. Kits provide opinionated workloads that run on top. `aegis kit list` shows installed kits.
+
+### Agent Kit
 
 Aegis Agent Kit turns AegisVM into a messaging-driven agent platform with wake-on-message and scale-to-zero. The agent VM consumes zero CPU when idle — a new Telegram message wakes it in milliseconds.
 
 ```bash
+# Install the kit (from source: make install-kit, or: brew install aegisvm-agent-kit)
+
 # Store your keys
 aegis secret set OPENAI_API_KEY sk-...
 aegis secret set TELEGRAM_BOT_TOKEN 123456:ABC-...
 
-# Start the agent (boots a VM with the LLM bridge)
-aegis instance start --name my-agent --secret OPENAI_API_KEY --workspace my-agent -- aegis-agent
+# Start the agent — kit provides command, image, and capabilities
+aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
 
 # Configure the gateway (~/.aegis/gateway.json)
 echo '{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","instance":"my-agent","allowed_chats":["*"]}}' \
@@ -67,7 +73,9 @@ echo '{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","instance":"my-agent"
 aegis down && aegis up
 ```
 
-The gateway resolves the bot token from the aegis secret store, delivers messages to the agent via the tether protocol, and streams responses back to Telegram with typing indicators and progressive message edits. Use `aegis up --no-gateway` to suppress auto-start.
+The `--kit agent` flag is a preset — it supplies the command (`aegis-agent`), image (`python:3.12-alpine`), and spawn capabilities from the kit manifest at `~/.aegis/kits/agent.json`. Explicit flags override kit defaults.
+
+The gateway resolves the bot token from the aegis secret store, delivers messages to the agent via the tether protocol, and streams responses back to Telegram with typing indicators and progressive message edits. Use `aegis up --no-daemons` to suppress kit daemon auto-start.
 
 See [Agent Kit docs](docs/AGENT_KIT.md) for the full guide.
 
@@ -138,7 +146,7 @@ STOPPED → STARTING → RUNNING ↔ PAUSED → STOPPED
 Daemon management:
 
 ```bash
-aegis up [--no-gateway] / down / status / doctor
+aegis up [--no-daemons] / down / status / doctor
 ```
 
 Runtime:
@@ -155,10 +163,11 @@ aegis instance prune --stopped-older-than <dur>     Remove stale stopped instanc
 aegis exec <name|id> -- <cmd>                       Execute in running instance
 aegis logs <name|id> [--follow]                     Stream logs
 aegis secret set/list/delete                        Manage secrets
+aegis kit list                                      List installed kits
 aegis mcp install/uninstall                         Claude Code MCP integration
 ```
 
-Common flags: `--name`, `--expose [PUBLIC:]GUEST[/proto]`, `--env K=V`, `--secret KEY`, `--workspace NAME_OR_PATH`, `--image REF`.
+Common flags: `--name`, `--expose [PUBLIC:]GUEST[/proto]`, `--env K=V`, `--secret KEY`, `--workspace NAME_OR_PATH`, `--image REF`, `--kit KIT`.
 
 ## Core mechanisms
 
@@ -204,11 +213,11 @@ Common flags: `--name`, `--expose [PUBLIC:]GUEST[/proto]`, `--env K=V`, `--secre
 
 **aegis-mcp** — MCP server (host-side). Exposes aegisd as tools for LLMs over stdio JSON-RPC.
 
-**aegis-mcp-guest** — MCP server (guest-side). Runs inside VMs, lets agents spawn and manage child instances via the Guest API.
+**aegis-mcp-guest** — MCP server (guest-side). Runs inside every VM, lets agents spawn and manage child instances via the Guest API.
 
-**aegis-gateway** — messaging adapter (host-side). Bridges Telegram with agent instances via the tether protocol. Handles wake-on-message and streaming UX.
+**aegis-gateway** — messaging adapter (host-side, Agent Kit). Bridges Telegram with agent instances via the tether protocol. Handles wake-on-message and streaming UX.
 
-**aegis-agent** — agent runtime (guest-side). Thin LLM bridge with session management, streaming responses, and tether integration.
+**aegis-agent** — agent runtime (guest-side, Agent Kit). Thin LLM bridge with session management, streaming responses, and tether integration.
 
 ## What AegisVM is not
 
@@ -256,6 +265,7 @@ make integration SHORT=1  # skip pause/resume test
 - [Guest Orchestration API](specs/GUEST_ORCHESTRATION_API.md) — capability tokens, parent-child model, security
 - [Idle & Power States](specs/IDLE_POWER_STATES.md) — activity detection, keepalive leases, idle policy
 - [gvproxy Networking](specs/GVPROXY_NETWORKING.md) — in-process virtio-net, vsock control channel
+- [Kit Packaging](specs/AEGIS_KIT_PACKAGING.md) — how kits are packaged, discovered, and used
 - [Kit Boundary](specs/KIT_BOUNDARY_SPEC.md) — what's core vs what's a kit
 - [OpenClaw Kit](specs/OPENCLAW_KIT_SPEC.md) — Telegram bot + work instances design
 - [Architectural Pivot](specs/aegis_architectural_pivot_spec.md) — pivot from app-centric to instance-centric

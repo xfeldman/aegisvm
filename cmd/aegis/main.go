@@ -18,6 +18,7 @@
 //	aegis secret set           Set a secret
 //	aegis secret list          List secrets
 //	aegis secret delete        Delete a secret
+//	aegis kit list             List installed kits
 //	aegis mcp install          Register aegis-mcp in Claude Code
 //	aegis mcp uninstall        Remove aegis-mcp from Claude Code
 //	aegis status               Show daemon status
@@ -70,6 +71,8 @@ func main() {
 		cmdLogs()
 	case "secret":
 		cmdSecret()
+	case "kit":
+		cmdKit()
 	case "mcp":
 		cmdMCP()
 	case "version", "--version", "-v":
@@ -96,6 +99,7 @@ Commands:
   exec       Execute a command in a running instance
   logs       Stream instance logs
   secret     Manage secrets (set, list, delete)
+  kit        Manage kits (list)
   mcp        MCP server management (install)
 
 Examples:
@@ -156,10 +160,10 @@ func isDaemonRunning() bool {
 
 func cmdUp() {
 	// Parse flags
-	noGateway := false
+	noDaemons := false
 	for _, arg := range os.Args[2:] {
-		if arg == "--no-gateway" {
-			noGateway = true
+		if arg == "--no-daemons" || arg == "--no-gateway" {
+			noDaemons = true
 		}
 	}
 
@@ -171,11 +175,9 @@ func cmdUp() {
 		startDaemon()
 	}
 
-	// Start gateway if config exists and not suppressed
-	if !noGateway {
-		startGatewayIfConfigured()
-	} else {
-		fmt.Println("aegis-gateway: skipped (--no-gateway)")
+	// Start kit daemons from manifests
+	if !noDaemons {
+		startKitDaemons()
 	}
 }
 
@@ -221,18 +223,26 @@ func startDaemon() {
 	os.Exit(1)
 }
 
-func gatewayConfigPath() string {
+// daemonPidFilePath returns the PID file path for a daemon binary name.
+// e.g. "aegis-gateway" → ~/.aegis/data/gateway.pid
+func daemonPidFilePath(daemonName string) string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".aegis", "gateway.json")
+	// Strip "aegis-" prefix for the PID file name
+	short := strings.TrimPrefix(daemonName, "aegis-")
+	return filepath.Join(home, ".aegis", "data", short+".pid")
 }
 
-func gatewayPidFilePath() string {
+// daemonConfigPath returns the config file path for a daemon binary name.
+// e.g. "aegis-gateway" → ~/.aegis/gateway.json
+func daemonConfigPath(daemonName string) string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".aegis", "data", "gateway.pid")
+	short := strings.TrimPrefix(daemonName, "aegis-")
+	return filepath.Join(home, ".aegis", short+".json")
 }
 
-func isGatewayRunning() bool {
-	data, err := os.ReadFile(gatewayPidFilePath())
+// isDaemonProcessRunning checks if a daemon process is alive by its PID file.
+func isDaemonProcessRunning(daemonName string) bool {
+	data, err := os.ReadFile(daemonPidFilePath(daemonName))
 	if err != nil {
 		return false
 	}
@@ -247,51 +257,151 @@ func isGatewayRunning() bool {
 	return proc.Signal(syscall.Signal(0)) == nil
 }
 
-func startGatewayIfConfigured() {
-	configPath := gatewayConfigPath()
-	if _, err := os.Stat(configPath); err != nil {
-		fmt.Println("aegis-gateway: no config (create ~/.aegis/gateway.json to enable)")
-		return
-	}
-
-	if isGatewayRunning() {
-		fmt.Println("aegis-gateway: already running")
-		return
+// startKitDaemons scans kit manifests and starts each daemon that has a config file.
+func startKitDaemons() {
+	home, _ := os.UserHomeDir()
+	kitsDir := filepath.Join(home, ".aegis", "kits")
+	entries, err := os.ReadDir(kitsDir)
+	if err != nil {
+		return // no kits directory — nothing to start
 	}
 
 	exe, _ := os.Executable()
-	gatewayBin := filepath.Join(filepath.Dir(exe), "aegis-gateway")
-	if _, err := os.Stat(gatewayBin); err != nil {
-		// Gateway binary not installed — skip silently
-		return
-	}
+	binDir := filepath.Dir(exe)
 
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(kitsDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var manifest struct {
+			Name    string   `json:"name"`
+			Daemons []string `json:"daemons"`
+		}
+		if json.Unmarshal(data, &manifest) != nil {
+			continue
+		}
+
+		for _, daemon := range manifest.Daemons {
+			daemonBin := filepath.Join(binDir, daemon)
+			if _, err := os.Stat(daemonBin); err != nil {
+				// Binary missing — skip silently (kit may be broken)
+				continue
+			}
+
+			configPath := daemonConfigPath(daemon)
+			if _, err := os.Stat(configPath); err != nil {
+				fmt.Printf("%s: no config (create %s to enable)\n", daemon, configPath)
+				continue
+			}
+
+			if isDaemonProcessRunning(daemon) {
+				fmt.Printf("%s: already running\n", daemon)
+				continue
+			}
+
+			logDir := filepath.Join(home, ".aegis", "data")
+			short := strings.TrimPrefix(daemon, "aegis-")
+			logFile, err := os.OpenFile(filepath.Join(logDir, short+".log"),
+				os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "create %s log: %v\n", daemon, err)
+				continue
+			}
+
+			cmd := exec.Command(daemonBin)
+			cmd.Stdout = logFile
+			cmd.Stderr = logFile
+
+			if err := cmd.Start(); err != nil {
+				fmt.Fprintf(os.Stderr, "start %s: %v\n", daemon, err)
+				continue
+			}
+
+			os.WriteFile(daemonPidFilePath(daemon), []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0600)
+			kitName := manifest.Name
+			if kitName == "" {
+				kitName = strings.TrimSuffix(e.Name(), ".json")
+			}
+			fmt.Printf("%s: started (%s kit)\n", daemon, kitName)
+		}
+	}
+}
+
+// stopKitDaemons scans kit manifests and stops all kit daemons by PID file.
+func stopKitDaemons() {
 	home, _ := os.UserHomeDir()
-	logDir := filepath.Join(home, ".aegis", "data")
-	logFile, err := os.OpenFile(filepath.Join(logDir, "gateway.log"),
-		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	kitsDir := filepath.Join(home, ".aegis", "kits")
+	entries, err := os.ReadDir(kitsDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "create gateway log: %v\n", err)
 		return
 	}
 
-	cmd := exec.Command(gatewayBin)
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(kitsDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var manifest struct {
+			Daemons []string `json:"daemons"`
+		}
+		if json.Unmarshal(data, &manifest) != nil {
+			continue
+		}
 
-	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "start gateway: %v\n", err)
+		for _, daemon := range manifest.Daemons {
+			stopDaemonByPidFile(daemon)
+		}
+	}
+}
+
+// stopDaemonByPidFile stops a daemon process using its PID file.
+func stopDaemonByPidFile(daemonName string) {
+	pidFile := daemonPidFilePath(daemonName)
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		return // no PID file — daemon was never started
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		os.Remove(pidFile)
 		return
 	}
-
-	// Write PID file
-	os.WriteFile(gatewayPidFilePath(), []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0600)
-	fmt.Println("aegis-gateway: started")
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		os.Remove(pidFile)
+		return
+	}
+	if proc.Signal(syscall.Signal(0)) != nil {
+		// Process already dead — clean up stale PID file
+		os.Remove(pidFile)
+		return
+	}
+	proc.Signal(syscall.SIGTERM)
+	fmt.Printf("%s stopping (pid %d)\n", daemonName, pid)
+	for i := 0; i < 30; i++ {
+		if proc.Signal(syscall.Signal(0)) != nil {
+			fmt.Printf("%s stopped\n", daemonName)
+			os.Remove(pidFile)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	// Force kill if SIGTERM didn't work
+	proc.Kill()
+	os.Remove(pidFile)
+	fmt.Printf("%s stopped (killed)\n", daemonName)
 }
 
 func cmdDown() {
-	// Stop gateway first
-	stopGateway()
+	// Stop kit daemons first
+	stopKitDaemons()
 
 	data, err := os.ReadFile(pidFilePath())
 	if err != nil {
@@ -341,42 +451,6 @@ func cmdDown() {
 	os.Exit(1)
 }
 
-func stopGateway() {
-	pidFile := gatewayPidFilePath()
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		return // no PID file — gateway was never started by aegis up
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		os.Remove(pidFile)
-		return
-	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		os.Remove(pidFile)
-		return
-	}
-	if proc.Signal(syscall.Signal(0)) != nil {
-		// Process already dead — clean up stale PID file
-		os.Remove(pidFile)
-		return
-	}
-	proc.Signal(syscall.SIGTERM)
-	fmt.Printf("aegis-gateway stopping (pid %d)\n", pid)
-	for i := 0; i < 30; i++ {
-		if proc.Signal(syscall.Signal(0)) != nil {
-			fmt.Println("aegis-gateway stopped")
-			os.Remove(pidFile)
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	// Force kill if SIGTERM didn't work
-	proc.Kill()
-	os.Remove(pidFile)
-	fmt.Println("aegis-gateway stopped (killed)")
-}
 
 type exposeFlag struct {
 	GuestPort  int
@@ -384,8 +458,8 @@ type exposeFlag struct {
 	Protocol   string // "http", "tcp", etc. Default: "http"
 }
 
-// parseRunFlags parses common flags: --expose, --name, --env, --image, --workspace, --secret
-func parseRunFlags(args []string) (exposePorts []exposeFlag, name, imageRef string, envVars map[string]string, secretKeys []string, workspace string, command []string) {
+// parseRunFlags parses common flags: --expose, --name, --env, --image, --workspace, --secret, --kit
+func parseRunFlags(args []string) (exposePorts []exposeFlag, name, imageRef string, envVars map[string]string, secretKeys []string, workspace string, kitName string, command []string) {
 	envVars = make(map[string]string)
 
 	for i := 0; i < len(args); i++ {
@@ -442,6 +516,13 @@ func parseRunFlags(args []string) (exposePorts []exposeFlag, name, imageRef stri
 			}
 			workspace = args[i+1]
 			i++
+		case "--kit":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--kit requires a kit name")
+				os.Exit(1)
+			}
+			kitName = args[i+1]
+			i++
 		}
 	}
 	return
@@ -495,10 +576,21 @@ func parseExposeArg(arg string) exposeFlag {
 func cmdRun() {
 	args := os.Args[2:]
 
-	exposePorts, name, imageRef, envVars, secretKeys, workspace, command := parseRunFlags(args)
+	exposePorts, name, imageRef, envVars, secretKeys, workspace, kitName, command := parseRunFlags(args)
+
+	// Apply kit defaults if --kit specified
+	if kitName != "" {
+		manifest := loadKitManifestOrDie(kitName)
+		if imageRef == "" && manifest.Image.Base != "" {
+			imageRef = manifest.Image.Base
+		}
+		if len(command) == 0 && len(manifest.Defaults.Command) > 0 {
+			command = manifest.Defaults.Command
+		}
+	}
 
 	if len(command) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: aegis run [--expose PORT] [--name NAME] [--env K=V] [--secret KEY] [--image IMAGE] -- COMMAND [args...]")
+		fmt.Fprintln(os.Stderr, "usage: aegis run [--expose PORT] [--name NAME] [--env K=V] [--secret KEY] [--image IMAGE] [--kit KIT] -- COMMAND [args...]")
 		os.Exit(1)
 	}
 
@@ -550,6 +642,16 @@ func cmdRun() {
 	}
 	if len(secretKeys) > 0 {
 		reqBody["secrets"] = secretKeys
+	}
+	if kitName != "" {
+		reqBody["kit"] = kitName
+		// Apply kit capabilities as defaults
+		manifest := loadKitManifestOrDie(kitName)
+		if manifest.Defaults.Capabilities != nil {
+			var caps interface{}
+			json.Unmarshal(*manifest.Defaults.Capabilities, &caps)
+			reqBody["capabilities"] = caps
+		}
 	}
 
 	bodyJSON, _ := json.Marshal(reqBody)
@@ -666,8 +768,28 @@ func cmdStatus() {
 	fmt.Printf("aegisd: %s\n", status["status"])
 	fmt.Printf("backend: %s\n", status["backend"])
 
-	if isGatewayRunning() {
-		fmt.Println("gateway: running")
+	// Show running kit daemons
+	home, _ := os.UserHomeDir()
+	kitsDir := filepath.Join(home, ".aegis", "kits")
+	if entries, err := os.ReadDir(kitsDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+				continue
+			}
+			data, _ := os.ReadFile(filepath.Join(kitsDir, e.Name()))
+			var manifest struct {
+				Daemons []string `json:"daemons"`
+			}
+			if json.Unmarshal(data, &manifest) != nil {
+				continue
+			}
+			for _, daemon := range manifest.Daemons {
+				if isDaemonProcessRunning(daemon) {
+					short := strings.TrimPrefix(daemon, "aegis-")
+					fmt.Printf("%s: running\n", short)
+				}
+			}
+		}
 	}
 }
 
@@ -815,10 +937,21 @@ Examples:
 func cmdInstanceStart(client *http.Client) {
 	args := os.Args[3:]
 
-	exposePorts, name, imageRef, envVars, secretKeys, workspace, command := parseRunFlags(args)
+	exposePorts, name, imageRef, envVars, secretKeys, workspace, kitName, command := parseRunFlags(args)
+
+	// Apply kit defaults if --kit specified
+	if kitName != "" {
+		manifest := loadKitManifestOrDie(kitName)
+		if imageRef == "" && manifest.Image.Base != "" {
+			imageRef = manifest.Image.Base
+		}
+		if len(command) == 0 && len(manifest.Defaults.Command) > 0 {
+			command = manifest.Defaults.Command
+		}
+	}
 
 	if len(command) == 0 && name == "" {
-		fmt.Fprintln(os.Stderr, "usage: aegis instance start [--name NAME] [--expose PORT] [--env K=V] [--secret KEY] [--image IMAGE] -- COMMAND [args...]")
+		fmt.Fprintln(os.Stderr, "usage: aegis instance start [--name NAME] [--expose PORT] [--env K=V] [--secret KEY] [--image IMAGE] [--kit KIT] -- COMMAND [args...]")
 		fmt.Fprintln(os.Stderr, "       aegis instance start --name NAME   (restart stopped instance)")
 		os.Exit(1)
 	}
@@ -859,6 +992,16 @@ func cmdInstanceStart(client *http.Client) {
 	}
 	if workspace != "" {
 		reqBody["workspace"] = workspace
+	}
+	if kitName != "" {
+		reqBody["kit"] = kitName
+		// Apply kit capabilities as defaults
+		manifest := loadKitManifestOrDie(kitName)
+		if manifest.Defaults.Capabilities != nil {
+			var caps interface{}
+			json.Unmarshal(*manifest.Defaults.Capabilities, &caps)
+			reqBody["capabilities"] = caps
+		}
 	}
 
 	bodyJSON, _ := json.Marshal(reqBody)
@@ -1035,6 +1178,16 @@ func cmdInstanceInfo(client *http.Client) {
 	fmt.Printf("Enabled:     %s\n", enabledStr)
 	if imageRef, ok := inst["image_ref"].(string); ok && imageRef != "" {
 		fmt.Printf("Image:       %s\n", imageRef)
+	}
+	if kitVal, ok := inst["kit"].(string); ok && kitVal != "" {
+		kitDisplay := kitVal
+		// Check if kit manifest is still installed
+		home, _ := os.UserHomeDir()
+		kitPath := filepath.Join(home, ".aegis", "kits", kitVal+".json")
+		if _, err := os.Stat(kitPath); err != nil {
+			kitDisplay += " (not installed)"
+		}
+		fmt.Printf("Kit:         %s\n", kitDisplay)
 	}
 	if cmd, ok := inst["command"].([]interface{}); ok && len(cmd) > 0 {
 		parts := make([]string, len(cmd))
@@ -1651,6 +1804,129 @@ func cmdMCPUninstall() {
 	}
 
 	fmt.Println("aegis MCP server removed from Claude Code")
+}
+
+// --- Kit ---
+
+// cmdKit dispatches kit subcommands.
+func cmdKit() {
+	if len(os.Args) < 3 {
+		fmt.Println(`Usage: aegis kit <command>
+
+Commands:
+  list    List installed kits`)
+		os.Exit(1)
+	}
+
+	switch os.Args[2] {
+	case "list":
+		cmdKitList()
+	case "help", "--help", "-h":
+		fmt.Println(`Usage: aegis kit <command>
+
+Commands:
+  list    List installed kits`)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown kit command: %s\n", os.Args[2])
+		os.Exit(1)
+	}
+}
+
+func cmdKitList() {
+	home, _ := os.UserHomeDir()
+	kitsDir := filepath.Join(home, ".aegis", "kits")
+	entries, err := os.ReadDir(kitsDir)
+	if err != nil || len(entries) == 0 {
+		fmt.Println("No kits installed.")
+		return
+	}
+
+	// Find the bin directory (next to our own binary)
+	exe, _ := os.Executable()
+	binDir := filepath.Dir(exe)
+
+	fmt.Printf("%-12s %-10s %-10s %s\n", "NAME", "VERSION", "STATUS", "DESCRIPTION")
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		name := strings.TrimSuffix(e.Name(), ".json")
+		data, err := os.ReadFile(filepath.Join(kitsDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var manifest struct {
+			Name        string   `json:"name"`
+			Version     string   `json:"version"`
+			Description string   `json:"description"`
+			Daemons     []string `json:"daemons"`
+			Image       struct {
+				Inject []string `json:"inject"`
+			} `json:"image"`
+		}
+		if json.Unmarshal(data, &manifest) != nil {
+			continue
+		}
+
+		// Validate binaries exist
+		var missing []string
+		for _, d := range manifest.Daemons {
+			if _, err := os.Stat(filepath.Join(binDir, d)); err != nil {
+				missing = append(missing, d)
+			}
+		}
+		for _, b := range manifest.Image.Inject {
+			if _, err := os.Stat(filepath.Join(binDir, b)); err != nil {
+				missing = append(missing, b)
+			}
+		}
+
+		status := colorGreen + "ok" + colorReset
+		desc := manifest.Description
+		if len(missing) > 0 {
+			status = colorRed + "broken" + colorReset
+			desc = fmt.Sprintf("%s (missing: %s)", manifest.Description, strings.Join(missing, ", "))
+		}
+
+		if manifest.Name == "" {
+			manifest.Name = name
+		}
+		fmt.Printf("%-12s %-10s %-*s %s\n", manifest.Name, manifest.Version,
+			10+len(status)-len("ok"), status, desc)
+	}
+}
+
+// loadKitManifestOrDie loads a kit manifest or exits with an error.
+func loadKitManifestOrDie(name string) *kitManifest {
+	home, _ := os.UserHomeDir()
+	path := filepath.Join(home, ".aegis", "kits", name+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kit %q not found (expected %s)\n", name, path)
+		os.Exit(1)
+	}
+	var m kitManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid kit manifest %q: %v\n", name, err)
+		os.Exit(1)
+	}
+	return &m
+}
+
+// kitManifest mirrors the kit manifest structure for CLI use.
+type kitManifest struct {
+	Name        string   `json:"name"`
+	Version     string   `json:"version"`
+	Description string   `json:"description"`
+	Daemons     []string `json:"daemons"`
+	Image       struct {
+		Base   string   `json:"base"`
+		Inject []string `json:"inject"`
+	} `json:"image"`
+	Defaults struct {
+		Command      []string         `json:"command"`
+		Capabilities *json.RawMessage `json:"capabilities"`
+	} `json:"defaults"`
 }
 
 // --- Default image ---

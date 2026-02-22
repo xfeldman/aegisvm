@@ -33,7 +33,7 @@ ifeq ($(HOST_OS),darwin)
 	CGO_LDFLAGS := -L/opt/homebrew/lib
 endif
 
-.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent base-rootfs clean test test-unit test-m2 test-m3 test-network integration
+.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent base-rootfs clean test test-unit test-m2 test-m3 test-network integration install-kit
 
 all: aegisd aegis harness vmm-worker mcp mcp-guest gateway agent
 
@@ -141,6 +141,12 @@ ifdef SHORT
 else
 	$(GO) test -tags integration -v -count=1 -timeout 10m ./test/integration/
 endif
+
+# Install kit manifests for development (stamps git version into manifest)
+install-kit:
+	@mkdir -p $(HOME)/.aegis/kits
+	sed 's/"version": *"[^"]*"/"version": "$(VERSION)"/' kits/agent.json > $(HOME)/.aegis/kits/agent.json
+	@echo "Kit manifest installed: $(HOME)/.aegis/kits/agent.json ($(VERSION))"
 
 # Clean build artifacts
 clean:

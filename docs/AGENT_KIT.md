@@ -2,13 +2,16 @@
 
 Aegis Agent Kit turns AegisVM into a messaging-driven agent platform. The defining property: **messaging ingress lives outside the VM**, enabling wake-on-message and true scale-to-zero. The agent VM consumes zero CPU when idle. A new message wakes it in milliseconds.
 
+Agent Kit is an optional add-on — core AegisVM works without it. Install via `brew install aegisvm-agent-kit` or `make install-kit` (from source).
+
 ## Components
 
-| Component | Runs on | Binary | Purpose |
-|-----------|---------|--------|---------|
-| **Aegis Gateway** | Host | `aegis-gateway` | Telegram adapter, wake-on-message, streaming UX |
-| **Aegis Tether** | Host ↔ Guest | Built into aegisd + harness | Bidirectional framed message stream |
-| **Agent Runtime** | Guest (VM) | `aegis-agent` | LLM bridge, sessions, streaming responses |
+| Component | Runs on | Binary | Shipped by |
+|-----------|---------|--------|------------|
+| **Aegis Gateway** | Host | `aegis-gateway` | Agent Kit |
+| **Aegis Tether** | Host ↔ Guest | Built into aegisd + harness | Core |
+| **Agent Runtime** | Guest (VM) | `aegis-agent` | Agent Kit |
+| **MCP Guest** | Guest (VM) | `aegis-mcp-guest` | Core |
 
 ```
 Telegram ──► Gateway (host) ──► aegisd tether API ──► harness ──► agent (VM)
@@ -18,6 +21,26 @@ Telegram ◄── Gateway (host) ◄── aegisd tether stream ◄── harne
 ```
 
 ## Quick start
+
+### 0. Install the kit
+
+```bash
+# From Homebrew
+brew install aegisvm-agent-kit
+
+# Or from source
+make install-kit
+```
+
+This installs the kit manifest to `~/.aegis/kits/agent.json` and the `aegis-gateway` + `aegis-agent` binaries.
+
+Verify installation:
+
+```bash
+aegis kit list
+# NAME         VERSION    STATUS     DESCRIPTION
+# agent        v0.4.0     ok         Messaging-driven LLM agent with Telegram integration
+```
 
 ### 1. Store your API keys
 
@@ -34,12 +57,10 @@ The agent runtime supports OpenAI and Anthropic. Set whichever key you want to u
 ### 2. Start the agent instance
 
 ```bash
-aegis instance start \
-  --name my-agent \
-  --secret OPENAI_API_KEY \
-  --workspace my-agent \
-  -- aegis-agent
+aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
 ```
+
+The `--kit agent` flag is a preset that supplies the command (`aegis-agent`), image (`python:3.12-alpine`), and spawn capabilities from the kit manifest. You can override any default with explicit flags — for example, `--kit agent -- sh` gives you a debug shell in a kit-configured VM.
 
 This boots a VM with the agent runtime. The agent listens for tether frames on `127.0.0.1:7778` inside the VM, calls the LLM API, and streams responses back through the tether.
 
@@ -81,24 +102,25 @@ Create `~/.aegis/gateway.json`:
 
 ### 4. Start the gateway
 
-The gateway starts automatically with `aegis up` when `~/.aegis/gateway.json` exists:
+The gateway starts automatically with `aegis up` when `~/.aegis/gateway.json` exists. The CLI discovers it through the Agent Kit manifest's `daemons` list.
 
 ```bash
 aegis up
-# aegisd started (pid 12345)
-# aegis-gateway started (pid 12346)
+# aegis v0.4.0
+# aegisd: started
+# aegis-gateway: started (agent kit)
 ```
 
 If no gateway config is present, you'll see:
 
 ```
-aegis-gateway: skipped (no ~/.aegis/gateway.json)
+aegis-gateway: no config (create ~/.aegis/gateway.json to enable)
 ```
 
-To suppress the gateway even when configured:
+To suppress all kit daemons:
 
 ```bash
-aegis up --no-gateway
+aegis up --no-daemons
 ```
 
 You can also start the gateway manually:
@@ -107,7 +129,7 @@ You can also start the gateway manually:
 aegis-gateway
 ```
 
-`aegis down` stops both the daemon and the gateway.
+`aegis down` stops both the daemon and all kit daemons.
 
 Send a message to your Telegram bot — you should see a streaming response with typing indicators.
 
@@ -249,15 +271,10 @@ Returns the decrypted value of a secret. Used by the gateway to resolve `bot_tok
 
 ## Using a custom OCI image
 
-The agent runtime is automatically injected into OCI image overlays, so you can use any base image:
+Kit binaries (`aegis-agent`) are injected into OCI image overlays when `--kit agent` is used, so you can use any base image:
 
 ```bash
-aegis instance start \
-  --name my-agent \
-  --image python:3.12-alpine \
-  --secret OPENAI_API_KEY \
-  --workspace my-agent \
-  -- aegis-agent
+aegis instance start --kit agent --name my-agent --image node:20-alpine --secret OPENAI_API_KEY
 ```
 
-The `aegis-agent` binary is placed at `/usr/bin/aegis-agent` inside the overlay alongside the harness. No need to include it in your image.
+The `aegis-agent` binary is placed at `/usr/bin/aegis-agent` inside the overlay. Core binaries (`aegis-harness`, `aegis-mcp-guest`) are always injected into every OCI overlay regardless of kit. No need to include any of them in your image.
