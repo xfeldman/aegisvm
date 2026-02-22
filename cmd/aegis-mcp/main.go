@@ -169,7 +169,7 @@ var tools = []mcpTool{
 				"command":   {"type": "array", "items": {"type": "string"}, "description": "Command to run inside the VM. Paths must be VM paths (e.g. /workspace/script.py), not host paths."},
 				"name":      {"type": "string", "description": "Human-friendly handle for the instance (e.g. 'web', 'api'). Use this to reference the instance in other tools."},
 				"expose":    {"type": "array", "items": {"type": "string"}, "description": "Ports to expose. Each entry is 'guestPort' (random public port) or 'publicPort:guestPort' (deterministic). Examples: ['80'], ['8080:80']. Response includes public_port in endpoints."},
-				"workspace": {"type": "string", "description": "Absolute host directory path to mount inside the VM at /workspace/. Example: '/home/user/project' becomes /workspace/ in the VM."},
+				"workspace": {"type": "string", "description": "Absolute host directory path to live-mount inside the VM at /workspace/. Changes on the host are immediately visible inside the VM and vice versa — no restart needed. Example: '/home/user/project' becomes /workspace/ in the VM."},
 				"image":     {"type": "string", "description": "OCI image reference for the VM root filesystem (e.g. 'python:3.12-alpine', 'node:22-alpine'). Default is a minimal Alpine Linux."},
 				"env":       {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment variables to set inside the VM."},
 				"secrets":   {"type": "array", "items": {"type": "string"}, "description": "Secret keys to inject as environment variables (must be set via secret_set first)."},
@@ -694,7 +694,7 @@ func main() {
 Key concepts:
 - Each instance is a lightweight VM running a single command. The VM runs Alpine Linux (ARM64).
 - Commands run INSIDE the VM, not on the host. Host files are NOT available inside the VM unless you use a workspace.
-- Workspace: pass an absolute host directory path as the "workspace" parameter. It will be mounted at /workspace/ inside the VM. Reference files as /workspace/filename.
+- Workspace: pass an absolute host directory path as the "workspace" parameter. It will be live-mounted at /workspace/ inside the VM. Files are shared in real-time — edits on the host appear instantly inside the VM and vice versa. No restart needed after changing files.
 - Ports: the VM has its own network. To access a server running inside, use "expose" to map guest ports to the host. The response includes the host port in "endpoints".
 - The base VM has basic tools (sh, ls, cat, etc). For Python, Node, or other runtimes, use the "image" parameter with an OCI image ref (e.g. "python:3.12-alpine", "node:22-alpine").
 - Use "exec" to run commands inside a running instance. Use "logs" to see instance output.
