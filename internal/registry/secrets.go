@@ -49,6 +49,22 @@ func (d *DB) ListSecrets() ([]*Secret, error) {
 	return secrets, rows.Err()
 }
 
+// GetSecretByName returns a single secret by name, or nil if not found.
+func (d *DB) GetSecretByName(name string) (*Secret, error) {
+	row := d.db.QueryRow(`SELECT id, name, value, created_at FROM secrets WHERE name = ?`, name)
+	var s Secret
+	var createdStr string
+	err := row.Scan(&s.ID, &s.Name, &s.EncryptedValue, &createdStr)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	s.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+	return &s, nil
+}
+
 // DeleteSecretByName removes a secret by name.
 func (d *DB) DeleteSecretByName(name string) error {
 	res, err := d.db.Exec(`DELETE FROM secrets WHERE name = ?`, name)

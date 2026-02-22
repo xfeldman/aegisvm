@@ -74,6 +74,7 @@ func (s *Server) registerRoutes() {
 	// Secret routes (workspace-scoped key-value store)
 	s.mux.HandleFunc("PUT /v1/secrets/{name}", s.handleSetSecret)
 	s.mux.HandleFunc("GET /v1/secrets", s.handleListSecrets)
+	s.mux.HandleFunc("GET /v1/secrets/{name}", s.handleGetSecret)
 	s.mux.HandleFunc("DELETE /v1/secrets/{name}", s.handleDeleteSecret)
 
 	// Status
@@ -944,6 +945,21 @@ func (s *Server) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleGetSecret(w http.ResponseWriter, r *http.Request) {
+	name := pathParam(r, "name")
+	sec, err := s.registry.GetSecretByName(name)
+	if err != nil || sec == nil {
+		writeError(w, http.StatusNotFound, "secret not found")
+		return
+	}
+	val, err := s.secretStore.DecryptString(sec.EncryptedValue)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "decrypt failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"name": name, "value": val})
 }
 
 func (s *Server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {

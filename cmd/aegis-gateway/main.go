@@ -29,13 +29,25 @@ func main() {
 	log.Println("aegis-gateway starting")
 
 	cfg := loadConfig()
+	client := newAegisClient(cfg.AegisSocket)
+
+	// Resolve bot token from aegis secret store if not set directly
+	if cfg.Telegram.BotToken == "" && cfg.Telegram.BotTokenSecret != "" {
+		val, err := client.getSecret(cfg.Telegram.BotTokenSecret)
+		if err != nil {
+			log.Fatalf("resolve bot token secret %q: %v", cfg.Telegram.BotTokenSecret, err)
+		}
+		cfg.Telegram.BotToken = val
+		log.Printf("bot token resolved from secret %q", cfg.Telegram.BotTokenSecret)
+	}
+
 	if cfg.Telegram.BotToken == "" {
-		log.Fatal("telegram bot token not configured")
+		log.Fatal("telegram bot token not configured (set TELEGRAM_BOT_TOKEN or bot_token_secret in config)")
 	}
 
 	gw := &Gateway{
 		cfg:           cfg,
-		aegisClient:   newAegisClient(cfg.AegisSocket),
+		aegisClient:   client,
 		activeReplies: make(map[int64]*activeReply),
 	}
 
@@ -64,9 +76,10 @@ type Config struct {
 }
 
 type TelegramConfig struct {
-	BotToken     string   `json:"bot_token"`
-	Instance     string   `json:"instance"`
-	AllowedChats []string `json:"allowed_chats"`
+	BotToken       string   `json:"bot_token"`
+	BotTokenSecret string   `json:"bot_token_secret"`
+	Instance       string   `json:"instance"`
+	AllowedChats   []string `json:"allowed_chats"`
 }
 
 func loadConfig() *Config {
@@ -102,11 +115,10 @@ func loadConfig() *Config {
 		cfg.Telegram.Instance = inst
 	}
 
-	// Resolve bot token from aegis secret store if it's a secret reference
-	if cfg.Telegram.BotToken == "" {
+	// Allow secret name from env
+	if cfg.Telegram.BotTokenSecret == "" {
 		if secretName := os.Getenv("TELEGRAM_BOT_TOKEN_SECRET"); secretName != "" {
-			// The token will be resolved at runtime via aegis secret API
-			log.Printf("bot token will be resolved from secret: %s", secretName)
+			cfg.Telegram.BotTokenSecret = secretName
 		}
 	}
 
@@ -136,6 +148,24 @@ func newAegisClient(socketPath string) *aegisClient {
 			},
 		},
 	}
+}
+
+func (c *aegisClient) getSecret(name string) (string, error) {
+	url := fmt.Sprintf("http://aegis/v1/secrets/%s", name)
+	resp, err := c.httpClient.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("get secret: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("get secret %d: %s", resp.StatusCode, string(body))
+	}
+	var result struct {
+		Value string `json:"value"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+	return result.Value, nil
 }
 
 func (c *aegisClient) postTetherFrame(instanceID string, frame interface{}) error {
@@ -178,10 +208,11 @@ type Gateway struct {
 }
 
 type activeReply struct {
-	chatID    int64
-	messageID int
-	text      string
-	lastEdit  time.Time
+	chatID       int64
+	messageID    int
+	text         string
+	lastEdit     time.Time
+	typingCancel context.CancelFunc
 }
 
 // TetherFrame for gateway use.
@@ -314,9 +345,13 @@ func (gw *Gateway) handleTelegramMessage(msg *telegramMessage) {
 		return
 	}
 
-	// Typing will be cancelled by the egress handler when assistant.done arrives
-	_ = typingCancel // stored for later use by egress handler
-	// The egress subscriber handles reply rendering
+	// Store typing cancel so the egress handler can stop it on assistant.done
+	gw.mu.Lock()
+	gw.activeReplies[chatID] = &activeReply{
+		chatID:       chatID,
+		typingCancel: typingCancel,
+	}
+	gw.mu.Unlock()
 }
 
 func (gw *Gateway) isChatAllowed(chatID int64) bool {
@@ -333,12 +368,22 @@ func (gw *Gateway) isChatAllowed(chatID int64) bool {
 }
 
 func (gw *Gateway) sendTypingLoop(ctx context.Context, chatID int64) {
+	// Telegram typing indicator expires after ~5s.
+	// Send every 3s to avoid visible blink between refreshes.
+	// Hard timeout at 2 minutes to prevent zombie typing on crashes.
+	timeout := time.After(2 * time.Minute)
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	gw.sendChatAction(chatID, "typing")
 	for {
-		gw.sendChatAction(chatID, "typing")
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(4 * time.Second):
+		case <-timeout:
+			return
+		case <-ticker.C:
+			gw.sendChatAction(chatID, "typing")
 		}
 	}
 }
@@ -416,16 +461,21 @@ func (gw *Gateway) handleEgressFrame(frame TetherFrame) {
 
 		gw.mu.Lock()
 		reply, ok := gw.activeReplies[chatID]
-		if !ok {
+		if !ok || reply.messageID == 0 {
 			// First delta — send a new message
+			var typingCancel context.CancelFunc
+			if ok && reply.typingCancel != nil {
+				typingCancel = reply.typingCancel
+			}
 			gw.mu.Unlock()
 			msgID := gw.sendTelegramMessage(chatID, payload.Text)
 			gw.mu.Lock()
 			gw.activeReplies[chatID] = &activeReply{
-				chatID:    chatID,
-				messageID: msgID,
-				text:      payload.Text,
-				lastEdit:  time.Now(),
+				chatID:       chatID,
+				messageID:    msgID,
+				text:         payload.Text,
+				lastEdit:     time.Now(),
+				typingCancel: typingCancel,
 			}
 			gw.mu.Unlock()
 			return
@@ -451,7 +501,11 @@ func (gw *Gateway) handleEgressFrame(frame TetherFrame) {
 
 		gw.mu.Lock()
 		reply, ok := gw.activeReplies[chatID]
-		if ok {
+		// Cancel typing indicator
+		if ok && reply.typingCancel != nil {
+			reply.typingCancel()
+		}
+		if ok && reply.messageID != 0 {
 			// Final edit with complete text
 			msgID := reply.messageID
 			delete(gw.activeReplies, chatID)
@@ -460,6 +514,7 @@ func (gw *Gateway) handleEgressFrame(frame TetherFrame) {
 				gw.editTelegramMessage(chatID, msgID, payload.Text)
 			}
 		} else {
+			delete(gw.activeReplies, chatID)
 			gw.mu.Unlock()
 			// No prior deltas — send complete message
 			if payload.Text != "" {
