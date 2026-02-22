@@ -501,12 +501,14 @@ func (gw *Gateway) subscribeEgress(ctx context.Context) {
 		default:
 		}
 
+		log.Printf("egress: connecting to %s tether stream...", instanceID)
 		body, err := gw.aegisClient.streamTether(ctx, instanceID)
 		if err != nil {
 			log.Printf("egress subscribe: %v", err)
 			time.Sleep(5 * time.Second)
 			continue
 		}
+		log.Printf("egress: connected to %s", instanceID)
 
 		gw.processEgressStream(ctx, body)
 		body.Close()
@@ -528,7 +530,8 @@ func (gw *Gateway) processEgressStream(ctx context.Context, r io.Reader) {
 		}
 
 		var frame TetherFrame
-		if json.Unmarshal(scanner.Bytes(), &frame) != nil {
+		if err := json.Unmarshal(scanner.Bytes(), &frame); err != nil {
+			log.Printf("egress: unmarshal error: %v", err)
 			continue
 		}
 
@@ -566,11 +569,14 @@ func (gw *Gateway) handleEgressFrame(frame TetherFrame) {
 
 		gw.mu.Lock()
 		reply, ok := gw.activeReplies[chatID]
-		if !ok || reply.messageID == 0 {
-			var typingCancel context.CancelFunc
-			if ok && reply.typingCancel != nil {
-				typingCancel = reply.typingCancel
-			}
+		if !ok {
+			// No active reply — this is a replayed frame from a previous session. Ignore.
+			gw.mu.Unlock()
+			return
+		}
+		if reply.messageID == 0 {
+			// First delta — send a new Telegram message
+			typingCancel := reply.typingCancel
 			gw.mu.Unlock()
 			msgID := gw.sendTelegramMessage(chatID, payload.Text, botToken)
 			gw.mu.Lock()
@@ -604,10 +610,15 @@ func (gw *Gateway) handleEgressFrame(frame TetherFrame) {
 
 		gw.mu.Lock()
 		reply, ok := gw.activeReplies[chatID]
-		if ok && reply.typingCancel != nil {
+		if !ok {
+			// No active reply — replayed frame from previous session. Ignore.
+			gw.mu.Unlock()
+			return
+		}
+		if reply.typingCancel != nil {
 			reply.typingCancel()
 		}
-		if ok && reply.messageID != 0 {
+		if reply.messageID != 0 {
 			msgID := reply.messageID
 			delete(gw.activeReplies, chatID)
 			gw.mu.Unlock()
