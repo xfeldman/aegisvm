@@ -52,43 +52,52 @@ func startPortProxies(ports []int) *portProxy {
 	return pp
 }
 
-// tryBind attempts to bind the proxy for a single port, retrying periodically.
-// Gives the app time to start (e.g., after pip install) before claiming the port.
-// Stops retrying after 5 minutes or when the app takes the wildcard address.
+// tryBind waits for the app to start listening, then decides whether a proxy is needed.
+//
+// Strategy: don't bind the proxy until the app is confirmed listening on localhost.
+// If the app binds to 0.0.0.0 (wildcard), no proxy is needed — the app handles
+// guestIP traffic directly. If the app binds to 127.0.0.1 only, the proxy bridges
+// guestIP:port → 127.0.0.1:port.
+//
+// This avoids EADDRINUSE races when apps take a long time to start (pip install, etc.).
 func (pp *portProxy) tryBind(guestIP string, port int) {
 	listenAddr := net.JoinHostPort(guestIP, strconv.Itoa(port))
+	localhostAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	guestAddr := net.JoinHostPort(guestIP, strconv.Itoa(port))
 
-	for attempt := 0; attempt < 30; attempt++ {
-		// Wait before each attempt (2s, then every 10s)
+	// Wait for the app to start listening (up to 5 minutes)
+	for attempt := 0; attempt < 60; attempt++ {
 		if attempt == 0 {
 			time.Sleep(2 * time.Second)
 		} else {
-			time.Sleep(10 * time.Second)
+			time.Sleep(5 * time.Second)
 		}
 
-		ln, err := net.Listen("tcp", listenAddr)
-		if err != nil {
-			// Check if the app bound to 0.0.0.0 (no proxy needed)
-			// vs some transient error worth retrying
-			testConn, dialErr := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), time.Second)
-			if dialErr == nil {
-				testConn.Close()
-				// App is listening on localhost — but we couldn't bind guestIP.
-				// This means app took 0.0.0.0 (wildcard). No proxy needed.
-				log.Printf("portproxy: skip %d (app bound to wildcard)", port)
+		// Check if app is listening on guestIP directly (bound to 0.0.0.0)
+		if conn, err := net.DialTimeout("tcp", guestAddr, time.Second); err == nil {
+			conn.Close()
+			log.Printf("portproxy: skip %d (app reachable on %s, no proxy needed)", port, guestIP)
+			return
+		}
+
+		// Check if app is listening on localhost only
+		if conn, err := net.DialTimeout("tcp", localhostAddr, time.Second); err == nil {
+			conn.Close()
+			// App is on localhost but not guestIP — we need the proxy
+			ln, err := net.Listen("tcp", listenAddr)
+			if err != nil {
+				log.Printf("portproxy: bind %s failed: %v", listenAddr, err)
 				return
 			}
-			// Nobody listening yet — keep retrying
-			continue
+			pp.mu.Lock()
+			pp.listeners = append(pp.listeners, ln)
+			pp.mu.Unlock()
+			log.Printf("portproxy: %s → 127.0.0.1:%d", listenAddr, port)
+			go pp.accept(ln, port)
+			return
 		}
 
-		pp.mu.Lock()
-		pp.listeners = append(pp.listeners, ln)
-		pp.mu.Unlock()
-
-		log.Printf("portproxy: %s → 127.0.0.1:%d", listenAddr, port)
-		go pp.accept(ln, port)
-		return
+		// App not listening yet — keep waiting
 	}
 
 	log.Printf("portproxy: gave up on port %d after retries", port)
