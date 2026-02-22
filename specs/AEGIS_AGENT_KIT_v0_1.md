@@ -1,8 +1,29 @@
 # Aegis Agent Kit v0.1
 ## Streaming Tether + Session-Aware Agent Runtime
 
-**Status:** Draft (implementation-oriented)  
+**Status:** Implemented (v0.1)
 **Focus:** Defines the **Aegis Agent Kit** — a three-part system enabling messaging-driven autonomous agents running inside Aegis instances.
+
+### Implementation Status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| **Tether protocol** | Done | `tether.frame` notifications over control channel, `internal/tether/` package |
+| **TetherStore** | Done | Per-instance ring buffer with pub/sub, modeled after LogStore |
+| **Tether API** | Done | `POST /v1/instances/{id}/tether` (ingress + wake), `GET .../tether/stream` (egress NDJSON) |
+| **Harness passthrough** | Done | Forwards `tether.frame` to agent at 7778, buffer for cold boot race |
+| **Guest tether send** | Done | `POST /v1/tether/send` on guest API (7777), agent → host egress |
+| **Agent runtime** | Done | `cmd/aegis-agent`, OpenAI + Claude streaming, JSONL sessions, context windowing |
+| **Gateway (Telegram)** | Done | `cmd/aegis-gateway`, long-polling, wake-on-message, streaming edits, typing |
+| **Gateway auto-start** | Done | `aegis up` starts gateway if `~/.aegis/gateway.json` exists, `--no-gateway` to suppress |
+| **Secret resolution** | Done | Gateway resolves `bot_token_secret` from aegisd API (`GET /v1/secrets/{name}`) |
+| **OCI injection** | Done | `aegis-agent` + `aegis-mcp-guest` auto-injected into overlays via `InjectGuestBinaries` |
+| **Version injection** | Done | Build-time `ldflags` from git tag, shared `internal/version/` package |
+| **MCP integration** | Not started | Agent does not invoke MCP tools yet (planned v0.2) |
+| **At-least-once delivery** | Not started | `msg_id` dedup + `event.ack` not implemented (fire-and-forget for now) |
+| **control.cancel** | Not started | Cancel frame type defined but not wired to LLM cancellation |
+| **User identity in payload** | Done | `user.message` includes `user.id`, `user.username`, `user.name` for group chat attribution |
+| **Multi-channel** | Not started | Only Telegram adapter implemented |
 
 **Non-goals (v0.1):**
 - Full IDE-grade agent experience (Claude Code-level indexing, etc.)
@@ -262,7 +283,27 @@ The control plane continues to use its own methods (`run`, `exec`, `shutdown`, `
 }
 ```
 
-## 5.3 Core Frame Types
+## 5.3 `user.message` Payload
+
+```json
+{
+  "text": "Hello!",
+  "user": {
+    "id": "123456",
+    "username": "johndoe",
+    "name": "John"
+  }
+}
+```
+
+The `user` object is included by the gateway for user attribution in group chats. Fields:
+- `id` — channel-specific user identifier (stable across messages)
+- `username` — channel handle (e.g. Telegram username), may be absent
+- `name` — display name
+
+The agent runtime prepends `[name]: ` to the message content when user info is present, giving the LLM awareness of who is speaking in multi-user sessions.
+
+## 5.4 Core Frame Types
 
 ### Host → Guest
 

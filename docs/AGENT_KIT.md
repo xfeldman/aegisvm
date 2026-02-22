@@ -150,9 +150,14 @@ All tether messages use a single JSON-RPC notification method: `tether.frame`. D
   "session": {"channel": "telegram", "id": "123456"},
   "msg_id": "...",
   "seq": 1,
-  "payload": {"text": "Hello!"}
+  "payload": {
+    "text": "Hello!",
+    "user": {"id": "123", "username": "johndoe", "name": "John"}
+  }
 }
 ```
+
+The `user.message` payload includes user identity for group chat support. The agent prepends `[name]: ` to message content so the LLM knows who is speaking.
 
 **Frame types:**
 

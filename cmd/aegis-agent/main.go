@@ -104,6 +104,7 @@ type Turn struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 	TS      string `json:"ts"`
+	User    string `json:"user,omitempty"`
 }
 
 // TetherFrame matches the tether.Frame type.
@@ -143,9 +144,14 @@ func (a *Agent) handleTetherRecv(w http.ResponseWriter, r *http.Request) {
 
 // handleUserMessage processes an incoming user message.
 func (a *Agent) handleUserMessage(frame TetherFrame) {
-	// Extract text from payload
+	// Extract text and user info from payload
 	var payload struct {
 		Text string `json:"text"`
+		User *struct {
+			ID       string `json:"id"`
+			Username string `json:"username"`
+			Name     string `json:"name"`
+		} `json:"user"`
 	}
 	if err := json.Unmarshal(frame.Payload, &payload); err != nil {
 		log.Printf("invalid user.message payload: %v", err)
@@ -158,11 +164,26 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 
 	sess := a.getOrCreateSession(frame.Session)
 
+	// Build content with user attribution for group chats
+	userName := ""
+	content := payload.Text
+	if payload.User != nil {
+		if payload.User.Name != "" {
+			userName = payload.User.Name
+		} else if payload.User.Username != "" {
+			userName = payload.User.Username
+		}
+		if userName != "" {
+			content = fmt.Sprintf("[%s]: %s", userName, payload.Text)
+		}
+	}
+
 	// Append user turn
 	sess.appendTurn(Turn{
 		Role:    "user",
-		Content: payload.Text,
+		Content: content,
 		TS:      frame.TS,
+		User:    userName,
 	})
 
 	// Send thinking status

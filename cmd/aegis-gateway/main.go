@@ -335,7 +335,7 @@ func (gw *Gateway) handleTelegramMessage(msg *telegramMessage) {
 		},
 		MsgID:   fmt.Sprintf("tg-%d-%d", chatID, msg.MessageID),
 		Seq:     int64(msg.MessageID),
-		Payload: mustMarshal(map[string]string{"text": msg.Text}),
+		Payload: mustMarshal(buildUserPayload(msg)),
 	}
 
 	if err := gw.aegisClient.postTetherFrame(instanceID, frame); err != nil {
@@ -579,6 +579,25 @@ func (gw *Gateway) sendChatAction(chatID int64, action string) {
 		return
 	}
 	resp.Body.Close()
+}
+
+func buildUserPayload(msg *telegramMessage) map[string]interface{} {
+	p := map[string]interface{}{
+		"text": msg.Text,
+	}
+	if msg.From != nil {
+		user := map[string]interface{}{
+			"id": fmt.Sprintf("%d", msg.From.ID),
+		}
+		if msg.From.Username != "" {
+			user["username"] = msg.From.Username
+		}
+		if msg.From.FirstName != "" {
+			user["name"] = msg.From.FirstName
+		}
+		p["user"] = user
+	}
+	return p
 }
 
 func parseChatID(s string) int64 {
