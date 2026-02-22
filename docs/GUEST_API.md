@@ -13,7 +13,7 @@ curl http://127.0.0.1:7777/v1/self
 # Spawn a child instance
 curl -X POST http://127.0.0.1:7777/v1/instances \
   -H "Content-Type: application/json" \
-  -d '{"command":["python3","-m","http.server","8080"],"image_ref":"python:3.12","exposes":[8080]}'
+  -d '{"command":["python3","-m","http.server","8080"],"image_ref":"python:3.12-alpine","exposes":[8080]}'
 
 # List your children
 curl http://127.0.0.1:7777/v1/instances
@@ -47,7 +47,7 @@ curl -s --unix-socket ~/.aegis/aegisd.sock -X POST http://aegis/v1/instances \
       "spawn": true,
       "spawn_depth": 2,
       "max_children": 5,
-      "allowed_images": ["node:22", "python:3.12", "alpine"],
+      "allowed_images": ["node:22", "python:3.12-alpine", "alpine"],
       "max_memory_mb": 2048,
       "max_vcpus": 2,
       "max_expose_ports": 3

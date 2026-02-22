@@ -32,10 +32,9 @@ type portProxy struct {
 // Each proxy listens on guestIP:port and forwards to 127.0.0.1:port.
 // The guest IP is read from AEGIS_NET_IP (e.g. "192.168.127.2/24").
 //
-// The delay allows the app to bind first. If the app binds to 0.0.0.0:port,
-// the proxy's bind to guestIP:port will fail (EADDRINUSE) — which is correct,
-// the app handles traffic directly. If the app binds to 127.0.0.1:port, the
-// proxy succeeds and bridges the gap.
+// Retries binding periodically. On each attempt:
+//   - If guestIP:port binds → proxy runs (app is on localhost, proxy bridges)
+//   - If EADDRINUSE → app has 0.0.0.0, no proxy needed, stop retrying
 //
 // Returns nil if not in gvproxy mode (no AEGIS_NET_IP set).
 func startPortProxies(ports []int) *portProxy {
@@ -46,28 +45,53 @@ func startPortProxies(ports []int) *portProxy {
 
 	pp := &portProxy{}
 
-	// Start proxies in a goroutine with a delay to let the app bind first.
-	go func() {
-		time.Sleep(2 * time.Second)
-		for _, port := range ports {
-			listenAddr := net.JoinHostPort(guestIP, strconv.Itoa(port))
-			ln, err := net.Listen("tcp", listenAddr)
-			if err != nil {
-				// App is listening on 0.0.0.0:port — no proxy needed
-				log.Printf("portproxy: skip %d (app bound to wildcard)", port)
-				continue
-			}
-
-			pp.mu.Lock()
-			pp.listeners = append(pp.listeners, ln)
-			pp.mu.Unlock()
-
-			log.Printf("portproxy: %s → 127.0.0.1:%d", listenAddr, port)
-			go pp.accept(ln, port)
-		}
-	}()
+	for _, port := range ports {
+		go pp.tryBind(guestIP, port)
+	}
 
 	return pp
+}
+
+// tryBind attempts to bind the proxy for a single port, retrying periodically.
+// Gives the app time to start (e.g., after pip install) before claiming the port.
+// Stops retrying after 5 minutes or when the app takes the wildcard address.
+func (pp *portProxy) tryBind(guestIP string, port int) {
+	listenAddr := net.JoinHostPort(guestIP, strconv.Itoa(port))
+
+	for attempt := 0; attempt < 30; attempt++ {
+		// Wait before each attempt (2s, then every 10s)
+		if attempt == 0 {
+			time.Sleep(2 * time.Second)
+		} else {
+			time.Sleep(10 * time.Second)
+		}
+
+		ln, err := net.Listen("tcp", listenAddr)
+		if err != nil {
+			// Check if the app bound to 0.0.0.0 (no proxy needed)
+			// vs some transient error worth retrying
+			testConn, dialErr := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), time.Second)
+			if dialErr == nil {
+				testConn.Close()
+				// App is listening on localhost — but we couldn't bind guestIP.
+				// This means app took 0.0.0.0 (wildcard). No proxy needed.
+				log.Printf("portproxy: skip %d (app bound to wildcard)", port)
+				return
+			}
+			// Nobody listening yet — keep retrying
+			continue
+		}
+
+		pp.mu.Lock()
+		pp.listeners = append(pp.listeners, ln)
+		pp.mu.Unlock()
+
+		log.Printf("portproxy: %s → 127.0.0.1:%d", listenAddr, port)
+		go pp.accept(ln, port)
+		return
+	}
+
+	log.Printf("portproxy: gave up on port %d after retries", port)
 }
 
 // guestIPFromEnv extracts the IP address (without prefix length) from AEGIS_NET_IP.

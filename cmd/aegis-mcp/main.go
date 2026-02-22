@@ -170,7 +170,7 @@ var tools = []mcpTool{
 				"name":      {"type": "string", "description": "Human-friendly handle for the instance (e.g. 'web', 'api'). Use this to reference the instance in other tools."},
 				"expose":    {"type": "array", "items": {"type": "string"}, "description": "Ports to expose. Each entry is 'guestPort' (random public port) or 'publicPort:guestPort' (deterministic). Examples: ['80'], ['8080:80']. Response includes public_port in endpoints."},
 				"workspace": {"type": "string", "description": "Absolute host directory path to mount inside the VM at /workspace/. Example: '/home/user/project' becomes /workspace/ in the VM."},
-				"image":     {"type": "string", "description": "OCI image reference for the VM root filesystem (e.g. 'python:3.12', 'node:20'). Default is a minimal Alpine Linux."},
+				"image":     {"type": "string", "description": "OCI image reference for the VM root filesystem (e.g. 'python:3.12-alpine', 'node:22-alpine'). Default is a minimal Alpine Linux."},
 				"env":       {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment variables to set inside the VM."},
 				"secrets":   {"type": "array", "items": {"type": "string"}, "description": "Secret keys to inject as environment variables (must be set via secret_set first)."},
 				"memory_mb": {"type": "integer", "description": "VM memory in megabytes. Default: 512."},
@@ -696,7 +696,7 @@ Key concepts:
 - Commands run INSIDE the VM, not on the host. Host files are NOT available inside the VM unless you use a workspace.
 - Workspace: pass an absolute host directory path as the "workspace" parameter. It will be mounted at /workspace/ inside the VM. Reference files as /workspace/filename.
 - Ports: the VM has its own network. To access a server running inside, use "expose" to map guest ports to the host. The response includes the host port in "endpoints".
-- The base VM has basic tools (sh, ls, cat, etc). For Python, Node, or other runtimes, use the "image" parameter with an OCI image ref (e.g. "python:3.12", "node:20").
+- The base VM has basic tools (sh, ls, cat, etc). For Python, Node, or other runtimes, use the "image" parameter with an OCI image ref (e.g. "python:3.12-alpine", "node:22-alpine").
 - Use "exec" to run commands inside a running instance. Use "logs" to see instance output.
 - Use "name" to give instances human-friendly handles for easy reference.
 - Capabilities: pass "capabilities" to allow an instance to spawn child instances from inside the VM via a Guest API (http://127.0.0.1:7777). This enables orchestrator patterns where a bot or controller spawns work instances on demand. Children inherit the parent's capability limits — no escalation possible.

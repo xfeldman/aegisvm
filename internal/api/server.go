@@ -215,68 +215,13 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		opts = append(opts, lifecycle.WithCapabilities(req.Capabilities))
 	}
 
-	// Create in lifecycle manager
+	// Create in lifecycle manager.
+	// This triggers onInstanceCreated which handles router port allocation
+	// and registry persistence — same path as guest API spawns.
 	s.lifecycle.CreateInstance(id, req.Command, exposePorts, opts...)
 
-	// Allocate public ports via router
-	var publicEndpoints []router.PublicEndpoint
-	if s.router != nil && len(req.Exposes) > 0 {
-		for i, e := range req.Exposes {
-			proto := exposePorts[i].Protocol
-			publicPort, err := s.router.AllocatePort(id, e.Port, e.PublicPort, proto)
-			if err != nil {
-				log.Printf("allocate public port for guest %d: %v", e.Port, err)
-				s.router.FreeAllPorts(id)
-				s.lifecycle.DeleteInstance(id)
-				writeError(w, http.StatusInternalServerError, fmt.Sprintf("port allocation failed: %v", err))
-				return
-			}
-			publicEndpoints = append(publicEndpoints, router.PublicEndpoint{
-				GuestPort:  e.Port,
-				PublicPort: publicPort,
-				Protocol:   proto,
-			})
-		}
-	}
-
-	// Persist to registry (after port allocation so we can save public ports)
-	if s.registry != nil {
-		portInts := make([]int, len(exposePorts))
-		for i, p := range exposePorts {
-			portInts[i] = p.GuestPort
-		}
-		publicPorts := make(map[int]int)
-		for _, ep := range publicEndpoints {
-			publicPorts[ep.GuestPort] = ep.PublicPort
-		}
-		capsJSON := ""
-		if req.Capabilities != nil {
-			if b, err := json.Marshal(req.Capabilities); err == nil {
-				capsJSON = string(b)
-			}
-		}
-		regInst := &registry.Instance{
-			ID:           id,
-			State:        "stopped",
-			Command:      req.Command,
-			ExposePorts:  portInts,
-			Handle:       req.Handle,
-			ImageRef:     req.ImageRef,
-			Workspace:    req.Workspace,
-			Env:          env,
-			SecretKeys:   req.Secrets,
-			PublicPorts:  publicPorts,
-			Enabled:      true,
-			MemoryMB:     req.MemoryMB,
-			VCPUs:        req.VCPUs,
-			Capabilities: capsJSON,
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
-		}
-		if err := s.registry.SaveInstance(regInst); err != nil {
-			log.Printf("save instance to registry: %v", err)
-		}
-	}
+	// Read back the allocated public ports for the response
+	publicEndpoints := s.router.GetAllPublicPorts(id)
 
 	// Boot the instance
 	go func() {

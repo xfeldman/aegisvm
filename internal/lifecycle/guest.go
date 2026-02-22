@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/xfeldman/aegisvm/internal/vmm"
@@ -156,7 +157,18 @@ func (m *Manager) guestSpawn(parent *Instance, token *CapabilityToken, params js
 		opts = append(opts, WithImageRef(req.ImageRef))
 	}
 	if req.Workspace != "" {
-		opts = append(opts, WithWorkspace(req.Workspace))
+		// Resolve guest workspace path to host path.
+		// The guest sees /workspace/... but the host needs the actual directory.
+		// If the parent has a workspace mounted, translate /workspace/subpath
+		// to parentHostPath/subpath. Otherwise pass through as-is (host path).
+		workspace := req.Workspace
+		if parent.WorkspacePath != "" && strings.HasPrefix(workspace, "/workspace") {
+			// /workspace → parent's host path
+			// /workspace/subdir → parent's host path + /subdir
+			suffix := strings.TrimPrefix(workspace, "/workspace")
+			workspace = parent.WorkspacePath + suffix
+		}
+		opts = append(opts, WithWorkspace(workspace))
 	}
 	if len(req.Env) > 0 {
 		opts = append(opts, WithEnv(req.Env))
@@ -200,11 +212,28 @@ func (m *Manager) guestListChildren(parent *Instance) (interface{}, error) {
 			inst.mu.Lock()
 			state := inst.State
 			inst.mu.Unlock()
-			children = append(children, map[string]interface{}{
+
+			child := map[string]interface{}{
 				"id":     inst.ID,
 				"handle": inst.HandleAlias,
 				"state":  state,
-			})
+			}
+
+			// Use router public ports (not VMM backend ports)
+			publicPorts := m.GetPublicPorts(inst.ID)
+			if len(publicPorts) > 0 {
+				var eps []map[string]interface{}
+				for guestPort, publicPort := range publicPorts {
+					eps = append(eps, map[string]interface{}{
+						"guest_port":  guestPort,
+						"public_port": publicPort,
+						"url":         fmt.Sprintf("http://127.0.0.1:%d", publicPort),
+					})
+				}
+				child["endpoints"] = eps
+			}
+
+			children = append(children, child)
 		}
 	}
 
@@ -249,13 +278,14 @@ func (m *Manager) guestSelfInfo(inst *Instance) (interface{}, error) {
 		"parent_id": inst.ParentID,
 	}
 
-	if eps := inst.Endpoints; len(eps) > 0 {
+	publicPorts := m.GetPublicPorts(inst.ID)
+	if len(publicPorts) > 0 {
 		var endpoints []map[string]interface{}
-		for _, ep := range eps {
+		for guestPort, publicPort := range publicPorts {
 			endpoints = append(endpoints, map[string]interface{}{
-				"guest_port":  ep.GuestPort,
-				"host_port":   ep.HostPort,
-				"protocol":    ep.Protocol,
+				"guest_port":  guestPort,
+				"public_port": publicPort,
+				"url":         fmt.Sprintf("http://127.0.0.1:%d", publicPort),
 			})
 		}
 		info["endpoints"] = endpoints

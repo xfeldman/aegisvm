@@ -91,7 +91,7 @@ var tools = []mcpTool{
 			"properties": {
 				"command":   {"type": "array", "items": {"type": "string"}, "description": "Command to run in the child VM. Use VM paths (e.g. /workspace/script.py)."},
 				"handle":    {"type": "string", "description": "Human-friendly name for the child (e.g. 'build-site', 'run-tests'). Used to reference it later."},
-				"image_ref": {"type": "string", "description": "OCI image for the child VM (e.g. 'node:22', 'python:3.12'). Default: Alpine Linux."},
+				"image_ref": {"type": "string", "description": "OCI image for the child VM (e.g. 'node:22', 'python:3.12-alpine'). Default: Alpine Linux."},
 				"workspace": {"type": "string", "description": "Host directory to mount at /workspace/ in the child VM."},
 				"exposes":   {"type": "array", "items": {"type": "integer"}, "description": "Guest ports to expose on the host (e.g. [8080, 3000])."},
 				"memory_mb": {"type": "integer", "description": "Child VM memory in MB. Default: 512."},

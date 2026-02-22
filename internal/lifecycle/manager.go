@@ -27,6 +27,7 @@ import (
 	"github.com/xfeldman/aegisvm/internal/image"
 	"github.com/xfeldman/aegisvm/internal/logstore"
 	"github.com/xfeldman/aegisvm/internal/overlay"
+	"github.com/xfeldman/aegisvm/internal/registry"
 	"github.com/xfeldman/aegisvm/internal/secrets"
 	"github.com/xfeldman/aegisvm/internal/vmm"
 )
@@ -131,9 +132,12 @@ type Manager struct {
 	imageCache  *image.Cache
 	overlay     overlay.Overlay
 	secretStore *secrets.Store
+	registry    *registry.DB
 
 	// Callbacks
-	onStateChange func(id, state string)
+	onStateChange   func(id, state string)
+	onAllocatePorts func(inst *Instance)                            // router port allocation
+	getPublicPorts  func(id string) map[int]int                     // guestPort → publicPort lookup
 }
 
 // NewManager creates a lifecycle manager.
@@ -153,9 +157,66 @@ func (m *Manager) SetSecretStore(ss *secrets.Store) {
 	m.secretStore = ss
 }
 
+// saveToRegistry persists an instance to the registry database.
+func (m *Manager) saveToRegistry(inst *Instance) {
+	capsJSON := ""
+	if inst.Capabilities != nil {
+		if b, err := json.Marshal(inst.Capabilities); err == nil {
+			capsJSON = string(b)
+		}
+	}
+	portInts := make([]int, len(inst.ExposePorts))
+	for i, p := range inst.ExposePorts {
+		portInts[i] = p.GuestPort
+	}
+	regInst := &registry.Instance{
+		ID:           inst.ID,
+		State:        "stopped",
+		Command:      inst.Command,
+		ExposePorts:  portInts,
+		Handle:       inst.HandleAlias,
+		ImageRef:     inst.ImageRef,
+		Workspace:    inst.WorkspacePath,
+		Env:          inst.Env,
+		Enabled:      inst.Enabled,
+		MemoryMB:     inst.MemoryMB,
+		VCPUs:        inst.VCPUs,
+		ParentID:     inst.ParentID,
+		Capabilities: capsJSON,
+		CreatedAt:    inst.CreatedAt,
+	}
+	if err := m.registry.SaveInstance(regInst); err != nil {
+		log.Printf("save instance to registry: %v", err)
+	}
+}
+
 // OnStateChange registers a callback for state changes (e.g., to persist to registry).
 func (m *Manager) OnStateChange(fn func(id, state string)) {
 	m.onStateChange = fn
+}
+
+// OnAllocatePorts registers a callback for router port allocation.
+// Called from CreateInstance for every new instance (host or guest).
+func (m *Manager) OnAllocatePorts(fn func(inst *Instance)) {
+	m.onAllocatePorts = fn
+}
+
+// SetPublicPortsLookup registers a function to query router public ports.
+func (m *Manager) SetPublicPortsLookup(fn func(id string) map[int]int) {
+	m.getPublicPorts = fn
+}
+
+// GetPublicPorts returns guestPort → publicPort mapping for an instance.
+func (m *Manager) GetPublicPorts(id string) map[int]int {
+	if m.getPublicPorts != nil {
+		return m.getPublicPorts(id)
+	}
+	return nil
+}
+
+// SetRegistry sets the registry for instance persistence.
+func (m *Manager) SetRegistry(reg *registry.DB) {
+	m.registry = reg
 }
 
 // InstanceOption configures an instance at creation time.
@@ -262,8 +323,17 @@ func (m *Manager) CreateInstance(id string, command []string, exposePorts []vmm.
 	m.mu.Unlock()
 
 	// Pre-create logstore entry so logs are available immediately
-	// (before boot goroutine starts).
 	m.logStore.GetOrCreate(id)
+
+	// Allocate router ports (external concern, callback)
+	if m.onAllocatePorts != nil {
+		m.onAllocatePorts(inst)
+	}
+
+	// Save to registry
+	if m.registry != nil {
+		m.saveToRegistry(inst)
+	}
 
 	return inst
 }
@@ -323,6 +393,7 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 
 	// If image ref is set but no rootfs yet, prepare it
 	if inst.ImageRef != "" && inst.RootfsPath == "" {
+		log.Printf("instance %s: preparing image rootfs for %s", inst.ID, inst.ImageRef)
 		rootfs, err := m.prepareImageRootfs(ctx, inst)
 		if err != nil {
 			inst.mu.Lock()
@@ -334,6 +405,8 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		}
 		inst.RootfsPath = rootfs
 	}
+
+	log.Printf("instance %s: rootfs ready, starting VM", inst.ID)
 
 	rootfsPath := m.cfg.BaseRootfsPath
 	if inst.RootfsPath != "" {
@@ -464,6 +537,8 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		}
 		rpcParams["expose_ports"] = ports
 	}
+	log.Printf("instance %s: run RPC params: expose_ports=%v", inst.ID, rpcParams["expose_ports"])
+
 	// Inject capability token if this instance has spawn capabilities
 	if inst.Capabilities != nil && m.secretStore != nil {
 		token, err := GenerateToken(m.secretStore, inst.ID, *inst.Capabilities)

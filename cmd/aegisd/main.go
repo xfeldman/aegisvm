@@ -100,14 +100,33 @@ func main() {
 	}
 	log.Printf("secret store: %s", cfg.MasterKeyPath)
 
-	// Pass secret store to lifecycle manager for capability token operations
+	// Pass secret store and registry to lifecycle manager
 	lm.SetSecretStore(ss)
+	lm.SetRegistry(reg)
 
 	// Start router (handle-based routing, no app resolver)
 	rtr := router.New(lm, cfg.RouterAddr)
 	if err := rtr.Start(); err != nil {
 		log.Fatalf("start router: %v", err)
 	}
+
+	// Public port lookup — used by guest API responses
+	lm.SetPublicPortsLookup(func(id string) map[int]int {
+		ports := make(map[int]int)
+		for _, ep := range rtr.GetAllPublicPorts(id) {
+			ports[ep.GuestPort] = ep.PublicPort
+		}
+		return ports
+	})
+
+	// Router port allocation — called from CreateInstance for every new instance
+	lm.OnAllocatePorts(func(inst *lifecycle.Instance) {
+		for _, ep := range inst.ExposePorts {
+			if _, err := rtr.AllocatePort(inst.ID, ep.GuestPort, 0, ep.Protocol); err != nil {
+				log.Printf("allocate port for %s guest:%d: %v", inst.ID, ep.GuestPort, err)
+			}
+		}
+	})
 
 	// Restore instances from registry (they all come back as stopped — VMs are gone)
 	if instances, err := reg.ListInstances(); err == nil && len(instances) > 0 {

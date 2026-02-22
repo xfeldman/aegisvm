@@ -244,14 +244,14 @@ func (l *LibkrunVMM) StartVM(h Handle) (ControlChannel, error) {
 
 	// Wait for harness to connect back (with timeout)
 	if tcpLn, ok := ln.(*net.TCPListener); ok {
-		tcpLn.SetDeadline(time.Now().Add(30 * time.Second))
+		tcpLn.SetDeadline(time.Now().Add(90 * time.Second))
 	} else if unixLn, ok := ln.(*net.UnixListener); ok {
-		unixLn.SetDeadline(time.Now().Add(30 * time.Second))
+		unixLn.SetDeadline(time.Now().Add(90 * time.Second))
 	}
 	conn, err := ln.Accept()
 	ln.Close() // only need one connection
 	if err != nil {
-		return nil, fmt.Errorf("harness did not connect within 30s: %w", err)
+		return nil, fmt.Errorf("harness did not connect within 90s: %w", err)
 	}
 
 	return NewNetControlChannel(conn), nil
