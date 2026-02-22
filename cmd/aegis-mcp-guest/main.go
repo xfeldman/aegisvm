@@ -87,15 +87,24 @@ type mcpToolCallParams struct {
 var tools = []mcpTool{
 	{
 		Name:        "instance_spawn",
-		Description: "Spawn a new child instance from this VM. The child runs in its own isolated microVM with its own filesystem, network, and lifecycle. Use this when you need to run a separate workload — build a project, serve a website, run tests, etc. The child instance gets its own exposed ports and workspace. Children are automatically stopped when the parent stops.",
+		Description: `Spawn a new child VM instance. The child is fully isolated — it cannot see your files unless you provide a workspace.
+
+Correct workflow:
+1. Create a subdirectory: /workspace/my-app/
+2. Write child's files there: /workspace/my-app/server.py
+3. Spawn with workspace="/workspace/my-app" and command=["python3", "/workspace/server.py"]
+
+CRITICAL: The workspace directory becomes /workspace/ inside the child. So if you write /workspace/my-app/server.py and set workspace="/workspace/my-app", the child sees it as /workspace/server.py — NOT /workspace/my-app/server.py. Command paths must be relative to /workspace/ in the child.
+
+Children are automatically stopped when the parent stops.`,
 		InputSchema: rawJSON(`{
 			"type": "object",
 			"properties": {
-				"command":   {"type": "array", "items": {"type": "string"}, "description": "Command to run in the child VM. Use VM paths (e.g. /workspace/script.py)."},
-				"handle":    {"type": "string", "description": "Human-friendly name for the child (e.g. 'build-site', 'run-tests'). Used to reference it later."},
+				"command":   {"type": "array", "items": {"type": "string"}, "description": "Command to run inside the child. Paths must be relative to the child's /workspace/. Example: if you set workspace='/workspace/my-app', the child sees that directory as /workspace/, so use command=['python3', '/workspace/server.py'] NOT ['python3', '/workspace/my-app/server.py']."},
+				"handle":    {"type": "string", "description": "Human-friendly name for the child (e.g. 'calc-app', 'web-server')."},
 				"image_ref": {"type": "string", "description": "OCI image for the child VM (e.g. 'node:22', 'python:3.12-alpine'). Default: Alpine Linux."},
-				"workspace": {"type": "string", "description": "Host directory to mount at /workspace/ in the child VM."},
-				"exposes":   {"type": "array", "items": {"type": "integer"}, "description": "Guest ports to expose on the host (e.g. [8080, 3000])."},
+				"workspace": {"type": "string", "description": "A subdirectory under /workspace/ that becomes the child's /workspace/. Create and populate it before spawning. Example: '/workspace/my-app'. Do NOT use '/workspace' itself."},
+				"exposes":   {"type": "array", "items": {"type": "integer"}, "description": "Guest ports to expose on the host (e.g. [8080]). Response includes public_port."},
 				"memory_mb": {"type": "integer", "description": "Child VM memory in MB. Default: 512."},
 				"env":       {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment variables for the child."}
 			},

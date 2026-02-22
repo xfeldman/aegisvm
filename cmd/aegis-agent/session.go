@@ -76,6 +76,8 @@ func (s *Session) loadFromDisk() {
 }
 
 // assembleContext builds the message list for the LLM: system prompt + last N turns.
+// It ensures tool call chains are never broken — if an assistant turn with tool_use
+// is included, all following tool result turns must also be included.
 func (s *Session) assembleContext(systemPrompt string) []Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -90,6 +92,29 @@ func (s *Session) assembleContext(systemPrompt string) []Message {
 		}
 		totalChars += size
 		selected = append([]Turn{t}, selected...)
+	}
+
+	// Trim from the front to avoid breaking tool call chains.
+	// A "tool" turn without a preceding assistant+tool_use turn is invalid.
+	// An assistant turn with tool_use content without following tool results is invalid.
+	for len(selected) > 0 && selected[0].Role == "tool" {
+		selected = selected[1:]
+	}
+
+	// If the first turn is an assistant with tool_use (non-string content),
+	// drop it and any following tool turns until we reach a clean user turn.
+	for len(selected) > 0 {
+		if selected[0].Role == "assistant" {
+			if _, isStr := selected[0].Content.(string); !isStr {
+				// Assistant with tool_use blocks — drop it and following tool results
+				selected = selected[1:]
+				for len(selected) > 0 && selected[0].Role == "tool" {
+					selected = selected[1:]
+				}
+				continue
+			}
+		}
+		break
 	}
 
 	messages := []Message{{Role: "system", Content: systemPrompt}}

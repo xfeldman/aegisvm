@@ -71,7 +71,7 @@ func main() {
 
 	agent.systemPrompt = os.Getenv("AEGIS_SYSTEM_PROMPT")
 	if agent.systemPrompt == "" {
-		agent.systemPrompt = "You are a helpful assistant running inside an Aegis VM. You have access to tools for working with the filesystem and running commands. The workspace is at /workspace/."
+		agent.systemPrompt = defaultSystemPrompt
 	}
 
 	agent.initMCPTools()
@@ -180,6 +180,8 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 	a.sendDone(frame.Session, msg)
 	sess.appendTurn(Turn{Role: "assistant", Content: msg, TS: now()})
 }
+
+const defaultSystemPrompt = `You are a helpful assistant running inside an Aegis VM. Your persistent workspace is at /workspace/. You have tools for running commands, reading/writing files, and optionally managing child VM instances. Read tool descriptions carefully — they explain parameters and constraints.`
 
 func now() string {
 	return time.Now().UTC().Format(time.RFC3339Nano)
