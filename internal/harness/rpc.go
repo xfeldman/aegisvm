@@ -521,15 +521,86 @@ func handleExec(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *pr
 // agentRuntimeAddr is where the guest agent runtime listens for tether frames.
 const agentRuntimeAddr = "http://127.0.0.1:7778"
 
-// forwardTetherToAgent forwards a tether.frame notification to the agent runtime.
-// Best-effort: if the agent runtime is not running, the frame is dropped silently.
-func forwardTetherToAgent(params json.RawMessage) {
+// tetherBuffer buffers tether frames until the agent runtime is ready.
+// Frames are delivered in order. Once the agent is reachable, subsequent
+// frames are forwarded directly (no buffering).
+var tetherBuffer = &tetherFrameBuffer{
+	ready: make(chan struct{}),
+}
+
+type tetherFrameBuffer struct {
+	mu      sync.Mutex
+	queue   []json.RawMessage
+	started bool
+	ready   chan struct{}
+}
+
+// enqueue adds a frame. If the agent is already reachable, sends directly.
+// Otherwise buffers and kicks off a drain goroutine on first frame.
+func (b *tetherFrameBuffer) enqueue(params json.RawMessage) {
+	// Fast path: agent already confirmed reachable
+	select {
+	case <-b.ready:
+		sendToAgent(params)
+		return
+	default:
+	}
+
+	b.mu.Lock()
+	// Copy params since the underlying buffer may be reused
+	cp := make(json.RawMessage, len(params))
+	copy(cp, params)
+	if len(b.queue) < 100 {
+		b.queue = append(b.queue, cp)
+	} else {
+		log.Printf("tether: buffer full, dropping frame")
+	}
+	if !b.started {
+		b.started = true
+		go b.drain()
+	}
+	b.mu.Unlock()
+}
+
+// drain waits for the agent to become reachable, then flushes all buffered frames.
+func (b *tetherFrameBuffer) drain() {
+	// Wait for agent to be ready (poll every 200ms, up to 30s)
+	for i := 0; i < 150; i++ {
+		resp, err := http.Get(agentRuntimeAddr + "/v1/tether/recv")
+		if err == nil {
+			resp.Body.Close()
+			// Agent is listening (405 = wrong method, but server is up)
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	close(b.ready)
+
+	// Flush buffered frames
+	b.mu.Lock()
+	queued := b.queue
+	b.queue = nil
+	b.mu.Unlock()
+
+	for _, params := range queued {
+		sendToAgent(params)
+	}
+}
+
+func sendToAgent(params json.RawMessage) {
 	resp, err := http.Post(agentRuntimeAddr+"/v1/tether/recv", "application/json", bytes.NewReader(params))
 	if err != nil {
-		// Agent runtime not running — expected when no agent is configured
+		log.Printf("tether: send to agent failed: %v", err)
 		return
 	}
 	resp.Body.Close()
+}
+
+// forwardTetherToAgent forwards a tether.frame notification to the agent runtime.
+// Frames are buffered if the agent isn't ready yet and drained once it starts.
+func forwardTetherToAgent(params json.RawMessage) {
+	tetherBuffer.enqueue(params)
 }
 
 // sendNotification sends a JSON-RPC notification (no ID, no response expected).
