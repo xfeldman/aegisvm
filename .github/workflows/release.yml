@@ -39,16 +39,22 @@ jobs:
             exit 1
           fi
 
-      - name: Package release tarball
+      - name: Package core release tarball
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
           TARBALL="aegisvm-${VERSION}-darwin-arm64.tar.gz"
-          tar czf "${TARBALL}" -C bin \
-            aegis aegisd aegis-mcp aegis-mcp-guest aegis-vmm-worker \
-            aegis-harness aegis-gateway aegis-agent
+          make release-tarball
+          mv "aegisvm-${VERSION}-darwin-arm64.tar.gz" "${TARBALL}"
           echo "TARBALL=${TARBALL}" >> $GITHUB_ENV
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
           shasum -a 256 "${TARBALL}" | awk '{print $1}' > "${TARBALL}.sha256"
+
+      - name: Package agent kit release tarball
+        run: |
+          KIT_TARBALL="aegisvm-agent-kit-${VERSION}-darwin-arm64.tar.gz"
+          make release-kit-tarball
+          echo "KIT_TARBALL=${KIT_TARBALL}" >> $GITHUB_ENV
+          shasum -a 256 "${KIT_TARBALL}" | awk '{print $1}' > "${KIT_TARBALL}.sha256"
 
       - name: Create GitHub Release
         env:
@@ -58,9 +64,11 @@ jobs:
             --title "AegisVM ${VERSION}" \
             --generate-notes \
             "${TARBALL}" \
-            "${TARBALL}.sha256"
+            "${TARBALL}.sha256" \
+            "${KIT_TARBALL}" \
+            "${KIT_TARBALL}.sha256"
 
-      - name: Update Homebrew tap
+      - name: Update core Homebrew tap
         env:
           TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
         if: env.TAP_TOKEN != ''
@@ -68,7 +76,6 @@ jobs:
           SHA256=$(cat "${TARBALL}.sha256")
           DOWNLOAD_URL="https://github.com/xfeldman/aegisvm/releases/download/${VERSION}/${TARBALL}"
 
-          # Clone tap repo, update formula, push
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/xfeldman/homebrew-aegisvm.git" /tmp/homebrew-aegisvm
           cd /tmp/homebrew-aegisvm
 
@@ -80,4 +87,25 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/aegisvm.rb
           git commit -m "aegisvm ${VERSION}"
+          git push
+
+      - name: Update agent kit Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+        if: env.TAP_TOKEN != ''
+        run: |
+          KIT_SHA256=$(cat "${KIT_TARBALL}.sha256")
+          KIT_DOWNLOAD_URL="https://github.com/xfeldman/aegisvm/releases/download/${VERSION}/${KIT_TARBALL}"
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/xfeldman/homebrew-aegisvm-agent-kit.git" /tmp/homebrew-agent-kit
+          cd /tmp/homebrew-agent-kit
+
+          sed -i '' "s|url \".*\"|url \"${KIT_DOWNLOAD_URL}\"|" Formula/agent-kit.rb
+          sed -i '' "s|sha256 \".*\"|sha256 \"${KIT_SHA256}\"|" Formula/agent-kit.rb
+          sed -i '' "s|version \".*\"|version \"${VERSION#v}\"|" Formula/agent-kit.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/agent-kit.rb
+          git commit -m "agent-kit ${VERSION}"
           git push

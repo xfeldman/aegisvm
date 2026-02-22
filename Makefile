@@ -33,7 +33,7 @@ ifeq ($(HOST_OS),darwin)
 	CGO_LDFLAGS := -L/opt/homebrew/lib
 endif
 
-.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent base-rootfs clean test test-unit test-m2 test-m3 test-network integration install-kit
+.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent base-rootfs clean test test-unit test-m2 test-m3 test-network integration install-kit release-tarball release-kit-tarball
 
 all: aegisd aegis harness vmm-worker mcp mcp-guest gateway agent
 
@@ -141,6 +141,19 @@ ifdef SHORT
 else
 	$(GO) test -tags integration -v -count=1 -timeout 10m ./test/integration/
 endif
+
+# Release tarballs
+release-tarball: aegisd aegis harness vmm-worker mcp mcp-guest
+	tar czf aegisvm-$(VERSION)-darwin-arm64.tar.gz -C bin \
+		aegis aegisd aegis-mcp aegis-mcp-guest aegis-vmm-worker aegis-harness
+
+release-kit-tarball: gateway agent
+	@mkdir -p /tmp/agent-kit-staging
+	cp $(BIN_DIR)/aegis-gateway $(BIN_DIR)/aegis-agent /tmp/agent-kit-staging/
+	sed 's/"version": *"[^"]*"/"version": "$(VERSION)"/' kits/agent.json > /tmp/agent-kit-staging/agent.json
+	tar czf aegisvm-agent-kit-$(VERSION)-darwin-arm64.tar.gz -C /tmp/agent-kit-staging \
+		aegis-gateway aegis-agent agent.json
+	@rm -rf /tmp/agent-kit-staging
 
 # Install kit manifests for development (stamps git version into manifest)
 install-kit:

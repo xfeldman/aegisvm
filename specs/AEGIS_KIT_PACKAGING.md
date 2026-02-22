@@ -265,13 +265,15 @@ Each brings its own binaries, OCI recipe, and `--kit` preset. Core aegis stays m
 - [x] Add `aegis kit list` command
 - [x] Kit manifest format + loading (`internal/kit/kit.go`)
 - [x] Instance `kit` field in registry
-- [x] Manifest-driven daemon startup in `aegis up` / `aegis down`
+- [x] Per-instance daemon lifecycle managed by aegisd (`instance_daemons` in kit manifest)
 - [x] Kit version stamped from git tags at build time
 
-### Phase 2 (v0.2)
-- [ ] Separate Homebrew formula `aegisvm-agent-kit`
-- [ ] Separate release tarball for kit
-- [ ] CI workflow for kit releases
+### Phase 2 (v0.2) — completed
+- [x] Separate Homebrew formula `agent-kit` in `xfeldman/homebrew-aegisvm-agent-kit` tap
+- [x] Separate release tarball (`aegisvm-agent-kit-{version}-darwin-arm64.tar.gz`)
+- [x] CI release workflow publishes both core + kit tarballs, updates both taps
+- [x] Core tarball no longer includes kit binaries (`aegis-gateway`, `aegis-agent`)
+- [x] Kit tarball includes `aegis-gateway`, `aegis-agent`, `agent.json` (version-stamped manifest)
 
 ### Phase 3 (future)
 - [ ] Kit plugin API (arbitrary kits, not just agent)
