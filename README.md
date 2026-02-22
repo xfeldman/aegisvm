@@ -47,6 +47,26 @@ aegis run --workspace ./myapp --expose 8080:80 -- python3 /workspace/server.py
 aegis down
 ```
 
+## Agent Kit
+
+Aegis Agent Kit turns AegisVM into a messaging-driven agent platform with wake-on-message and scale-to-zero. The agent VM consumes zero CPU when idle — a new Telegram message wakes it in milliseconds.
+
+```bash
+# Store your keys
+aegis secret set OPENAI_API_KEY sk-...
+aegis secret set TELEGRAM_BOT_TOKEN 123456:ABC-...
+
+# Start the agent (boots a VM with the LLM bridge)
+aegis instance start --name my-agent --secret OPENAI_API_KEY --workspace my-agent -- aegis-agent
+
+# Start the gateway (polls Telegram, routes through tether)
+aegis-gateway
+```
+
+The gateway resolves the bot token from the aegis secret store, delivers messages to the agent via the tether protocol, and streams responses back to Telegram with typing indicators and progressive message edits.
+
+See [Agent Kit docs](docs/AGENT_KIT.md) for the full guide.
+
 ## MCP (Claude Code integration)
 
 AegisVM ships an MCP server (`aegis-mcp`) that lets LLMs drive sandboxed instances — start VMs, exec commands, read logs, manage secrets.
@@ -182,6 +202,10 @@ Common flags: `--name`, `--expose [PUBLIC:]GUEST[/proto]`, `--env K=V`, `--secre
 
 **aegis-mcp-guest** — MCP server (guest-side). Runs inside VMs, lets agents spawn and manage child instances via the Guest API.
 
+**aegis-gateway** — messaging adapter (host-side). Bridges Telegram with agent instances via the tether protocol. Handles wake-on-message and streaming UX.
+
+**aegis-agent** — agent runtime (guest-side). Thin LLM bridge with session management, streaming responses, and tether integration.
+
 ## What AegisVM is not
 
 - **Not a generic hypervisor.** Fixed base image, opinionated lifecycle, one kind of workload.
@@ -213,6 +237,7 @@ make integration SHORT=1  # skip pause/resume test
 ## Documentation
 
 - [Quickstart](docs/QUICKSTART.md) — zero to running agent in 5 minutes
+- [Agent Kit](docs/AGENT_KIT.md) — Telegram bot with wake-on-message and streaming LLM responses
 - [CLI Reference](docs/CLI.md) — complete command reference
 - [Guest Orchestration API](docs/GUEST_API.md) — spawn and manage instances from inside a VM (HTTP + MCP)
 - [Agent Conventions](docs/AGENT_CONVENTIONS.md) — guest environment contract
