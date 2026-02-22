@@ -164,22 +164,22 @@ func doStreamingRequest(method, path string, body interface{}) (*http.Response, 
 var tools = []mcpTool{
 	{
 		Name:        "instance_start",
-		Description: "Start a new isolated Linux microVM running a command. The VM is a fresh Alpine Linux environment — host files are NOT available unless mapped via workspace. To restart a stopped or disabled instance, pass just the name without a command.",
+		Description: "Start a new isolated Linux microVM running a command. The VM is a fresh Alpine Linux environment — host files are NOT available unless mapped via workspace. To restart a stopped or disabled instance, pass just the name without a command. Use the 'kit' parameter with installed kits (see kit_list) to get preset command, image, and capabilities — e.g. kit='agent' for a messaging-driven LLM agent.",
 		InputSchema: rawJSON(`{
 			"type": "object",
 			"properties": {
-				"command":   {"type": "array", "items": {"type": "string"}, "description": "Command to run inside the VM. Paths must be VM paths (e.g. /workspace/script.py), not host paths."},
+				"command":   {"type": "array", "items": {"type": "string"}, "description": "Command to run inside the VM. Paths must be VM paths (e.g. /workspace/script.py), not host paths. Not required when using a kit (the kit provides a default command)."},
 				"name":      {"type": "string", "description": "Human-friendly handle for the instance (e.g. 'web', 'api'). Use this to reference the instance in other tools."},
+				"kit":       {"type": "string", "description": "Kit preset name (e.g. 'agent'). Supplies default command, image, and capabilities from the kit manifest. Use kit_list to see available kits. Explicit parameters override kit defaults."},
 				"expose":    {"type": "array", "items": {"type": "string"}, "description": "Ports to expose. Each entry is 'guestPort' (random public port) or 'publicPort:guestPort' (deterministic). Examples: ['80'], ['8080:80']. Response includes public_port in endpoints."},
 				"workspace": {"type": "string", "description": "Absolute host directory path to live-mount inside the VM at /workspace/. Changes on the host are immediately visible inside the VM and vice versa — no restart needed. Example: '/home/user/project' becomes /workspace/ in the VM."},
-				"image":     {"type": "string", "description": "OCI image reference for the VM root filesystem (e.g. 'python:3.12-alpine', 'node:22-alpine'). Default is a minimal Alpine Linux."},
+				"image":     {"type": "string", "description": "OCI image reference for the VM root filesystem (e.g. 'python:3.12-alpine', 'node:22-alpine'). Default is a minimal Alpine Linux. Kit provides a default if not specified."},
 				"env":       {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment variables to set inside the VM."},
 				"secrets":   {"type": "array", "items": {"type": "string"}, "description": "Secret keys to inject as environment variables (must be set via secret_set first)."},
 				"memory_mb": {"type": "integer", "description": "VM memory in megabytes. Default: 512."},
 				"vcpus":     {"type": "integer", "description": "Number of virtual CPUs. Default: 1."},
-				"capabilities": {"type": "object", "description": "Guest orchestration capabilities. When set, the VM gets a Guest API on http://127.0.0.1:7777 that allows it to spawn and manage child instances. This is how bot/orchestrator instances create work instances on demand. The capabilities define what the VM is allowed to do — resource ceilings, allowed images, max children. Child instances inherit the same or stricter capabilities (no escalation possible). Without capabilities, the Guest API is read-only (self-info only, no spawning).", "properties": {"spawn": {"type": "boolean", "description": "Allow this instance to spawn child instances via the Guest API."}, "spawn_depth": {"type": "integer", "description": "Maximum nesting depth. 1 = can spawn children, but children cannot spawn grandchildren. 2 = children can also spawn."}, "max_children": {"type": "integer", "description": "Maximum number of concurrent child instances."}, "allowed_images": {"type": "array", "items": {"type": "string"}, "description": "OCI image refs children can use. Use [\"*\"] for any image."}, "max_memory_mb": {"type": "integer", "description": "Maximum memory per child instance in MB."}, "max_vcpus": {"type": "integer", "description": "Maximum vCPUs per child instance."}, "max_expose_ports": {"type": "integer", "description": "Maximum exposed ports per child instance."}}}
-			},
-			"required": ["command"]
+				"capabilities": {"type": "object", "description": "Guest orchestration capabilities. When set, the VM gets a Guest API on http://127.0.0.1:7777 that allows it to spawn and manage child instances. Kit provides defaults if not specified.", "properties": {"spawn": {"type": "boolean", "description": "Allow this instance to spawn child instances via the Guest API."}, "spawn_depth": {"type": "integer", "description": "Maximum nesting depth. 1 = can spawn children, but children cannot spawn grandchildren. 2 = children can also spawn."}, "max_children": {"type": "integer", "description": "Maximum number of concurrent child instances."}, "allowed_images": {"type": "array", "items": {"type": "string"}, "description": "OCI image refs children can use. Use [\"*\"] for any image."}, "max_memory_mb": {"type": "integer", "description": "Maximum memory per child instance in MB."}, "max_vcpus": {"type": "integer", "description": "Maximum vCPUs per child instance."}, "max_expose_ports": {"type": "integer", "description": "Maximum exposed ports per child instance."}}}
+			}
 		}`),
 	},
 	{
@@ -280,6 +280,14 @@ var tools = []mcpTool{
 			"required": ["key"]
 		}`),
 	},
+	{
+		Name:        "kit_list",
+		Description: "List installed kits. Kits are optional add-on bundles that provide preset configurations for instances (command, image, capabilities). Use the kit name with instance_start's 'kit' parameter.",
+		InputSchema: rawJSON(`{
+			"type": "object",
+			"properties": {}
+		}`),
+	},
 }
 
 func rawJSON(s string) json.RawMessage {
@@ -292,6 +300,7 @@ func handleInstanceStart(args json.RawMessage) *mcpToolResult {
 	var params struct {
 		Command      []string               `json:"command"`
 		Name         string                 `json:"name"`
+		Kit          string                 `json:"kit"`
 		Expose       []string               `json:"expose"`
 		Workspace    string                 `json:"workspace"`
 		Image        string                 `json:"image"`
@@ -305,9 +314,8 @@ func handleInstanceStart(args json.RawMessage) *mcpToolResult {
 		return errorResult("invalid arguments: " + err.Error())
 	}
 
-	// If no command but name is given, this is a restart of a stopped instance
-	if len(params.Command) == 0 && params.Name != "" {
-		// Restart: POST /v1/instances with just the handle
+	// If no command, no kit, but name is given, this is a restart of a stopped instance
+	if len(params.Command) == 0 && params.Kit == "" && params.Name != "" {
 		body := map[string]interface{}{"handle": params.Name}
 		status, data, err := doRequest("POST", "/v1/instances", body)
 		if err != nil {
@@ -319,12 +327,48 @@ func handleInstanceStart(args json.RawMessage) *mcpToolResult {
 		return textResult(string(data))
 	}
 
+	// Apply kit defaults if specified
+	if params.Kit != "" {
+		manifest, err := loadKitManifest(params.Kit)
+		if err != nil {
+			return errorResult(fmt.Sprintf("kit %q: %v", params.Kit, err))
+		}
+		if params.Image == "" {
+			if base, ok := manifest["image"].(map[string]interface{}); ok {
+				if b, ok := base["base"].(string); ok {
+					params.Image = b
+				}
+			}
+		}
+		if len(params.Command) == 0 {
+			if defaults, ok := manifest["defaults"].(map[string]interface{}); ok {
+				if cmd, ok := defaults["command"].([]interface{}); ok {
+					for _, c := range cmd {
+						if s, ok := c.(string); ok {
+							params.Command = append(params.Command, s)
+						}
+					}
+				}
+			}
+		}
+		if len(params.Capabilities) == 0 {
+			if defaults, ok := manifest["defaults"].(map[string]interface{}); ok {
+				if caps, ok := defaults["capabilities"].(map[string]interface{}); ok {
+					params.Capabilities = caps
+				}
+			}
+		}
+	}
+
 	if len(params.Command) == 0 {
-		return errorResult("command is required")
+		return errorResult("command is required (or use a kit that provides a default command)")
 	}
 
 	body := map[string]interface{}{
 		"command": params.Command,
+	}
+	if params.Kit != "" {
+		body["kit"] = params.Kit
 	}
 	if params.Name != "" {
 		body["handle"] = params.Name
@@ -617,6 +661,52 @@ func handleSecretDelete(args json.RawMessage) *mcpToolResult {
 	return textResult(fmt.Sprintf("secret %q deleted", params.Key))
 }
 
+func loadKitManifest(name string) (map[string]interface{}, error) {
+	home, _ := os.UserHomeDir()
+	path := filepath.Join(home, ".aegis", "kits", name+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("kit manifest not found at %s", path)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("invalid kit manifest: %v", err)
+	}
+	return m, nil
+}
+
+func handleKitList(args json.RawMessage) *mcpToolResult {
+	home, _ := os.UserHomeDir()
+	kitsDir := filepath.Join(home, ".aegis", "kits")
+	entries, err := os.ReadDir(kitsDir)
+	if err != nil {
+		return textResult("No kits installed.")
+	}
+
+	var kits []map[string]interface{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(kitsDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var manifest map[string]interface{}
+		if json.Unmarshal(data, &manifest) != nil {
+			continue
+		}
+		kits = append(kits, manifest)
+	}
+
+	if len(kits) == 0 {
+		return textResult("No kits installed.")
+	}
+
+	data, _ := json.MarshalIndent(kits, "", "  ")
+	return textResult(string(data))
+}
+
 // --- Result helpers ---
 
 func textResult(text string) *mcpToolResult {
@@ -645,6 +735,7 @@ var toolHandlers = map[string]func(json.RawMessage) *mcpToolResult{
 	"secret_set":      handleSecretSet,
 	"secret_list":     handleSecretList,
 	"secret_delete":   handleSecretDelete,
+	"kit_list":        handleKitList,
 }
 
 // --- Main loop ---
@@ -696,15 +787,20 @@ func main() {
 Key concepts:
 - Each instance is a lightweight VM running a single command. The VM runs Alpine Linux (ARM64).
 - Commands run INSIDE the VM, not on the host. Host files are NOT available inside the VM unless you use a workspace.
-- Workspace: pass an absolute host directory path as the "workspace" parameter. It will be live-mounted at /workspace/ inside the VM. Files are shared in real-time — edits on the host appear instantly inside the VM and vice versa. No restart needed after changing files.
+- Workspace: pass an absolute host directory path as the "workspace" parameter. It will be mounted at /workspace/ inside the VM. Example: '/home/user/project' becomes /workspace/ in the VM.
 - Ports: the VM has its own network. To access a server running inside, use "expose" to map guest ports to the host. The response includes the host port in "endpoints".
-- The base VM has basic tools (sh, ls, cat, etc). For Python, Node, or other runtimes, use the "image" parameter with an OCI image ref (e.g. "python:3.12-alpine", "node:22-alpine").
+- The base VM has basic tools (sh, ls, cat, etc). For Python, Node, or other runtimes, use the "image" parameter with an OCI image ref (e.g. "python:3.12", "node:20").
 - Use "exec" to run commands inside a running instance. Use "logs" to see instance output.
 - Use "name" to give instances human-friendly handles for easy reference.
-- Capabilities: pass "capabilities" to allow an instance to spawn child instances from inside the VM via a Guest API (http://127.0.0.1:7777). This enables orchestrator patterns where a bot or controller spawns work instances on demand. Children inherit the parent's capability limits — no escalation possible.
+
+Kits:
+- Kits are optional add-on bundles that provide preset configurations for instances.
+- Use kit_list to see installed kits. Each kit provides a default command, image, and capabilities.
+- Use instance_start with kit="<name>" to create an instance with kit defaults. Explicit parameters override.
+- Example: instance_start with kit="agent", name="my-agent", secrets=["OPENAI_API_KEY"] creates a messaging-driven LLM agent.
 
 Example — run a Python script from the host:
-  1. instance_start with workspace="/path/to/project", command=["python3", "/workspace/script.py"], expose=[8080], name="myapp"
+  1. instance_start with workspace="/path/to/project", command=["python3", "/workspace/script.py"], expose=["8080"], name="myapp"
   2. exec with name="myapp", command=["ls", "/workspace/"] to see mounted files
   3. logs with name="myapp" to check output`,
 			}
