@@ -35,37 +35,29 @@ guest environment contract.
 
 ### aegis up
 
-Start the aegisd daemon and any kit daemons.
+Start the aegisd daemon.
 
 ```
-aegis up [--no-daemons]
+aegis up
 ```
 
 Locates the `aegisd` binary next to the `aegis` binary, starts it as a
 subprocess, and waits up to 2 seconds for the PID file to appear. If the
 daemon is already running, prints a message and exits without error.
 
-After starting aegisd, scans installed kit manifests (`~/.aegis/kits/*.json`)
-and starts each kit daemon that has a config file present. For example, the
-Agent Kit's `aegis-gateway` daemon starts if `~/.aegis/gateway.json` exists.
-Daemons without a config file are reported but not started. Daemons whose
-binary is missing are silently skipped.
-
-Use `--no-daemons` to suppress all kit daemon startup.
+Kit daemons (e.g., `aegis-gateway`) are managed per-instance by aegisd, not
+by `aegis up`. When an instance with a kit that declares `instance_daemons`
+is created or enabled, aegisd spawns the daemon automatically. See
+[Agent Kit docs](AGENT_KIT.md) for details.
 
 If no base rootfs is installed at `~/.aegis/base-rootfs/`, automatically
 downloads the default variant (`python` — Alpine + Python 3.12) before
 starting the daemon. See `aegis rootfs` for managing rootfs variants.
 
-**Examples:**
+**Example:**
 
 ```
 $ aegis up
-aegis v0.4.0
-aegisd: started
-aegis-gateway: started (agent kit)
-
-$ aegis up --no-daemons
 aegis v0.4.0
 aegisd: started
 ```
@@ -74,23 +66,20 @@ aegisd: started
 
 ### aegis down
 
-Stop the aegisd daemon and all kit daemons.
+Stop the aegisd daemon.
 
 ```
 aegis down
 ```
 
-First stops all kit daemons (by scanning installed kit manifests and their PID
-files), then stops aegisd. Sends SIGTERM and waits up to 5 seconds for each
-process to exit. If the daemon is not running, prints a message and exits
-without error.
+Stops aegisd, which in turn stops all per-instance kit daemons and VMs. Sends
+SIGTERM and waits up to 5 seconds for the process to exit. If the daemon is
+not running, prints a message and exits without error.
 
 **Example:**
 
 ```
 $ aegis down
-aegis-gateway stopping (pid 48202)
-aegis-gateway stopped
 aegisd stopping (pid 48201)
 aegisd stopped
 ```
@@ -287,6 +276,7 @@ Enabled:     true
 Image:       python:3.12-alpine
 Kit:         agent
 Command:     aegis-agent
+Gateway:     running
 Connections: 0
 Created:     2026-02-19T10:30:00Z
 Last Active: 2026-02-19T10:35:00Z
@@ -617,8 +607,8 @@ aegis mcp uninstall
 
 | Command | Description |
 |---|---|
-| `aegis up` | Start daemon + kit daemons (`--no-daemons` to suppress) |
-| `aegis down` | Stop daemon + kit daemons |
+| `aegis up` | Start daemon (kit daemons are per-instance, managed by aegisd) |
+| `aegis down` | Stop daemon (stops all kit daemons and VMs) |
 | `aegis status` | Show daemon status |
 | `aegis doctor` | Diagnose environment |
 | `aegis run [...] -- CMD` | Ephemeral: start + follow + delete |

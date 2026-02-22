@@ -16,6 +16,7 @@ import (
 
 	"github.com/xfeldman/aegisvm/internal/api"
 	"github.com/xfeldman/aegisvm/internal/config"
+	"github.com/xfeldman/aegisvm/internal/daemon"
 	"github.com/xfeldman/aegisvm/internal/image"
 	"github.com/xfeldman/aegisvm/internal/lifecycle"
 	"github.com/xfeldman/aegisvm/internal/logstore"
@@ -130,6 +131,9 @@ func main() {
 		}
 	})
 
+	// Create daemon manager for per-instance sidecar processes (e.g., gateways)
+	dm := daemon.NewManager(cfg.BinDir, cfg.DataDir, cfg.SocketPath)
+
 	// Restore instances from registry (they all come back as stopped — VMs are gone)
 	if instances, err := reg.ListInstances(); err == nil && len(instances) > 0 {
 		restored := 0
@@ -170,6 +174,9 @@ func main() {
 					opts = append(opts, lifecycle.WithCapabilities(&caps))
 				}
 			}
+			if ri.Kit != "" {
+				opts = append(opts, lifecycle.WithKit(ri.Kit))
+			}
 
 			// Re-create in lifecycle manager (state = stopped)
 			inst := lm.CreateInstance(ri.ID, ri.Command, exposePorts, opts...)
@@ -201,13 +208,24 @@ func main() {
 				}
 			}
 
+			// Start instance daemons for enabled kit instances
+			if ri.Enabled && ri.Kit != "" {
+				handle := ri.Handle
+				if handle == "" {
+					handle = ri.ID
+				}
+				if err := dm.StartDaemons(ri.ID, handle, ri.Kit); err != nil {
+					log.Printf("start daemons for %s: %v", ri.ID, err)
+				}
+			}
+
 			restored++
 		}
 		log.Printf("restored %d instance(s) from registry (all stopped)", restored)
 	}
 
 	// Start API server
-	server := api.NewServer(cfg, backend, lm, reg, ss, ls, rtr)
+	server := api.NewServer(cfg, backend, lm, reg, ss, ls, rtr, dm)
 	if err := server.Start(); err != nil {
 		log.Fatalf("start API server: %v", err)
 	}
@@ -227,6 +245,9 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	// Stop all instance daemons (gateways, etc.)
+	dm.StopAll()
 
 	// Stop lifecycle manager (stops all VMs)
 	lm.Shutdown()

@@ -159,25 +159,12 @@ func isDaemonRunning() bool {
 }
 
 func cmdUp() {
-	// Parse flags
-	noDaemons := false
-	for _, arg := range os.Args[2:] {
-		if arg == "--no-daemons" || arg == "--no-gateway" {
-			noDaemons = true
-		}
-	}
-
 	fmt.Printf("aegis %s\n", version.Version())
 
 	if isDaemonRunning() {
 		fmt.Println("aegisd: already running")
 	} else {
 		startDaemon()
-	}
-
-	// Start kit daemons from manifests
-	if !noDaemons {
-		startKitDaemons()
 	}
 }
 
@@ -225,184 +212,7 @@ func startDaemon() {
 
 // daemonPidFilePath returns the PID file path for a daemon binary name.
 // e.g. "aegis-gateway" → ~/.aegis/data/gateway.pid
-func daemonPidFilePath(daemonName string) string {
-	home, _ := os.UserHomeDir()
-	// Strip "aegis-" prefix for the PID file name
-	short := strings.TrimPrefix(daemonName, "aegis-")
-	return filepath.Join(home, ".aegis", "data", short+".pid")
-}
-
-// daemonConfigPath returns the config file path for a daemon binary name.
-// e.g. "aegis-gateway" → ~/.aegis/gateway.json
-func daemonConfigPath(daemonName string) string {
-	home, _ := os.UserHomeDir()
-	short := strings.TrimPrefix(daemonName, "aegis-")
-	return filepath.Join(home, ".aegis", short+".json")
-}
-
-// isDaemonProcessRunning checks if a daemon process is alive by its PID file.
-func isDaemonProcessRunning(daemonName string) bool {
-	data, err := os.ReadFile(daemonPidFilePath(daemonName))
-	if err != nil {
-		return false
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		return false
-	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return proc.Signal(syscall.Signal(0)) == nil
-}
-
-// startKitDaemons scans kit manifests and starts each daemon that has a config file.
-func startKitDaemons() {
-	home, _ := os.UserHomeDir()
-	kitsDir := filepath.Join(home, ".aegis", "kits")
-	entries, err := os.ReadDir(kitsDir)
-	if err != nil {
-		return // no kits directory — nothing to start
-	}
-
-	exe, _ := os.Executable()
-	binDir := filepath.Dir(exe)
-
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(kitsDir, e.Name()))
-		if err != nil {
-			continue
-		}
-		var manifest struct {
-			Name    string   `json:"name"`
-			Daemons []string `json:"daemons"`
-		}
-		if json.Unmarshal(data, &manifest) != nil {
-			continue
-		}
-
-		for _, daemon := range manifest.Daemons {
-			daemonBin := filepath.Join(binDir, daemon)
-			if _, err := os.Stat(daemonBin); err != nil {
-				// Binary missing — skip silently (kit may be broken)
-				continue
-			}
-
-			configPath := daemonConfigPath(daemon)
-			if _, err := os.Stat(configPath); err != nil {
-				fmt.Printf("%s: no config (create %s to enable)\n", daemon, configPath)
-				continue
-			}
-
-			if isDaemonProcessRunning(daemon) {
-				fmt.Printf("%s: already running\n", daemon)
-				continue
-			}
-
-			logDir := filepath.Join(home, ".aegis", "data")
-			short := strings.TrimPrefix(daemon, "aegis-")
-			logFile, err := os.OpenFile(filepath.Join(logDir, short+".log"),
-				os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "create %s log: %v\n", daemon, err)
-				continue
-			}
-
-			cmd := exec.Command(daemonBin)
-			cmd.Stdout = logFile
-			cmd.Stderr = logFile
-
-			if err := cmd.Start(); err != nil {
-				fmt.Fprintf(os.Stderr, "start %s: %v\n", daemon, err)
-				continue
-			}
-
-			os.WriteFile(daemonPidFilePath(daemon), []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0600)
-			kitName := manifest.Name
-			if kitName == "" {
-				kitName = strings.TrimSuffix(e.Name(), ".json")
-			}
-			fmt.Printf("%s: started (%s kit)\n", daemon, kitName)
-		}
-	}
-}
-
-// stopKitDaemons scans kit manifests and stops all kit daemons by PID file.
-func stopKitDaemons() {
-	home, _ := os.UserHomeDir()
-	kitsDir := filepath.Join(home, ".aegis", "kits")
-	entries, err := os.ReadDir(kitsDir)
-	if err != nil {
-		return
-	}
-
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(kitsDir, e.Name()))
-		if err != nil {
-			continue
-		}
-		var manifest struct {
-			Daemons []string `json:"daemons"`
-		}
-		if json.Unmarshal(data, &manifest) != nil {
-			continue
-		}
-
-		for _, daemon := range manifest.Daemons {
-			stopDaemonByPidFile(daemon)
-		}
-	}
-}
-
-// stopDaemonByPidFile stops a daemon process using its PID file.
-func stopDaemonByPidFile(daemonName string) {
-	pidFile := daemonPidFilePath(daemonName)
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		return // no PID file — daemon was never started
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		os.Remove(pidFile)
-		return
-	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		os.Remove(pidFile)
-		return
-	}
-	if proc.Signal(syscall.Signal(0)) != nil {
-		// Process already dead — clean up stale PID file
-		os.Remove(pidFile)
-		return
-	}
-	proc.Signal(syscall.SIGTERM)
-	fmt.Printf("%s stopping (pid %d)\n", daemonName, pid)
-	for i := 0; i < 30; i++ {
-		if proc.Signal(syscall.Signal(0)) != nil {
-			fmt.Printf("%s stopped\n", daemonName)
-			os.Remove(pidFile)
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	// Force kill if SIGTERM didn't work
-	proc.Kill()
-	os.Remove(pidFile)
-	fmt.Printf("%s stopped (killed)\n", daemonName)
-}
-
 func cmdDown() {
-	// Stop kit daemons first
-	stopKitDaemons()
-
 	data, err := os.ReadFile(pidFilePath())
 	if err != nil {
 		fmt.Println("aegisd is not running")
@@ -767,30 +577,6 @@ func cmdStatus() {
 
 	fmt.Printf("aegisd: %s\n", status["status"])
 	fmt.Printf("backend: %s\n", status["backend"])
-
-	// Show running kit daemons
-	home, _ := os.UserHomeDir()
-	kitsDir := filepath.Join(home, ".aegis", "kits")
-	if entries, err := os.ReadDir(kitsDir); err == nil {
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-				continue
-			}
-			data, _ := os.ReadFile(filepath.Join(kitsDir, e.Name()))
-			var manifest struct {
-				Daemons []string `json:"daemons"`
-			}
-			if json.Unmarshal(data, &manifest) != nil {
-				continue
-			}
-			for _, daemon := range manifest.Daemons {
-				if isDaemonProcessRunning(daemon) {
-					short := strings.TrimPrefix(daemon, "aegis-")
-					fmt.Printf("%s: running\n", short)
-				}
-			}
-		}
-	}
 }
 
 func cmdDoctor() {
@@ -939,8 +725,11 @@ func cmdInstanceStart(client *http.Client) {
 
 	exposePorts, name, imageRef, envVars, secretKeys, workspace, kitName, command := parseRunFlags(args)
 
-	// Apply kit defaults if --kit specified
-	if kitName != "" {
+	// Restart path: --name only, no command, no kit → just restart stored config
+	isRestart := name != "" && len(command) == 0 && kitName == ""
+
+	// Apply kit defaults only on create (not restart)
+	if kitName != "" && !isRestart {
 		manifest := loadKitManifestOrDie(kitName)
 		if imageRef == "" && manifest.Image.Base != "" {
 			imageRef = manifest.Image.Base
@@ -993,7 +782,7 @@ func cmdInstanceStart(client *http.Client) {
 	if workspace != "" {
 		reqBody["workspace"] = workspace
 	}
-	if kitName != "" {
+	if kitName != "" && !isRestart {
 		reqBody["kit"] = kitName
 		// Apply kit capabilities as defaults
 		manifest := loadKitManifestOrDie(kitName)
@@ -1075,15 +864,19 @@ func cmdInstanceList(client *http.Client) {
 		return
 	}
 
-	fmt.Printf("%-30s %-15s %-12s %-10s %-20s\n", "ID", "HANDLE", "STATUS", "STATE", "STOPPED AT")
+	fmt.Printf("%-30s %-15s %-10s %-12s %-10s %-20s\n", "ID", "HANDLE", "KIT", "STATUS", "STATE", "STOPPED AT")
 	for _, inst := range instances {
 		id, _ := inst["id"].(string)
 		state, _ := inst["state"].(string)
 		handle, _ := inst["handle"].(string)
+		kitName, _ := inst["kit"].(string)
 		stoppedAt, _ := inst["stopped_at"].(string)
 		enabled, _ := inst["enabled"].(bool)
 		if handle == "" {
 			handle = "-"
+		}
+		if kitName == "" {
+			kitName = "-"
 		}
 		if stoppedAt == "" {
 			stoppedAt = "-"
@@ -1113,7 +906,7 @@ func cmdInstanceList(client *http.Client) {
 		}
 		statePad := 10 + len(stateStr) - len(state)
 
-		fmt.Printf("%-30s %-15s %-*s %-*s %-20s\n", id, handle, statusPad, statusStr, statePad, stateStr, stoppedAt)
+		fmt.Printf("%-30s %-15s %-10s %-*s %-*s %-20s\n", id, handle, kitName, statusPad, statusStr, statePad, stateStr, stoppedAt)
 	}
 }
 
@@ -1188,6 +981,13 @@ func cmdInstanceInfo(client *http.Client) {
 			kitDisplay += " (not installed)"
 		}
 		fmt.Printf("Kit:         %s\n", kitDisplay)
+		if gwRunning, ok := inst["gateway_running"].(bool); ok {
+			if gwRunning {
+				fmt.Printf("Gateway:     %srunning%s\n", colorGreen, colorReset)
+			} else {
+				fmt.Printf("Gateway:     %sstopped%s\n", colorGray, colorReset)
+			}
+		}
 	}
 	if cmd, ok := inst["command"].([]interface{}); ok && len(cmd) > 0 {
 		parts := make([]string, len(cmd))
@@ -1856,11 +1656,11 @@ func cmdKitList() {
 			continue
 		}
 		var manifest struct {
-			Name        string   `json:"name"`
-			Version     string   `json:"version"`
-			Description string   `json:"description"`
-			Daemons     []string `json:"daemons"`
-			Image       struct {
+			Name            string   `json:"name"`
+			Version         string   `json:"version"`
+			Description     string   `json:"description"`
+			InstanceDaemons []string `json:"instance_daemons"`
+			Image           struct {
 				Inject []string `json:"inject"`
 			} `json:"image"`
 		}
@@ -1870,7 +1670,7 @@ func cmdKitList() {
 
 		// Validate binaries exist
 		var missing []string
-		for _, d := range manifest.Daemons {
+		for _, d := range manifest.InstanceDaemons {
 			if _, err := os.Stat(filepath.Join(binDir, d)); err != nil {
 				missing = append(missing, d)
 			}
@@ -1915,11 +1715,11 @@ func loadKitManifestOrDie(name string) *kitManifest {
 
 // kitManifest mirrors the kit manifest structure for CLI use.
 type kitManifest struct {
-	Name        string   `json:"name"`
-	Version     string   `json:"version"`
-	Description string   `json:"description"`
-	Daemons     []string `json:"daemons"`
-	Image       struct {
+	Name            string   `json:"name"`
+	Version         string   `json:"version"`
+	Description     string   `json:"description"`
+	InstanceDaemons []string `json:"instance_daemons"`
+	Image           struct {
 		Base   string   `json:"base"`
 		Inject []string `json:"inject"`
 	} `json:"image"`

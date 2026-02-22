@@ -16,8 +16,13 @@ type Manifest struct {
 	Name        string   `json:"name"`
 	Version     string   `json:"version"`
 	Description string   `json:"description"`
-	Daemons     []string `json:"daemons"`
-	Image       struct {
+
+	// InstanceDaemons lists binaries to spawn per enabled instance using this kit.
+	// aegisd manages their lifecycle: start on instance create/enable,
+	// stop on instance disable/delete, restart on crash with backoff.
+	InstanceDaemons []string `json:"instance_daemons,omitempty"`
+
+	Image struct {
 		Base   string   `json:"base"`
 		Inject []string `json:"inject"`
 	} `json:"image"`
@@ -77,8 +82,8 @@ func ListManifests() ([]*Manifest, error) {
 // Returns a list of missing binary names (empty if all present).
 func ValidateManifest(m *Manifest, binDir string) []string {
 	var missing []string
-	// Check daemon binaries
-	for _, d := range m.Daemons {
+	// Check instance daemon binaries
+	for _, d := range m.InstanceDaemons {
 		if _, err := os.Stat(filepath.Join(binDir, d)); err != nil {
 			missing = append(missing, d)
 		}

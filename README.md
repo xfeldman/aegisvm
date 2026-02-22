@@ -65,17 +65,15 @@ aegis secret set TELEGRAM_BOT_TOKEN 123456:ABC-...
 # Start the agent — kit provides command, image, and capabilities
 aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
 
-# Configure the gateway (~/.aegis/gateway.json)
+# Configure the gateway (per-instance config)
+mkdir -p ~/.aegis/kits/my-agent
 echo '{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","instance":"my-agent","allowed_chats":["*"]}}' \
-  > ~/.aegis/gateway.json
-
-# Restart — gateway starts automatically when config exists
-aegis down && aegis up
+  > ~/.aegis/kits/my-agent/gateway.json
 ```
 
 The `--kit agent` flag is a preset — it supplies the command (`aegis-agent`), image (`python:3.12-alpine`), and spawn capabilities from the kit manifest at `~/.aegis/kits/agent.json`. Explicit flags override kit defaults.
 
-The gateway resolves the bot token from the aegis secret store, delivers messages to the agent via the tether protocol, and streams responses back to Telegram with typing indicators and progressive message edits. Use `aegis up --no-daemons` to suppress kit daemon auto-start.
+The gateway is spawned per-instance by aegisd when the instance is created. It resolves the bot token from the aegis secret store, delivers messages to the agent via the tether protocol, and streams responses back to Telegram with typing indicators and progressive message edits. The gateway survives VM pause/stop to enable wake-on-message, and hot-reloads config changes automatically.
 
 See [Agent Kit docs](docs/AGENT_KIT.md) for the full guide.
 
@@ -146,7 +144,7 @@ STOPPED → STARTING → RUNNING ↔ PAUSED → STOPPED
 Daemon management:
 
 ```bash
-aegis up [--no-daemons] / down / status / doctor
+aegis up / down / status / doctor
 ```
 
 Runtime:

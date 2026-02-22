@@ -55,7 +55,7 @@ make all
 ## CLI Commands
 
 ```
-aegis up [--no-daemons] / down / status / doctor
+aegis up / down / status / doctor
 aegis run [--expose [PUB:]GUEST[/proto]] [--env K=V] [--secret KEY] [--name H] [--workspace W] [--kit KIT] -- CMD
 aegis instance start [--name H] [--expose [PUB:]GUEST[/proto]] [--env K=V] [--secret KEY] [--workspace W] [--image REF] [--kit KIT] -- CMD
 aegis instance start --name H                              (restart stopped instance)

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/xfeldman/aegisvm/internal/config"
+	"github.com/xfeldman/aegisvm/internal/daemon"
 	"github.com/xfeldman/aegisvm/internal/lifecycle"
 	"github.com/xfeldman/aegisvm/internal/logstore"
 	"github.com/xfeldman/aegisvm/internal/registry"
@@ -31,13 +32,14 @@ type Server struct {
 	secretStore *secrets.Store
 	logStore    *logstore.Store
 	router      *router.Router
+	daemons     *daemon.Manager
 	mux         *http.ServeMux
 	server      *http.Server
 	ln          net.Listener
 }
 
 // NewServer creates a new API server.
-func NewServer(cfg *config.Config, v vmm.VMM, lm *lifecycle.Manager, reg *registry.DB, ss *secrets.Store, ls *logstore.Store, rtr *router.Router) *Server {
+func NewServer(cfg *config.Config, v vmm.VMM, lm *lifecycle.Manager, reg *registry.DB, ss *secrets.Store, ls *logstore.Store, rtr *router.Router, dm *daemon.Manager) *Server {
 	s := &Server{
 		cfg:         cfg,
 		vmm:         v,
@@ -46,6 +48,7 @@ func NewServer(cfg *config.Config, v vmm.VMM, lm *lifecycle.Manager, reg *regist
 		secretStore: ss,
 		logStore:    ls,
 		router:      rtr,
+		daemons:     dm,
 		mux:         http.NewServeMux(),
 	}
 	s.registerRoutes()
@@ -233,6 +236,17 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	// Read back the allocated public ports for the response
 	publicEndpoints := s.router.GetAllPublicPorts(id)
 
+	// Start instance daemons (e.g., gateway) if kit has instance_daemons
+	if req.Kit != "" && s.daemons != nil {
+		handle := req.Handle
+		if handle == "" {
+			handle = id
+		}
+		if err := s.daemons.StartDaemons(id, handle, req.Kit); err != nil {
+			log.Printf("instance %s start daemons: %v", id, err)
+		}
+	}
+
 	// Boot the instance
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -288,6 +302,17 @@ func (s *Server) handleRestartOrConflict(w http.ResponseWriter, inst *lifecycle.
 	}
 
 	s.ensurePortListeners(inst)
+
+	// Start instance daemons on re-enable
+	if inst.Kit != "" && s.daemons != nil {
+		handle := inst.HandleAlias
+		if handle == "" {
+			handle = inst.ID
+		}
+		if err := s.daemons.StartDaemons(inst.ID, handle, inst.Kit); err != nil {
+			log.Printf("instance %s start daemons: %v", inst.ID, err)
+		}
+	}
 
 	// Re-enable and boot via StartInstance (sets Enabled=true + boots).
 	go func() {
@@ -345,6 +370,9 @@ func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	if inst.Kit != "" {
 		resp["kit"] = inst.Kit
+		if s.daemons != nil {
+			resp["gateway_running"] = s.daemons.IsRunning(inst.ID)
+		}
 	}
 	if !inst.StoppedAt.IsZero() {
 		resp["stopped_at"] = inst.StoppedAt.Format(time.RFC3339)
@@ -679,6 +707,17 @@ func (s *Server) handleStartInstance(w http.ResponseWriter, r *http.Request) {
 
 	s.ensurePortListeners(inst)
 
+	// Start instance daemons if kit instance and not already running
+	if inst.Kit != "" && s.daemons != nil {
+		handle := inst.HandleAlias
+		if handle == "" {
+			handle = inst.ID
+		}
+		if err := s.daemons.StartDaemons(inst.ID, handle, inst.Kit); err != nil {
+			log.Printf("instance %s start daemons: %v", inst.ID, err)
+		}
+	}
+
 	// StartInstance sets Enabled=true and boots
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -708,6 +747,11 @@ func (s *Server) handleDisableInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Stop instance daemons
+	if s.daemons != nil {
+		s.daemons.StopDaemons(inst.ID)
+	}
+
 	// Free port listeners immediately (no new connections)
 	if s.router != nil {
 		s.router.FreeAllPorts(inst.ID)
@@ -728,6 +772,11 @@ func (s *Server) handleDisableInstance(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 	id := pathParam(r, "id")
+
+	// Stop instance daemons
+	if s.daemons != nil {
+		s.daemons.StopDaemons(id)
+	}
 
 	// Free public port listeners before deleting instance
 	if s.router != nil {

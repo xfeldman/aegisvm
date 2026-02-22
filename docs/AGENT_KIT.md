@@ -81,7 +81,7 @@ agent listening on 127.0.0.1:7778
 
 ### 3. Configure the gateway
 
-Create `~/.aegis/gateway.json`:
+Create `~/.aegis/kits/my-agent/gateway.json` (the directory matches the instance handle):
 
 ```json
 {
@@ -100,36 +100,27 @@ Create `~/.aegis/gateway.json`:
 | `instance` | Handle of the agent instance to route messages to |
 | `allowed_chats` | Chat IDs allowed to interact, or `["*"]` for all |
 
-### 4. Start the gateway
+### 4. Gateway lifecycle
 
-The gateway starts automatically with `aegis up` when `~/.aegis/gateway.json` exists. The CLI discovers it through the Agent Kit manifest's `daemons` list.
+The gateway is managed per-instance by aegisd. When an instance is created with a kit that declares `instance_daemons` in its manifest, aegisd spawns the gateway automatically. The gateway:
 
-```bash
-aegis up
-# aegis v0.4.0
-# aegisd: started
-# aegis-gateway: started (agent kit)
-```
+- **Starts** when the instance is created or re-enabled
+- **Stops** when the instance is disabled or deleted
+- **Survives** VM pause/stop (enables wake-on-message for stopped instances)
+- **Hot-reloads** config by polling every 3 seconds. On parse failure, keeps the last-known-good config. Send SIGHUP to the gateway process for immediate reload.
 
-If no gateway config is present, you'll see:
+The gateway picks up config from `~/.aegis/kits/{handle}/gateway.json`. You can edit this file at any time and the gateway will reload it automatically.
 
-```
-aegis-gateway: no config (create ~/.aegis/gateway.json to enable)
-```
-
-To suppress all kit daemons:
+Check gateway status:
 
 ```bash
-aegis up --no-daemons
+aegis instance info my-agent
+# ...
+# Gateway:     running
+# ...
 ```
 
-You can also start the gateway manually:
-
-```bash
-aegis-gateway
-```
-
-`aegis down` stops both the daemon and all kit daemons.
+`aegis down` stops aegisd, which stops all per-instance daemons.
 
 Send a message to your Telegram bot — you should see a streaming response with typing indicators.
 

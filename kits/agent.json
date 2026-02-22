@@ -2,7 +2,7 @@
   "name": "agent",
   "version": "0.1.0",
   "description": "Messaging-driven LLM agent with Telegram integration",
-  "daemons": ["aegis-gateway"],
+  "instance_daemons": ["aegis-gateway"],
   "image": {
     "base": "python:3.12-alpine",
     "inject": ["aegis-agent"]
