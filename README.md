@@ -59,11 +59,15 @@ aegis secret set TELEGRAM_BOT_TOKEN 123456:ABC-...
 # Start the agent (boots a VM with the LLM bridge)
 aegis instance start --name my-agent --secret OPENAI_API_KEY --workspace my-agent -- aegis-agent
 
-# Start the gateway (polls Telegram, routes through tether)
-aegis-gateway
+# Configure the gateway (~/.aegis/gateway.json)
+echo '{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","instance":"my-agent","allowed_chats":["*"]}}' \
+  > ~/.aegis/gateway.json
+
+# Restart — gateway starts automatically when config exists
+aegis down && aegis up
 ```
 
-The gateway resolves the bot token from the aegis secret store, delivers messages to the agent via the tether protocol, and streams responses back to Telegram with typing indicators and progressive message edits.
+The gateway resolves the bot token from the aegis secret store, delivers messages to the agent via the tether protocol, and streams responses back to Telegram with typing indicators and progressive message edits. Use `aegis up --no-gateway` to suppress auto-start.
 
 See [Agent Kit docs](docs/AGENT_KIT.md) for the full guide.
 
@@ -134,7 +138,7 @@ STOPPED → STARTING → RUNNING ↔ PAUSED → STOPPED
 Daemon management:
 
 ```bash
-aegis up / down / status / doctor
+aegis up [--no-gateway] / down / status / doctor
 ```
 
 Runtime:

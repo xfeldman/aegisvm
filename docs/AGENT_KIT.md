@@ -81,11 +81,33 @@ Create `~/.aegis/gateway.json`:
 
 ### 4. Start the gateway
 
+The gateway starts automatically with `aegis up` when `~/.aegis/gateway.json` exists:
+
+```bash
+aegis up
+# aegisd started (pid 12345)
+# aegis-gateway started (pid 12346)
+```
+
+If no gateway config is present, you'll see:
+
+```
+aegis-gateway: skipped (no ~/.aegis/gateway.json)
+```
+
+To suppress the gateway even when configured:
+
+```bash
+aegis up --no-gateway
+```
+
+You can also start the gateway manually:
+
 ```bash
 aegis-gateway
 ```
 
-The gateway resolves the bot token from the aegis secret store, starts polling Telegram for updates, and subscribes to the agent's tether stream for responses.
+`aegis down` stops both the daemon and the gateway.
 
 Send a message to your Telegram bot — you should see a streaming response with typing indicators.
 

@@ -151,11 +151,27 @@ func isDaemonRunning() bool {
 }
 
 func cmdUp() {
-	if isDaemonRunning() {
-		fmt.Println("aegisd is already running")
-		return
+	// Parse flags
+	noGateway := false
+	for _, arg := range os.Args[2:] {
+		if arg == "--no-gateway" {
+			noGateway = true
+		}
 	}
 
+	if isDaemonRunning() {
+		fmt.Println("aegisd is already running")
+	} else {
+		startDaemon()
+	}
+
+	// Start gateway if config exists and not suppressed
+	if !noGateway {
+		startGatewayIfConfigured()
+	}
+}
+
+func startDaemon() {
 	exe, _ := os.Executable()
 	aegisdBin := filepath.Join(filepath.Dir(exe), "aegisd")
 	if _, err := os.Stat(aegisdBin); err != nil {
@@ -197,7 +213,78 @@ func cmdUp() {
 	os.Exit(1)
 }
 
+func gatewayConfigPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".aegis", "gateway.json")
+}
+
+func gatewayPidFilePath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".aegis", "data", "gateway.pid")
+}
+
+func isGatewayRunning() bool {
+	data, err := os.ReadFile(gatewayPidFilePath())
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return false
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return proc.Signal(syscall.Signal(0)) == nil
+}
+
+func startGatewayIfConfigured() {
+	configPath := gatewayConfigPath()
+	if _, err := os.Stat(configPath); err != nil {
+		fmt.Println("aegis-gateway: skipped (no ~/.aegis/gateway.json)")
+		return
+	}
+
+	if isGatewayRunning() {
+		fmt.Println("aegis-gateway is already running")
+		return
+	}
+
+	exe, _ := os.Executable()
+	gatewayBin := filepath.Join(filepath.Dir(exe), "aegis-gateway")
+	if _, err := os.Stat(gatewayBin); err != nil {
+		// Gateway binary not installed — skip silently
+		return
+	}
+
+	home, _ := os.UserHomeDir()
+	logDir := filepath.Join(home, ".aegis", "data")
+	logFile, err := os.OpenFile(filepath.Join(logDir, "gateway.log"),
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create gateway log: %v\n", err)
+		return
+	}
+
+	cmd := exec.Command(gatewayBin)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "start gateway: %v\n", err)
+		return
+	}
+
+	// Write PID file
+	os.WriteFile(gatewayPidFilePath(), []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0600)
+	fmt.Printf("aegis-gateway started (pid %d)\n", cmd.Process.Pid)
+}
+
 func cmdDown() {
+	// Stop gateway first
+	stopGateway()
+
 	data, err := os.ReadFile(pidFilePath())
 	if err != nil {
 		fmt.Println("aegisd is not running")
@@ -233,6 +320,35 @@ func cmdDown() {
 
 	fmt.Fprintln(os.Stderr, "aegisd did not stop within timeout")
 	os.Exit(1)
+}
+
+func stopGateway() {
+	data, err := os.ReadFile(gatewayPidFilePath())
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return
+	}
+	if proc.Signal(syscall.Signal(0)) != nil {
+		os.Remove(gatewayPidFilePath())
+		return
+	}
+	proc.Signal(syscall.SIGTERM)
+	fmt.Printf("aegis-gateway stopping (pid %d)\n", pid)
+	for i := 0; i < 30; i++ {
+		if proc.Signal(syscall.Signal(0)) != nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	os.Remove(gatewayPidFilePath())
+	fmt.Println("aegis-gateway stopped")
 }
 
 type exposeFlag struct {
