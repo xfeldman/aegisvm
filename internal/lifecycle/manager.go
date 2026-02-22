@@ -106,6 +106,10 @@ type Instance struct {
 	// Exec completion tracking: execID → channel that receives exit code
 	execWaiters map[string]chan int
 
+	// Crash backoff — prevents rapid restart loops
+	crashCount    int       // consecutive crashes (reset on successful run > 10s)
+	lastCrashAt   time.Time // time of last crash
+
 	// Timestamps
 	CreatedAt time.Time
 	StoppedAt time.Time // zero if never stopped or currently running
@@ -416,6 +420,20 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		inst.mu.Unlock()
 		return nil
 	}
+
+	// Crash backoff: if the instance crashed recently, delay or refuse boot.
+	// Max 5 consecutive crashes within a 2-minute window. Resets after 2 minutes.
+	if inst.crashCount > 0 && !inst.lastCrashAt.IsZero() {
+		if time.Since(inst.lastCrashAt) > 2*time.Minute {
+			// Window expired — reset
+			inst.crashCount = 0
+		} else if inst.crashCount >= 5 {
+			inst.mu.Unlock()
+			return fmt.Errorf("instance %s crash loop (crashed %d times, last at %s)",
+				inst.ID, inst.crashCount, inst.lastCrashAt.Format(time.RFC3339))
+		}
+	}
+
 	inst.State = StateStarting
 	inst.StoppedAt = time.Time{} // clear
 	inst.mu.Unlock()
@@ -668,8 +686,18 @@ func (m *Manager) handleProcessExited(inst *Instance, exitCode int) {
 		delete(inst.execWaiters, eid)
 	}
 
+	// Track crash backoff: if process ran < 10s, count as a crash
+	uptime := time.Since(inst.lastActivity)
+	if exitCode != 0 && uptime < 10*time.Second {
+		inst.crashCount++
+		inst.lastCrashAt = time.Now()
+		log.Printf("instance %s: crash #%d (uptime=%v)", inst.ID, inst.crashCount, uptime)
+	} else {
+		inst.crashCount = 0 // clean exit or long-lived process — reset
+	}
+
 	inst.State = StateStopped
-		inst.StoppedAt = time.Now()
+	inst.StoppedAt = time.Now()
 	inst.Channel = nil
 	inst.Endpoints = nil
 	inst.demuxer = nil
