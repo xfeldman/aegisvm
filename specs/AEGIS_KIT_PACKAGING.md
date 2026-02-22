@@ -39,7 +39,8 @@ Binaries:
 ### Agent Kit: `aegisvm-agent-kit`
 
 ```
-brew install aegisvm-agent-kit
+brew tap xfeldman/aegisvm
+brew install aegisvm aegisvm-agent-kit
 ```
 
 Depends on `aegisvm`. Installs:
@@ -269,11 +270,12 @@ Each brings its own binaries, OCI recipe, and `--kit` preset. Core aegis stays m
 - [x] Kit version stamped from git tags at build time
 
 ### Phase 2 (v0.2) — completed
-- [x] Separate Homebrew formula `agent-kit` in `xfeldman/homebrew-aegisvm-agent-kit` tap
+- [x] Homebrew formula `aegisvm-agent-kit` in `xfeldman/homebrew-aegisvm` tap (same tap as core)
 - [x] Separate release tarball (`aegisvm-agent-kit-{version}-darwin-arm64.tar.gz`)
-- [x] CI release workflow publishes both core + kit tarballs, updates both taps
+- [x] CI release workflow publishes both core + kit tarballs, updates both formulas in one commit
 - [x] Core tarball no longer includes kit binaries (`aegis-gateway`, `aegis-agent`)
 - [x] Kit tarball includes `aegis-gateway`, `aegis-agent`, `agent.json` (version-stamped manifest)
+- [x] Install: `brew tap xfeldman/aegisvm && brew install aegisvm aegisvm-agent-kit`
 
 ### Phase 3 (future)
 - [ ] Kit plugin API (arbitrary kits, not just agent)
