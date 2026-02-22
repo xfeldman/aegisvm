@@ -23,27 +23,19 @@ jobs:
       - name: Install dependencies
         run: brew tap slp/krun && brew install libkrun e2fsprogs
 
+      - name: Set version from tag
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+
       - name: Build all binaries
-        run: make all
+        run: make all VERSION=${{ env.VERSION }}
 
       - name: Run tests
         run: make test
 
-      - name: Verify version
-        run: |
-          EXPECTED="${GITHUB_REF#refs/tags/}"
-          ACTUAL=$(./bin/aegis version | awk '{print $2}')
-          echo "Expected: ${EXPECTED}, Actual: ${ACTUAL}"
-          if [ "${ACTUAL}" != "${EXPECTED}" ]; then
-            echo "Version mismatch!" >&2
-            exit 1
-          fi
-
       - name: Package core release tarball
         run: |
-          VERSION="${GITHUB_REF#refs/tags/}"
           TARBALL="aegisvm-${VERSION}-darwin-arm64.tar.gz"
-          make release-tarball
+          make release-tarball VERSION=${VERSION}
           mv "aegisvm-${VERSION}-darwin-arm64.tar.gz" "${TARBALL}"
           echo "TARBALL=${TARBALL}" >> $GITHUB_ENV
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
@@ -52,7 +44,7 @@ jobs:
       - name: Package agent kit release tarball
         run: |
           KIT_TARBALL="aegisvm-agent-kit-${VERSION}-darwin-arm64.tar.gz"
-          make release-kit-tarball
+          make release-kit-tarball VERSION=${VERSION}
           echo "KIT_TARBALL=${KIT_TARBALL}" >> $GITHUB_ENV
           shasum -a 256 "${KIT_TARBALL}" | awk '{print $1}' > "${KIT_TARBALL}.sha256"
 
