@@ -11,6 +11,10 @@ import (
 	"strings"
 )
 
+// shareDir is set at build time via -ldflags to the Homebrew/system share path.
+// e.g. /opt/homebrew/share/aegisvm/kits
+var shareDir string
+
 // Manifest describes a kit's configuration, daemons, image recipe, and defaults.
 type Manifest struct {
 	Name        string   `json:"name"`
@@ -40,31 +44,14 @@ func KitsDir() string {
 
 // kitSearchDirs returns directories to scan for kit manifests, in priority order:
 // 1. ~/.aegis/kits/ — user config (make install-kit, manual)
-// 2. {prefix}/share/aegisvm/kits/ — Homebrew install (prefix-relative, works on any HOMEBREW_PREFIX)
+// 2. {shareDir} — system install (Homebrew), baked in at build time via ldflags
 //
 // User dir takes priority: if the same kit name exists in both, user's wins.
-// The Homebrew path is needed because macOS sandbox prevents Homebrew's
-// post_install from writing to ~/.aegis/.
 func kitSearchDirs() []string {
 	dirs := []string{KitsDir()}
-
-	// Homebrew prefix: binary is at {prefix}/bin/aegis (symlink).
-	// Resolve os.Args[0] to absolute WITHOUT following symlinks,
-	// so {prefix}/bin/aegis → {prefix}/share/aegisvm/kits/.
-	// os.Executable() resolves symlinks into the Cellar which is wrong.
-	if len(os.Args) > 0 {
-		binPath := os.Args[0]
-		if !filepath.IsAbs(binPath) {
-			if abs, err := filepath.Abs(binPath); err == nil {
-				binPath = abs
-			}
-		}
-		shareDir := filepath.Join(filepath.Dir(binPath), "..", "share", "aegisvm", "kits")
-		if clean := filepath.Clean(shareDir); clean != dirs[0] {
-			dirs = append(dirs, clean)
-		}
+	if shareDir != "" && shareDir != dirs[0] {
+		dirs = append(dirs, shareDir)
 	}
-
 	return dirs
 }
 

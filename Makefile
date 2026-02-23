@@ -6,8 +6,10 @@ SHELL := /bin/bash
 # Go settings
 GO := go
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+PREFIX ?= /opt/homebrew
 VERSION_PKG := github.com/xfeldman/aegisvm/internal/version
-LDFLAGS := -X $(VERSION_PKG).version=$(VERSION)
+KIT_PKG := github.com/xfeldman/aegisvm/internal/kit
+LDFLAGS := -X $(VERSION_PKG).version=$(VERSION) -X $(KIT_PKG).shareDir=$(PREFIX)/share/aegisvm/kits
 GOFLAGS := -trimpath -ldflags "$(LDFLAGS)"
 
 # Output directory
