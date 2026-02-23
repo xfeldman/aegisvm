@@ -1,5 +1,7 @@
 # AegisVM
 
+*Give an AI agent a computer.*
+
 A local, scale-to-zero microVM runtime for autonomous agent workloads.
 
 AegisVM runs agent code inside isolated microVMs that boot in under a second, pause when idle, and wake on demand. It handles the hard infrastructure — VMs, networking, secrets, routing, lifecycle — so agent platforms don't have to.
