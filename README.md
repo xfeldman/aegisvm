@@ -134,12 +134,19 @@ Host
 
 **libkrun** on macOS (Apple Hypervisor.framework), **Firecracker** on Linux (KVM). Same daemon, same harness, same CLI.
 
-## What AegisVM is not
+## Why not...
 
-- **Not a container runtime.** Containers share the host kernel. Aegis VMs don't.
-- **Not a cloud platform.** Single-host, local-first. No regions, no multi-tenancy.
-- **Not an agent framework.** No prompt templates, no tool definitions, no LLM abstractions.
-- **Not a workflow engine.** No DAGs, no step definitions, no retry policies.
+**Docker / Podman** — Containers share the host kernel. A malicious or buggy agent can escape via kernel exploits, mount the host filesystem, or interfere with other containers. AegisVM runs each workload in its own microVM with a separate kernel — true isolation, not namespace tricks. Docker also has no concept of scale-to-zero, wake-on-connect, or idle hibernation. You manage container lifecycle yourself.
+
+**E2B** — Cloud-hosted sandboxes. Great if you want managed infrastructure, but your code runs on someone else's machines, your data leaves your network, and you pay per-second. AegisVM runs locally on your own hardware — zero latency to your local files, no API keys leaving the machine, no cloud bills. You own the box.
+
+**Firecracker directly** — Firecracker is a VMM, not a runtime. It gives you a VM. You still need to build rootfs images, manage networking, handle lifecycle, implement port mapping, build a control plane, and write a guest agent. AegisVM does all of that and gives you a single CLI.
+
+**AWS Lambda / Cloud Functions** — Designed for stateless request-response, not long-running agents. Cold starts are seconds, not milliseconds. No persistent connections, no exposed ports, no local filesystem. Agent workloads need to maintain state, run for minutes or hours, and wake on various triggers — not just HTTP.
+
+**LXC / systemd-nspawn** — Lightweight, but still container-based (shared kernel). No hardware-level isolation. No built-in networking, port mapping, or lifecycle management for agent workloads. AegisVM provides all of this out of the box with microVM-grade isolation.
+
+**Running agents directly on the host** — Works until it doesn't. No isolation between agents, no resource limits, no cleanup on crash, agents can read your files and credentials. One misbehaving agent affects everything else. AegisVM gives each agent its own isolated VM with explicit secret injection — nothing leaks unless you allow it.
 
 ## Documentation
 
