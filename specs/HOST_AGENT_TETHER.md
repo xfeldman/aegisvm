@@ -202,6 +202,12 @@ The guest agent runtime routes by `session.channel + session.id` — each sessio
 
 **Presence convention:** The guest agent runtime SHOULD emit `status.presence` frames (`{"state": "thinking"}`) before long operations. This enables host agents to show progress and improves delegation UX. The agent already does this for Telegram — same behavior applies to all channels.
 
+### Agent-initiated messages
+
+Tether is symmetric at the protocol level. An agent MAY emit `assistant.message` frames without a prior `user.message` — for example, to report task completion, escalate errors, or publish telemetry. These frames appear in the tether store with normal `seq` ordering and are readable via `tether_read`.
+
+No special API, no push, no reverse wake logic. The host agent reads them on its own schedule via polling. Policy is host-controlled — the host decides when and whether to check for unsolicited messages.
+
 ---
 
 ## 6. Session Isolation in Guest Runtime
