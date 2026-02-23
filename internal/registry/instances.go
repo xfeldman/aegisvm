@@ -174,6 +174,24 @@ func (d *DB) UpdateEnabled(id string, enabled bool) error {
 	return nil
 }
 
+// UpdateExposePorts updates the expose_ports for an instance.
+func (d *DB) UpdateExposePorts(id string, ports []int) error {
+	portsJSON, _ := json.Marshal(ports)
+	_, err := d.db.Exec(`
+		UPDATE instances SET expose_ports = ?, updated_at = datetime('now') WHERE id = ?
+	`, string(portsJSON), id)
+	return err
+}
+
+// UpdatePublicPorts updates the public_ports mapping for an instance.
+func (d *DB) UpdatePublicPorts(id string, ports map[int]int) error {
+	portsJSON, _ := json.Marshal(ports)
+	_, err := d.db.Exec(`
+		UPDATE instances SET public_ports = ?, updated_at = datetime('now') WHERE id = ?
+	`, string(portsJSON), id)
+	return err
+}
+
 // DeleteInstance removes an instance.
 func (d *DB) DeleteInstance(id string) error {
 	_, err := d.db.Exec(`DELETE FROM instances WHERE id = ?`, id)

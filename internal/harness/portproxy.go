@@ -143,6 +143,31 @@ func (pp *portProxy) relay(src net.Conn, dst string) {
 	<-done
 }
 
+// AddPort starts a proxy for a single port (used by runtime expose).
+func (pp *portProxy) AddPort(port int) {
+	guestIP := guestIPFromEnv()
+	if guestIP == "" {
+		return
+	}
+	go pp.tryBind(guestIP, port)
+}
+
+// RemovePort stops the proxy listener for a specific port.
+func (pp *portProxy) RemovePort(port int) {
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+	for i, ln := range pp.listeners {
+		addr := ln.Addr().String()
+		// Check if this listener is for the given port
+		if strings.HasSuffix(addr, ":"+strconv.Itoa(port)) {
+			ln.Close()
+			pp.listeners = append(pp.listeners[:i], pp.listeners[i+1:]...)
+			log.Printf("portproxy: removed port %d", port)
+			return
+		}
+	}
+}
+
 // Stop closes all proxy listeners.
 func (pp *portProxy) Stop() {
 	pp.mu.Lock()

@@ -67,6 +67,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v1/instances/{id}/disable", s.handleDisableInstance)
 	s.mux.HandleFunc("POST /v1/instances/{id}/pause", s.handlePauseInstance)
 	s.mux.HandleFunc("POST /v1/instances/{id}/resume", s.handleResumeInstance)
+	s.mux.HandleFunc("POST /v1/instances/{id}/expose", s.handleExposePort)
+	s.mux.HandleFunc("DELETE /v1/instances/{id}/expose/{guest_port}", s.handleUnexposePort)
 	s.mux.HandleFunc("DELETE /v1/instances/{id}", s.handleDeleteInstance)
 	s.mux.HandleFunc("POST /v1/instances/prune", s.handlePruneInstances)
 
@@ -148,7 +150,6 @@ type exposeRequest struct {
 type createInstanceRequest struct {
 	ImageRef  string            `json:"image_ref,omitempty"`
 	Command   []string          `json:"command"`
-	Exposes   []exposeRequest   `json:"exposes,omitempty"`
 	Env       map[string]string `json:"env,omitempty"`
 	Secrets   []string          `json:"secrets,omitempty"` // [] = none, ["*"] = all, ["KEY1","KEY2"] = allowlist
 	Handle    string            `json:"handle,omitempty"`
@@ -180,19 +181,6 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := fmt.Sprintf("inst-%d", time.Now().UnixNano())
-
-	// Build PortExpose list
-	var exposePorts []vmm.PortExpose
-	for _, e := range req.Exposes {
-		proto := e.Protocol
-		if proto == "" {
-			proto = "http"
-		}
-		exposePorts = append(exposePorts, vmm.PortExpose{
-			GuestPort: e.Port,
-			Protocol:  proto,
-		})
-	}
 
 	// Build options
 	var opts []lifecycle.InstanceOption
@@ -232,10 +220,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	// Create in lifecycle manager.
 	// This triggers onInstanceCreated which handles router port allocation
 	// and registry persistence — same path as guest API spawns.
-	s.lifecycle.CreateInstance(id, req.Command, exposePorts, opts...)
-
-	// Read back the allocated public ports for the response
-	publicEndpoints := s.router.GetAllPublicPorts(id)
+	s.lifecycle.CreateInstance(id, req.Command, nil, opts...)
 
 	// Start instance daemons (e.g., gateway) if kit has instance_daemons
 	if req.Kit != "" && s.daemons != nil {
@@ -270,24 +255,6 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Kit != "" {
 		resp["kit"] = req.Kit
-	}
-	if len(publicEndpoints) > 0 {
-		eps := make([]map[string]interface{}, len(publicEndpoints))
-		for i, ep := range publicEndpoints {
-			eps[i] = map[string]interface{}{
-				"guest_port":  ep.GuestPort,
-				"public_port": ep.PublicPort,
-				"protocol":    ep.Protocol,
-			}
-		}
-		resp["endpoints"] = eps
-	}
-	if len(exposePorts) > 0 {
-		ports := make([]int, len(exposePorts))
-		for i, p := range exposePorts {
-			ports[i] = p.GuestPort
-		}
-		resp["expose_ports"] = ports
 	}
 
 	writeJSON(w, http.StatusCreated, resp)
@@ -831,6 +798,95 @@ func (s *Server) handlePruneInstances(w http.ResponseWriter, r *http.Request) {
 		"pruned": len(pruned),
 		"ids":    pruned,
 	})
+}
+
+func (s *Server) handleExposePort(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+
+	// Resolve by ID or handle
+	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	var req exposeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
+		return
+	}
+	if req.Port <= 0 {
+		writeError(w, http.StatusBadRequest, "port (guest_port) is required")
+		return
+	}
+
+	proto := req.Protocol
+	if proto == "" {
+		proto = "http"
+	}
+
+	publicPort, err := s.lifecycle.ExposePort(inst.ID, req.Port, req.PublicPort, proto)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+
+	// Persist public port mapping to registry
+	if s.registry != nil && s.router != nil {
+		publicPorts := make(map[int]int)
+		for _, ep := range s.router.GetAllPublicPorts(inst.ID) {
+			publicPorts[ep.GuestPort] = ep.PublicPort
+		}
+		s.registry.UpdatePublicPorts(inst.ID, publicPorts)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"guest_port":  req.Port,
+		"public_port": publicPort,
+		"protocol":    proto,
+		"url":         fmt.Sprintf("http://127.0.0.1:%d", publicPort),
+	})
+}
+
+func (s *Server) handleUnexposePort(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+	guestPortStr := pathParam(r, "guest_port")
+
+	guestPort := 0
+	fmt.Sscanf(guestPortStr, "%d", &guestPort)
+	if guestPort <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid guest_port")
+		return
+	}
+
+	// Resolve by ID or handle
+	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	if err := s.lifecycle.UnexposePort(inst.ID, guestPort); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	// Persist public port mapping to registry
+	if s.registry != nil && s.router != nil {
+		publicPorts := make(map[int]int)
+		for _, ep := range s.router.GetAllPublicPorts(inst.ID) {
+			publicPorts[ep.GuestPort] = ep.PublicPort
+		}
+		s.registry.UpdatePublicPorts(inst.ID, publicPorts)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // parseDuration extends time.ParseDuration to support "d" for days.

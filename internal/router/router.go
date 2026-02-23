@@ -110,8 +110,20 @@ func (r *Router) Addr() string {
 // AllocatePort creates a public TCP listener for a guest port.
 // If requestedPort is 0, a random port is allocated.
 // If requestedPort is non-zero, that specific port is used.
+// Idempotent: if instance+guestPort is already allocated, returns the existing public port.
 // Returns the allocated host port.
 func (r *Router) AllocatePort(instanceID string, guestPort int, requestedPort int, protocol string) (int, error) {
+	// Dedup guard: if already allocated for this instance+guestPort, return existing
+	r.mu.Lock()
+	for _, pp := range r.portProxies[instanceID] {
+		if pp.guestPort == guestPort {
+			existing := pp.publicPort
+			r.mu.Unlock()
+			return existing, nil
+		}
+	}
+	r.mu.Unlock()
+
 	listenAddr := "127.0.0.1:0"
 	if requestedPort > 0 {
 		listenAddr = fmt.Sprintf("127.0.0.1:%d", requestedPort)
@@ -162,6 +174,23 @@ func (r *Router) FreeAllPorts(instanceID string) {
 		pp.listener.Close()
 		log.Printf("router: freed public port :%d for instance %s", pp.publicPort, instanceID)
 	}
+}
+
+// FreePort closes the public port listener for a specific guest port on an instance.
+func (r *Router) FreePort(instanceID string, guestPort int) {
+	r.mu.Lock()
+	proxies := r.portProxies[instanceID]
+	for i, pp := range proxies {
+		if pp.guestPort == guestPort {
+			pp.cancel()
+			pp.listener.Close()
+			r.portProxies[instanceID] = append(proxies[:i], proxies[i+1:]...)
+			r.mu.Unlock()
+			log.Printf("router: freed public port :%d for instance %s guest :%d", pp.publicPort, instanceID, guestPort)
+			return
+		}
+	}
+	r.mu.Unlock()
 }
 
 // GetPublicPort returns the public host port for a guest port.

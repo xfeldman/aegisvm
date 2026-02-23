@@ -20,6 +20,10 @@ func (m *Manager) handleGuestRequest(inst *Instance, method string, params json.
 		return m.guestSelfInfo(inst)
 	case "guest.list_children":
 		return m.guestListChildren(inst)
+	case "guest.expose_port":
+		return m.guestExposePort(inst, params)
+	case "guest.unexpose_port":
+		return m.guestUnexposePort(inst, params)
 	}
 
 	// Methods that require a valid capability token
@@ -292,6 +296,56 @@ func (m *Manager) guestSelfInfo(inst *Instance) (interface{}, error) {
 	}
 
 	return info, nil
+}
+
+// guestExposePort exposes a port from inside the VM (self-operation, no token needed).
+func (m *Manager) guestExposePort(inst *Instance, params json.RawMessage) (interface{}, error) {
+	var req struct {
+		GuestPort  int    `json:"guest_port"`
+		PublicPort int    `json:"public_port"`
+		Protocol   string `json:"protocol"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if req.GuestPort <= 0 {
+		return nil, fmt.Errorf("guest_port is required")
+	}
+
+	publicPort, err := m.ExposePort(inst.ID, req.GuestPort, req.PublicPort, req.Protocol)
+	if err != nil {
+		return nil, err
+	}
+
+	protocol := req.Protocol
+	if protocol == "" {
+		protocol = "http"
+	}
+	return map[string]interface{}{
+		"guest_port":  req.GuestPort,
+		"public_port": publicPort,
+		"protocol":    protocol,
+		"url":         fmt.Sprintf("http://127.0.0.1:%d", publicPort),
+	}, nil
+}
+
+// guestUnexposePort unexposes a port from inside the VM (self-operation, no token needed).
+func (m *Manager) guestUnexposePort(inst *Instance, params json.RawMessage) (interface{}, error) {
+	var req struct {
+		GuestPort int `json:"guest_port"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if req.GuestPort <= 0 {
+		return nil, fmt.Errorf("guest_port is required")
+	}
+
+	if err := m.UnexposePort(inst.ID, req.GuestPort); err != nil {
+		return nil, err
+	}
+
+	return map[string]string{"status": "ok"}, nil
 }
 
 // CascadeStopChildren stops all children of a parent instance.

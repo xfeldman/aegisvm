@@ -106,10 +106,11 @@ Commands:
 Examples:
   aegis up
   aegis run -- echo "hello from aegisvm"
-  aegis run --expose 80 -- python3 -m http.server 80
-  aegis run --expose 8080:80 -- python3 -m http.server 80
-  aegis run --workspace ./myapp --expose 80 -- python3 /workspace/app.py
-  aegis instance start --name web --expose 8080:80 --workspace myapp -- python3 -m http.server 80
+  aegis run --workspace ./myapp -- python3 /workspace/app.py
+  aegis instance start --name web -- python3 -m http.server 80
+  aegis instance expose web 80
+  aegis instance expose web 8080:80
+  aegis instance unexpose web 80
   aegis instance disable web
   aegis instance start --name web                                    (restart stopped/disabled)
   aegis instance list --stopped
@@ -269,8 +270,8 @@ type exposeFlag struct {
 	Protocol   string // "http", "tcp", etc. Default: "http"
 }
 
-// parseRunFlags parses common flags: --expose, --name, --env, --image, --workspace, --secret, --kit
-func parseRunFlags(args []string) (exposePorts []exposeFlag, name, imageRef string, envVars map[string]string, secretKeys []string, workspace string, kitName string, command []string) {
+// parseRunFlags parses common flags: --name, --env, --image, --workspace, --secret, --kit
+func parseRunFlags(args []string) (name, imageRef string, envVars map[string]string, secretKeys []string, workspace string, kitName string, command []string) {
 	envVars = make(map[string]string)
 
 	for i := 0; i < len(args); i++ {
@@ -279,13 +280,6 @@ func parseRunFlags(args []string) (exposePorts []exposeFlag, name, imageRef stri
 			break
 		}
 		switch args[i] {
-		case "--expose":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--expose requires a port (e.g. 80, 8080:80, 8080:80/tcp)")
-				os.Exit(1)
-			}
-			exposePorts = append(exposePorts, parseExposeArg(args[i+1]))
-			i++
 		case "--name":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "--name requires a value")
@@ -387,7 +381,7 @@ func parseExposeArg(arg string) exposeFlag {
 func cmdRun() {
 	args := os.Args[2:]
 
-	exposePorts, name, imageRef, envVars, secretKeys, workspace, kitName, command := parseRunFlags(args)
+	name, imageRef, envVars, secretKeys, workspace, kitName, command := parseRunFlags(args)
 
 	// Apply kit defaults if --kit specified
 	if kitName != "" {
@@ -401,7 +395,7 @@ func cmdRun() {
 	}
 
 	if len(command) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: aegis run [--expose PORT] [--name NAME] [--env K=V] [--secret KEY] [--image IMAGE] [--kit KIT] -- COMMAND [args...]")
+		fmt.Fprintln(os.Stderr, "usage: aegis run [--name NAME] [--env K=V] [--secret KEY] [--image IMAGE] [--kit KIT] -- COMMAND [args...]")
 		os.Exit(1)
 	}
 
@@ -430,17 +424,6 @@ func cmdRun() {
 	reqBody := map[string]interface{}{
 		"command":   command,
 		"workspace": workspace,
-	}
-	if len(exposePorts) > 0 {
-		exposes := make([]map[string]interface{}, len(exposePorts))
-		for i, p := range exposePorts {
-			expose := map[string]interface{}{"port": p.GuestPort, "protocol": p.Protocol}
-			if p.PublicPort > 0 {
-				expose["public_port"] = p.PublicPort
-			}
-			exposes[i] = expose
-		}
-		reqBody["exposes"] = exposes
 	}
 	if name != "" {
 		reqBody["handle"] = name
@@ -482,11 +465,6 @@ func cmdRun() {
 	var inst map[string]interface{}
 	json.NewDecoder(resp.Body).Decode(&inst)
 	instanceID := inst["id"].(string)
-
-	if len(exposePorts) > 0 {
-		routerAddr, _ := inst["router_addr"].(string)
-		fmt.Printf("Serving on http://%s\n", routerAddr)
-	}
 
 	// Set up signal handler for cleanup
 	sigCh := make(chan os.Signal, 1)
@@ -685,6 +663,10 @@ func cmdInstance() {
 		cmdInstancePause(client)
 	case "resume":
 		cmdInstanceResume(client)
+	case "expose":
+		cmdInstanceExpose(client)
+	case "unexpose":
+		cmdInstanceUnexpose(client)
 	case "prune":
 		cmdInstancePrune(client)
 	case "help", "--help", "-h":
@@ -700,17 +682,22 @@ func instanceUsage() {
 	fmt.Println(`Usage: aegis instance <command> [options]
 
 Commands:
-  start    Start a new instance (or restart a stopped/disabled instance by --name)
-  list     List instances (--stopped, --running to filter)
-  info     Show instance details
-  disable  Disable an instance (stop VM, close listeners, prevent auto-wake)
-  delete   Delete an instance (removed entirely, logs cleaned)
-  pause    Pause a running instance (SIGSTOP)
-  resume   Resume a paused instance (SIGCONT)
-  prune    Remove stopped instances older than a threshold
+  start      Start a new instance (or restart a stopped/disabled instance by --name)
+  list       List instances (--stopped, --running to filter)
+  info       Show instance details
+  expose     Expose a guest port on the host
+  unexpose   Remove a port exposure
+  disable    Disable an instance (stop VM, close listeners, prevent auto-wake)
+  delete     Delete an instance (removed entirely, logs cleaned)
+  pause      Pause a running instance (SIGSTOP)
+  resume     Resume a paused instance (SIGCONT)
+  prune      Remove stopped instances older than a threshold
 
 Examples:
-  aegis instance start --name web --secret API_KEY --expose 80 -- python3 -m http.server 80
+  aegis instance start --name web -- python3 -m http.server 80
+  aegis instance expose web 80
+  aegis instance expose web 8080:80
+  aegis instance unexpose web 80
   aegis instance start --name web                                (restart stopped/disabled)
   aegis instance list
   aegis instance list --stopped
@@ -724,7 +711,7 @@ Examples:
 func cmdInstanceStart(client *http.Client) {
 	args := os.Args[3:]
 
-	exposePorts, name, imageRef, envVars, secretKeys, workspace, kitName, command := parseRunFlags(args)
+	name, imageRef, envVars, secretKeys, workspace, kitName, command := parseRunFlags(args)
 
 	// Restart path: --name only, no command, no kit → just restart stored config
 	isRestart := name != "" && len(command) == 0 && kitName == ""
@@ -741,7 +728,7 @@ func cmdInstanceStart(client *http.Client) {
 	}
 
 	if len(command) == 0 && name == "" {
-		fmt.Fprintln(os.Stderr, "usage: aegis instance start [--name NAME] [--expose PORT] [--env K=V] [--secret KEY] [--image IMAGE] [--kit KIT] -- COMMAND [args...]")
+		fmt.Fprintln(os.Stderr, "usage: aegis instance start [--name NAME] [--env K=V] [--secret KEY] [--image IMAGE] [--kit KIT] -- COMMAND [args...]")
 		fmt.Fprintln(os.Stderr, "       aegis instance start --name NAME   (restart stopped instance)")
 		os.Exit(1)
 	}
@@ -756,17 +743,6 @@ func cmdInstanceStart(client *http.Client) {
 	reqBody := map[string]interface{}{}
 	if len(command) > 0 {
 		reqBody["command"] = command
-	}
-	if len(exposePorts) > 0 {
-		exposes := make([]map[string]interface{}, len(exposePorts))
-		for i, p := range exposePorts {
-			expose := map[string]interface{}{"port": p.GuestPort, "protocol": p.Protocol}
-			if p.PublicPort > 0 {
-				expose["public_port"] = p.PublicPort
-			}
-			exposes[i] = expose
-		}
-		reqBody["exposes"] = exposes
 	}
 	if name != "" {
 		reqBody["handle"] = name
@@ -1143,6 +1119,95 @@ func cmdInstanceResume(client *http.Client) {
 	}
 
 	fmt.Printf("Instance %s resumed\n", target)
+}
+
+func cmdInstanceExpose(client *http.Client) {
+	if len(os.Args) < 5 {
+		fmt.Fprintln(os.Stderr, "usage: aegis instance expose HANDLE_OR_ID GUEST[:PUBLIC][/PROTO]")
+		os.Exit(1)
+	}
+
+	target := os.Args[3]
+	ef := parseExposeArg(os.Args[4])
+
+	instID := resolveInstanceTarget(client, target)
+	if instID == "" {
+		fmt.Fprintf(os.Stderr, "instance %q not found\n", target)
+		os.Exit(1)
+	}
+
+	reqBody := map[string]interface{}{
+		"port":     ef.GuestPort,
+		"protocol": ef.Protocol,
+	}
+	if ef.PublicPort > 0 {
+		reqBody["public_port"] = ef.PublicPort
+	}
+
+	bodyJSON, _ := json.Marshal(reqBody)
+	resp, err := client.Post(
+		fmt.Sprintf("http://aegis/v1/instances/%s/expose", instID),
+		"application/json",
+		bytes.NewReader(bodyJSON),
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "expose: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "expose failed: %s\n", body)
+		os.Exit(1)
+	}
+
+	var result map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	publicPort := result["public_port"]
+	protocol, _ := result["protocol"].(string)
+	if protocol == "" {
+		protocol = "http"
+	}
+	fmt.Printf("Exposed: %s://127.0.0.1:%v → vm:%d\n", protocol, publicPort, ef.GuestPort)
+}
+
+func cmdInstanceUnexpose(client *http.Client) {
+	if len(os.Args) < 5 {
+		fmt.Fprintln(os.Stderr, "usage: aegis instance unexpose HANDLE_OR_ID GUEST_PORT")
+		os.Exit(1)
+	}
+
+	target := os.Args[3]
+	guestPort, err := strconv.Atoi(os.Args[4])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid guest port: %s\n", os.Args[4])
+		os.Exit(1)
+	}
+
+	instID := resolveInstanceTarget(client, target)
+	if instID == "" {
+		fmt.Fprintf(os.Stderr, "instance %q not found\n", target)
+		os.Exit(1)
+	}
+
+	req, _ := http.NewRequest("DELETE",
+		fmt.Sprintf("http://aegis/v1/instances/%s/expose/%d", instID, guestPort), nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "unexpose: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "unexpose failed: %s\n", body)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Unexposed port %d on %s\n", guestPort, target)
 }
 
 func cmdInstancePrune(client *http.Client) {

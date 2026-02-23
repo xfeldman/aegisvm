@@ -133,6 +133,30 @@ Children are automatically stopped when the parent stops.`,
 		InputSchema: rawJSON(`{"type": "object", "properties": {}}`),
 	},
 	{
+		Name:        "expose_port",
+		Description: "Expose a guest port on the host. Returns the allocated public port. Can be called at any time while the VM is running. Idempotent: re-exposing returns the existing mapping.",
+		InputSchema: rawJSON(`{
+			"type": "object",
+			"properties": {
+				"guest_port":  {"type": "integer", "description": "Port inside this VM to expose (e.g. 8080)."},
+				"public_port": {"type": "integer", "description": "Specific host port to use. 0 or omitted = random."},
+				"protocol":    {"type": "string", "description": "Protocol hint: 'http' (default), 'tcp'."}
+			},
+			"required": ["guest_port"]
+		}`),
+	},
+	{
+		Name:        "unexpose_port",
+		Description: "Remove a port exposure. Closes the host listener for that guest port.",
+		InputSchema: rawJSON(`{
+			"type": "object",
+			"properties": {
+				"guest_port": {"type": "integer", "description": "Guest port to unexpose."}
+			},
+			"required": ["guest_port"]
+		}`),
+	},
+	{
 		Name:        "keepalive_acquire",
 		Description: "Acquire a keepalive lease to prevent this VM from being paused by the idle timer. Use this during long-running work (builds, computations) that doesn't generate network traffic. The lease auto-expires after ttl_ms milliseconds.",
 		InputSchema: rawJSON(`{
@@ -230,11 +254,42 @@ func handleKeepaliveRelease(args json.RawMessage) *mcpToolResult {
 	return textResult("keepalive lease released")
 }
 
+func handleExposePort(args json.RawMessage) *mcpToolResult {
+	status, data, err := doRequest("POST", "/v1/self/expose", args)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	if status >= 400 {
+		return errorResult(fmt.Sprintf("expose failed (HTTP %d): %s", status, string(data)))
+	}
+	return textResult(string(data))
+}
+
+func handleUnexposePort(args json.RawMessage) *mcpToolResult {
+	var params struct {
+		GuestPort int `json:"guest_port"`
+	}
+	json.Unmarshal(args, &params)
+	if params.GuestPort <= 0 {
+		return errorResult("guest_port is required")
+	}
+	status, data, err := doRequest("DELETE", fmt.Sprintf("/v1/self/expose/%d", params.GuestPort), nil)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	if status >= 400 {
+		return errorResult(fmt.Sprintf("unexpose failed (HTTP %d): %s", status, string(data)))
+	}
+	return textResult("port unexposed")
+}
+
 var toolHandlers = map[string]func(json.RawMessage) *mcpToolResult{
 	"instance_spawn":    handleSpawn,
 	"instance_list":     handleList,
 	"instance_stop":     handleStop,
 	"self_info":         handleSelfInfo,
+	"expose_port":       handleExposePort,
+	"unexpose_port":     handleUnexposePort,
 	"keepalive_acquire": handleKeepaliveAcquire,
 	"keepalive_release": handleKeepaliveRelease,
 }

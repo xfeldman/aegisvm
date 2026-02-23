@@ -163,12 +163,13 @@ http.server.HTTPServer(('0.0.0.0', 8080), Handler).serve_forever()
 	inst := apiPost(t, "/v1/instances", map[string]interface{}{
 		"command": []string{"python3", "-c", script},
 		"handle":  handle,
-		"exposes": []map[string]interface{}{
-			{"port": guestPort, "public_port": publicPort},
-		},
 	})
 	id := inst["id"].(string)
 	t.Cleanup(func() { apiDeleteAllowFail(t, "/v1/instances/"+id) })
+
+	apiPost(t, fmt.Sprintf("/v1/instances/%s/expose", id), map[string]interface{}{
+		"port": guestPort, "public_port": publicPort,
+	})
 
 	url := fmt.Sprintf("http://127.0.0.1:%d/", publicPort)
 	_, err := waitForHTTP(url, 60*time.Second)
@@ -238,12 +239,13 @@ http.server.HTTPServer(('0.0.0.0', 8080), Handler).serve_forever()
 	inst := apiPost(t, "/v1/instances", map[string]interface{}{
 		"command": []string{"python3", "-c", script},
 		"handle":  handle,
-		"exposes": []map[string]interface{}{
-			{"port": guestPort, "public_port": publicPort},
-		},
 	})
 	id := inst["id"].(string)
 	t.Cleanup(func() { apiDeleteAllowFail(t, "/v1/instances/"+id) })
+
+	apiPost(t, fmt.Sprintf("/v1/instances/%s/expose", id), map[string]interface{}{
+		"port": guestPort, "public_port": publicPort,
+	})
 
 	url := fmt.Sprintf("http://127.0.0.1:%d/", publicPort)
 	_, err := waitForHTTP(url, 60*time.Second)
@@ -385,12 +387,13 @@ http.server.HTTPServer(('0.0.0.0', 8080), Handler).serve_forever()
 	inst := apiPost(t, "/v1/instances", map[string]interface{}{
 		"command": []string{"python3", "-c", script},
 		"handle":  handle,
-		"exposes": []map[string]interface{}{
-			{"port": guestPort, "public_port": publicPort},
-		},
 	})
 	id := inst["id"].(string)
 	t.Cleanup(func() { apiDeleteAllowFail(t, "/v1/instances/"+id) })
+
+	apiPost(t, fmt.Sprintf("/v1/instances/%s/expose", id), map[string]interface{}{
+		"port": guestPort, "public_port": publicPort,
+	})
 
 	url := fmt.Sprintf("http://127.0.0.1:%d/", publicPort)
 	_, err := waitForHTTP(url, 60*time.Second)

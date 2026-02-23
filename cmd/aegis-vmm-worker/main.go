@@ -274,17 +274,25 @@ func startInProcessNetwork(cfg WorkerConfig) (string, error) {
 		}
 	}()
 
-	// 4. Pre-expose port forwarding rules via the ServicesMux (in-process).
-	// Each rule creates a host-side TCP listener that forwards to the guest IP.
-	// We call the HTTP handler directly — no unix socket or network overhead.
-	if len(cfg.ExposePorts) > 0 {
-		mux := vn.ServicesMux()
-		for _, pf := range cfg.ExposePorts {
-			if err := exposePort(mux, pf.HostPort, pf.GuestPort); err != nil {
-				return "", fmt.Errorf("expose port %d→%d: %w", pf.HostPort, pf.GuestPort, err)
-			}
+	// 4. Get the ServicesMux for port forwarding (expose/unexpose).
+	mux := vn.ServicesMux()
+
+	// 5. Pre-expose port forwarding rules via the ServicesMux (in-process).
+	for _, pf := range cfg.ExposePorts {
+		if err := exposePort(mux, pf.HostPort, pf.GuestPort); err != nil {
+			return "", fmt.Errorf("expose port %d→%d: %w", pf.HostPort, pf.GuestPort, err)
 		}
 	}
+
+	// 6. Start gvproxy API server on a unix socket for runtime port management.
+	// aegisd calls this to expose/unexpose ports dynamically.
+	apiSockPath := filepath.Join(cfg.SocketDir, fmt.Sprintf("gvproxy-%d.sock", os.Getpid()))
+	os.Remove(apiSockPath)
+	apiLn, err := net.Listen("unix", apiSockPath)
+	if err != nil {
+		return "", fmt.Errorf("gvproxy API listen: %w", err)
+	}
+	go http.Serve(apiLn, mux)
 
 	return netSockPath, nil
 }

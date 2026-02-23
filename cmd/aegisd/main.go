@@ -131,6 +131,14 @@ func main() {
 		}
 	})
 
+	// Runtime port expose/unexpose — called from ExposePort/UnexposePort
+	lm.OnExposePort(func(id string, guestPort, publicPort int, protocol string) (int, error) {
+		return rtr.AllocatePort(id, guestPort, publicPort, protocol)
+	})
+	lm.OnUnexposePort(func(id string, guestPort int) {
+		rtr.FreePort(id, guestPort)
+	})
+
 	// Create daemon manager for per-instance sidecar processes (e.g., gateways)
 	dm := daemon.NewManager(cfg.BinDir, cfg.DataDir, cfg.SocketPath)
 

@@ -27,14 +27,11 @@ func TestRouterAlwaysProxy(t *testing.T) {
 	apiDeleteAllowFail(t, fmt.Sprintf("/v1/instances/%s", handle))
 	time.Sleep(1 * time.Second)
 
-	// --- Step 1: Start instance with deterministic port ---
-	t.Log("Step 1: start instance with --expose 8181:80")
+	// --- Step 1: Start instance, then expose with deterministic port ---
+	t.Log("Step 1: start instance, then expose 8181:80")
 	result := apiPost(t, "/v1/instances", map[string]interface{}{
 		"command": []string{"python3", "-m", "http.server", "80"},
 		"handle":  handle,
-		"exposes": []map[string]interface{}{
-			{"port": guestPort, "public_port": publicPort},
-		},
 	})
 
 	instID, _ := result["id"].(string)
@@ -45,13 +42,12 @@ func TestRouterAlwaysProxy(t *testing.T) {
 		apiDeleteAllowFail(t, fmt.Sprintf("/v1/instances/%s", instID))
 	})
 
-	// Verify public_port in response
-	eps, _ := result["endpoints"].([]interface{})
-	if len(eps) == 0 {
-		t.Fatal("no endpoints in create response")
-	}
-	ep, _ := eps[0].(map[string]interface{})
-	gotPublic := int(ep["public_port"].(float64))
+	// Expose port at runtime with deterministic public port
+	exposeResult := apiPost(t, fmt.Sprintf("/v1/instances/%s/expose", instID), map[string]interface{}{
+		"port":        guestPort,
+		"public_port": publicPort,
+	})
+	gotPublic := int(exposeResult["public_port"].(float64))
 	if gotPublic != publicPort {
 		t.Fatalf("expected public_port=%d, got %d", publicPort, gotPublic)
 	}

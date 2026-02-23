@@ -147,6 +147,8 @@ type Manager struct {
 	onStateChange   func(id, state string)
 	onAllocatePorts func(inst *Instance)                            // router port allocation
 	getPublicPorts  func(id string) map[int]int                     // guestPort → publicPort lookup
+	onExposePort    func(id string, guestPort, publicPort int, protocol string) (int, error) // runtime expose
+	onUnexposePort  func(id string, guestPort int)                  // runtime unexpose
 }
 
 // NewManager creates a lifecycle manager.
@@ -209,6 +211,17 @@ func (m *Manager) OnStateChange(fn func(id, state string)) {
 // Called from CreateInstance for every new instance (host or guest).
 func (m *Manager) OnAllocatePorts(fn func(inst *Instance)) {
 	m.onAllocatePorts = fn
+}
+
+// OnExposePort registers a callback for runtime port expose.
+// The callback allocates a router port and returns the public port.
+func (m *Manager) OnExposePort(fn func(id string, guestPort, publicPort int, protocol string) (int, error)) {
+	m.onExposePort = fn
+}
+
+// OnUnexposePort registers a callback for runtime port unexpose.
+func (m *Manager) OnUnexposePort(fn func(id string, guestPort int)) {
+	m.onUnexposePort = fn
 }
 
 // SetPublicPortsLookup registers a function to query router public ports.
@@ -1453,6 +1466,199 @@ func (m *Manager) LastActivity(id string) time.Time {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 	return inst.lastActivity
+}
+
+// ExposePort adds a port mapping to a running or stopped instance.
+// Returns the allocated public port.
+func (m *Manager) ExposePort(id string, guestPort, publicPort int, protocol string) (int, error) {
+	m.mu.Lock()
+	inst, ok := m.instances[id]
+	m.mu.Unlock()
+	if !ok {
+		return 0, fmt.Errorf("instance %s not found", id)
+	}
+
+	if protocol == "" {
+		protocol = "http"
+	}
+
+	// Check capability cap (max_expose_ports)
+	inst.mu.Lock()
+	if inst.Capabilities != nil && inst.Capabilities.MaxExposePorts > 0 {
+		if len(inst.ExposePorts) >= inst.Capabilities.MaxExposePorts {
+			inst.mu.Unlock()
+			return 0, fmt.Errorf("max_expose_ports cap reached (%d)", inst.Capabilities.MaxExposePorts)
+		}
+	}
+	// Check for duplicate
+	for _, ep := range inst.ExposePorts {
+		if ep.GuestPort == guestPort {
+			inst.mu.Unlock()
+			// Already exposed — return existing public port (idempotent)
+			if m.getPublicPorts != nil {
+				ports := m.getPublicPorts(id)
+				if pp, ok := ports[guestPort]; ok {
+					return pp, nil
+				}
+			}
+			return 0, fmt.Errorf("guest port %d already exposed", guestPort)
+		}
+	}
+	inst.ExposePorts = append(inst.ExposePorts, vmm.PortExpose{GuestPort: guestPort, Protocol: protocol})
+	inst.mu.Unlock()
+
+	// If instance is running, create VMM-level port forward (gvproxy)
+	inst.mu.Lock()
+	state := inst.State
+	handle := inst.Handle
+	inst.mu.Unlock()
+
+	if state == StateRunning {
+		lkvm, ok := m.vmm.(interface {
+			DynamicExposePort(vmm.Handle, int) (int, error)
+		})
+		if !ok {
+			// Backend doesn't support runtime expose — rollback
+			inst.mu.Lock()
+			for i, ep := range inst.ExposePorts {
+				if ep.GuestPort == guestPort {
+					inst.ExposePorts = append(inst.ExposePorts[:i], inst.ExposePorts[i+1:]...)
+					break
+				}
+			}
+			inst.mu.Unlock()
+			return 0, fmt.Errorf("backend does not support runtime expose; restart instance to apply")
+		}
+		hostPort, err := lkvm.DynamicExposePort(handle, guestPort)
+		if err != nil {
+			// Rollback ExposePorts
+			inst.mu.Lock()
+			for i, ep := range inst.ExposePorts {
+				if ep.GuestPort == guestPort {
+					inst.ExposePorts = append(inst.ExposePorts[:i], inst.ExposePorts[i+1:]...)
+					break
+				}
+			}
+			inst.mu.Unlock()
+			return 0, fmt.Errorf("vmm expose: %w", err)
+		}
+		// Update lifecycle endpoints so GetEndpoint can find this port
+		inst.mu.Lock()
+		inst.Endpoints = append(inst.Endpoints, vmm.HostEndpoint{
+			GuestPort: guestPort,
+			HostPort:  hostPort,
+			Protocol:  protocol,
+		})
+		inst.mu.Unlock()
+	}
+
+	// Allocate router port
+	allocatedPort := 0
+	if m.onExposePort != nil {
+		var err error
+		allocatedPort, err = m.onExposePort(id, guestPort, publicPort, protocol)
+		if err != nil {
+			// Rollback ExposePorts
+			inst.mu.Lock()
+			for i, ep := range inst.ExposePorts {
+				if ep.GuestPort == guestPort {
+					inst.ExposePorts = append(inst.ExposePorts[:i], inst.ExposePorts[i+1:]...)
+					break
+				}
+			}
+			inst.mu.Unlock()
+			return 0, err
+		}
+	}
+
+	// Persist to registry
+	if m.registry != nil {
+		m.saveToRegistry(inst)
+	}
+
+	// Notify harness if running
+	inst.mu.Lock()
+	demux := inst.demuxer
+	inst.mu.Unlock()
+	if demux != nil {
+		demux.SendNotification("ports_changed", map[string]interface{}{
+			"action":      "expose",
+			"guest_port":  guestPort,
+			"public_port": allocatedPort,
+			"protocol":    protocol,
+		})
+	}
+
+	return allocatedPort, nil
+}
+
+// UnexposePort removes a port mapping from an instance.
+func (m *Manager) UnexposePort(id string, guestPort int) error {
+	m.mu.Lock()
+	inst, ok := m.instances[id]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("instance %s not found", id)
+	}
+
+	inst.mu.Lock()
+	found := false
+	for i, ep := range inst.ExposePorts {
+		if ep.GuestPort == guestPort {
+			inst.ExposePorts = append(inst.ExposePorts[:i], inst.ExposePorts[i+1:]...)
+			found = true
+			break
+		}
+	}
+	inst.mu.Unlock()
+
+	if !found {
+		return fmt.Errorf("guest port %d not exposed on instance %s", guestPort, id)
+	}
+
+	// Remove VMM-level port forward and lifecycle endpoint if running
+	inst.mu.Lock()
+	state := inst.State
+	handle := inst.Handle
+	// Remove from lifecycle endpoints
+	for i, ep := range inst.Endpoints {
+		if ep.GuestPort == guestPort {
+			inst.Endpoints = append(inst.Endpoints[:i], inst.Endpoints[i+1:]...)
+			break
+		}
+	}
+	inst.mu.Unlock()
+
+	if state == StateRunning {
+		if lkvm, ok := m.vmm.(interface {
+			DynamicUnexposePort(vmm.Handle, int) error
+		}); ok {
+			lkvm.DynamicUnexposePort(handle, guestPort)
+		}
+	}
+
+	// Free router port
+	if m.onUnexposePort != nil {
+		m.onUnexposePort(id, guestPort)
+	}
+
+	// Persist to registry
+	if m.registry != nil {
+		m.saveToRegistry(inst)
+	}
+
+	// Notify harness if running
+	inst.mu.Lock()
+	demux := inst.demuxer
+	inst.mu.Unlock()
+	if demux != nil {
+		demux.SendNotification("ports_changed", map[string]interface{}{
+			"action":     "unexpose",
+			"guest_port": guestPort,
+		})
+	}
+
+	return nil
 }
 
 func (m *Manager) notifyStateChange(id, state string) {

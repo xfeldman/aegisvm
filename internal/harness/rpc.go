@@ -132,6 +132,10 @@ type harnessRPC struct {
 	// capabilityToken is stored from the run RPC params.
 	// Attached to all guest API → aegisd requests automatically.
 	capabilityToken string
+
+	// portProxy is the active port proxy (set during handleRun).
+	// Used by ports_changed notifications to start/stop proxies.
+	portProxy *portProxy
 }
 
 func newHarnessRPC(conn net.Conn) *harnessRPC {
@@ -252,9 +256,14 @@ func handleConnection(ctx context.Context, conn net.Conn, hrpc *harnessRPC) {
 			continue
 		}
 
-		// Notification from aegisd (no ID) — check for tether.frame
-		if msg.ID == nil && msg.Method == "tether.frame" {
-			go handleTetherFrame(conn, msg.Params)
+		// Notification from aegisd (no ID)
+		if msg.ID == nil {
+			switch msg.Method {
+			case "tether.frame":
+				go handleTetherFrame(conn, msg.Params)
+			case "ports_changed":
+				go handlePortsChanged(msg.Params, hrpc)
+			}
 			continue
 		}
 
@@ -362,6 +371,13 @@ func handleRun(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *pro
 	var pp *portProxy
 	if len(params.ExposePorts) > 0 {
 		pp = startPortProxies(params.ExposePorts)
+	} else {
+		// Create empty portProxy for runtime expose support
+		pp = &portProxy{}
+	}
+	// Store on hrpc so ports_changed notifications and guest API can use it
+	if hrpc != nil {
+		hrpc.portProxy = pp
 	}
 
 	cmd, err := startPrimaryProcess(ctx, params, conn)
@@ -647,6 +663,34 @@ func tetherPersistFrame(params json.RawMessage) {
 	defer f.Close()
 	f.Write(params)
 	f.Write([]byte("\n"))
+}
+
+// handlePortsChanged handles a ports_changed notification from aegisd.
+// This is sent when the HOST exposes or unexposes a port on a running instance.
+// The harness starts/stops the local port proxy accordingly.
+func handlePortsChanged(params json.RawMessage, hrpc *harnessRPC) {
+	var msg struct {
+		Action    string `json:"action"`
+		GuestPort int    `json:"guest_port"`
+	}
+	if err := json.Unmarshal(params, &msg); err != nil {
+		log.Printf("ports_changed: invalid params: %v", err)
+		return
+	}
+
+	pp := hrpc.portProxy
+	if pp == nil {
+		return
+	}
+
+	switch msg.Action {
+	case "expose":
+		log.Printf("ports_changed: expose guest port %d", msg.GuestPort)
+		pp.AddPort(msg.GuestPort)
+	case "unexpose":
+		log.Printf("ports_changed: unexpose guest port %d", msg.GuestPort)
+		pp.RemovePort(msg.GuestPort)
+	}
 }
 
 // sendNotification sends a JSON-RPC notification (no ID, no response expected).

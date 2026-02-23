@@ -44,6 +44,14 @@ func startGuestAPIServer(hrpc *harnessRPC) {
 		handleGuestKeepaliveRelease(w, r, hrpc)
 	})
 
+	// Runtime port expose/unexpose
+	mux.HandleFunc("POST /v1/self/expose", func(w http.ResponseWriter, r *http.Request) {
+		handleGuestExpose(w, r, hrpc)
+	})
+	mux.HandleFunc("DELETE /v1/self/expose/{guest_port}", func(w http.ResponseWriter, r *http.Request) {
+		handleGuestUnexpose(w, r, hrpc)
+	})
+
 	log.Printf("guest API listening on %s", guestAPIAddr)
 	if err := http.ListenAndServe(guestAPIAddr, mux); err != nil {
 		log.Printf("guest API server: %v", err)
@@ -149,6 +157,62 @@ func handleGuestTetherSend(w http.ResponseWriter, r *http.Request, hrpc *harness
 
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"ok":true}`)
+}
+
+// handleGuestExpose exposes a port via the host, then starts a local port proxy.
+func handleGuestExpose(w http.ResponseWriter, r *http.Request, hrpc *harnessRPC) {
+	var req struct {
+		GuestPort  int    `json:"guest_port"`
+		PublicPort int    `json:"public_port"`
+		Protocol   string `json:"protocol"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeGuestError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.GuestPort <= 0 {
+		writeGuestError(w, http.StatusBadRequest, "guest_port is required")
+		return
+	}
+
+	result, err := hrpc.Call("guest.expose_port", req)
+	if err != nil {
+		writeGuestError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Start local port proxy for the new port
+	if hrpc.portProxy != nil {
+		hrpc.portProxy.AddPort(req.GuestPort)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(result)
+}
+
+// handleGuestUnexpose unexposes a port via the host, then stops the local port proxy.
+func handleGuestUnexpose(w http.ResponseWriter, r *http.Request, hrpc *harnessRPC) {
+	guestPortStr := r.PathValue("guest_port")
+	guestPort := 0
+	fmt.Sscanf(guestPortStr, "%d", &guestPort)
+	if guestPort <= 0 {
+		writeGuestError(w, http.StatusBadRequest, "invalid guest_port")
+		return
+	}
+
+	result, err := hrpc.Call("guest.unexpose_port", map[string]int{"guest_port": guestPort})
+	if err != nil {
+		writeGuestError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Stop local port proxy
+	if hrpc.portProxy != nil {
+		hrpc.portProxy.RemovePort(guestPort)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(result)
 }
 
 func writeGuestError(w http.ResponseWriter, code int, message string) {

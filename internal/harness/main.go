@@ -51,6 +51,7 @@ func Run() {
 
 	// Start guest API HTTP server (localhost:7777)
 	// Guest processes call this to spawn/manage instances.
+	// The portProxy is set on hrpc by handleRun when the primary process starts.
 	go startGuestAPIServer(hrpc)
 
 	// Handle JSON-RPC from the host + responses to our guest API calls

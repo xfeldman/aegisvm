@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -13,11 +14,13 @@ import (
 func TestServeBasicHTTP(t *testing.T) {
 	inst := apiPost(t, "/v1/instances", map[string]interface{}{
 		"command": []string{"python3", "-m", "http.server", "80"},
-		"exposes": []map[string]interface{}{{"port": 80}},
 	})
 
 	id := inst["id"].(string)
 	t.Cleanup(func() { apiDelete(t, "/v1/instances/"+id) })
+
+	// Expose port at runtime
+	apiPost(t, fmt.Sprintf("/v1/instances/%s/expose", id), map[string]interface{}{"port": 80})
 
 	body, err := waitForHTTP("http://127.0.0.1:8099/", 60*time.Second)
 	if err != nil {
@@ -32,11 +35,12 @@ func TestServeBasicHTTP(t *testing.T) {
 func TestServeMultipleCurls(t *testing.T) {
 	inst := apiPost(t, "/v1/instances", map[string]interface{}{
 		"command": []string{"python3", "-m", "http.server", "80"},
-		"exposes": []map[string]interface{}{{"port": 80}},
 	})
 
 	id := inst["id"].(string)
 	t.Cleanup(func() { apiDelete(t, "/v1/instances/"+id) })
+
+	apiPost(t, fmt.Sprintf("/v1/instances/%s/expose", id), map[string]interface{}{"port": 80})
 
 	_, err := waitForHTTP("http://127.0.0.1:8099/", 60*time.Second)
 	if err != nil {
@@ -61,11 +65,12 @@ func TestServePauseResume(t *testing.T) {
 
 	inst := apiPost(t, "/v1/instances", map[string]interface{}{
 		"command": []string{"python3", "-m", "http.server", "80"},
-		"exposes": []map[string]interface{}{{"port": 80}},
 	})
 
 	id := inst["id"].(string)
 	t.Cleanup(func() { apiDelete(t, "/v1/instances/"+id) })
+
+	apiPost(t, fmt.Sprintf("/v1/instances/%s/expose", id), map[string]interface{}{"port": 80})
 
 	_, err := waitForHTTP("http://127.0.0.1:8099/", 60*time.Second)
 	if err != nil {
@@ -90,10 +95,11 @@ func TestServePauseResume(t *testing.T) {
 func TestServeCleanShutdown(t *testing.T) {
 	inst := apiPost(t, "/v1/instances", map[string]interface{}{
 		"command": []string{"python3", "-m", "http.server", "80"},
-		"exposes": []map[string]interface{}{{"port": 80}},
 	})
 
 	id := inst["id"].(string)
+
+	apiPost(t, fmt.Sprintf("/v1/instances/%s/expose", id), map[string]interface{}{"port": 80})
 
 	_, err := waitForHTTP("http://127.0.0.1:8099/", 60*time.Second)
 	if err != nil {

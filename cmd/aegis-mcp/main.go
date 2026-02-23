@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -165,14 +164,13 @@ func doStreamingRequest(method, path string, body interface{}) (*http.Response, 
 var tools = []mcpTool{
 	{
 		Name:        "instance_start",
-		Description: "Start a new isolated Linux microVM running a command. The VM is a fresh Alpine Linux environment — host files are NOT available unless mapped via workspace. To restart a stopped or disabled instance, pass just the name without a command. Use the 'kit' parameter with installed kits (see kit_list) to get preset command, image, and capabilities — e.g. kit='agent' for a messaging-driven LLM agent.",
+		Description: "Start a new isolated Linux microVM running a command. The VM is a fresh Alpine Linux environment — host files are NOT available unless mapped via workspace. To restart a stopped or disabled instance, pass just the name without a command. Use the 'kit' parameter with installed kits (see kit_list) to get preset command, image, and capabilities — e.g. kit='agent' for a messaging-driven LLM agent. Use instance_expose to expose ports after creation.",
 		InputSchema: rawJSON(`{
 			"type": "object",
 			"properties": {
 				"command":   {"type": "array", "items": {"type": "string"}, "description": "Command to run inside the VM. Paths must be VM paths (e.g. /workspace/script.py), not host paths. Not required when using a kit (the kit provides a default command)."},
 				"name":      {"type": "string", "description": "Human-friendly handle for the instance (e.g. 'web', 'api'). Use this to reference the instance in other tools."},
 				"kit":       {"type": "string", "description": "Kit preset name (e.g. 'agent'). Supplies default command, image, and capabilities from the kit manifest. Use kit_list to see available kits. Explicit parameters override kit defaults."},
-				"expose":    {"type": "array", "items": {"type": "string"}, "description": "Ports to expose. Each entry is 'guestPort' (random public port) or 'publicPort:guestPort' (deterministic). Examples: ['80'], ['8080:80']. Response includes public_port in endpoints."},
 				"workspace": {"type": "string", "description": "Absolute host directory path to live-mount inside the VM at /workspace/. Changes on the host are immediately visible inside the VM and vice versa — no restart needed. Example: '/home/user/project' becomes /workspace/ in the VM."},
 				"image":     {"type": "string", "description": "OCI image reference for the VM root filesystem (e.g. 'python:3.12-alpine', 'node:22-alpine'). Default is a minimal Alpine Linux. Kit provides a default if not specified."},
 				"env":       {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment variables to set inside the VM."},
@@ -181,6 +179,32 @@ var tools = []mcpTool{
 				"vcpus":     {"type": "integer", "description": "Number of virtual CPUs. Default: 1."},
 				"capabilities": {"type": "object", "description": "Guest orchestration capabilities. When set, the VM gets a Guest API on http://127.0.0.1:7777 that allows it to spawn and manage child instances. Kit provides defaults if not specified.", "properties": {"spawn": {"type": "boolean", "description": "Allow this instance to spawn child instances via the Guest API."}, "spawn_depth": {"type": "integer", "description": "Maximum nesting depth. 1 = can spawn children, but children cannot spawn grandchildren. 2 = children can also spawn."}, "max_children": {"type": "integer", "description": "Maximum number of concurrent child instances."}, "allowed_images": {"type": "array", "items": {"type": "string"}, "description": "OCI image refs children can use. Use [\"*\"] for any image."}, "max_memory_mb": {"type": "integer", "description": "Maximum memory per child instance in MB."}, "max_vcpus": {"type": "integer", "description": "Maximum vCPUs per child instance."}, "max_expose_ports": {"type": "integer", "description": "Maximum exposed ports per child instance."}}}
 			}
+		}`),
+	},
+	{
+		Name:        "instance_expose",
+		Description: "Expose a guest port on the host. Can be called at any time — before, during, or after the instance starts. Returns the allocated public port. Idempotent: re-exposing the same port returns the existing mapping.",
+		InputSchema: rawJSON(`{
+			"type": "object",
+			"properties": {
+				"name":        {"type": "string", "description": "Instance handle or ID"},
+				"port":        {"type": "integer", "description": "Guest port to expose (e.g. 80, 8080)"},
+				"public_port": {"type": "integer", "description": "Specific host port to use. 0 or omitted = random."},
+				"protocol":    {"type": "string", "description": "Protocol hint: 'http' (default), 'tcp', 'grpc'."}
+			},
+			"required": ["name", "port"]
+		}`),
+	},
+	{
+		Name:        "instance_unexpose",
+		Description: "Remove a port exposure from an instance. Closes the host listener for that guest port.",
+		InputSchema: rawJSON(`{
+			"type": "object",
+			"properties": {
+				"name":       {"type": "string", "description": "Instance handle or ID"},
+				"guest_port": {"type": "integer", "description": "Guest port to unexpose"}
+			},
+			"required": ["name", "guest_port"]
 		}`),
 	},
 	{
@@ -331,7 +355,6 @@ func handleInstanceStart(args json.RawMessage) *mcpToolResult {
 		Command      []string               `json:"command"`
 		Name         string                 `json:"name"`
 		Kit          string                 `json:"kit"`
-		Expose       []string               `json:"expose"`
 		Workspace    string                 `json:"workspace"`
 		Image        string                 `json:"image"`
 		Env          map[string]string      `json:"env"`
@@ -402,25 +425,6 @@ func handleInstanceStart(args json.RawMessage) *mcpToolResult {
 	}
 	if params.Name != "" {
 		body["handle"] = params.Name
-	}
-	if len(params.Expose) > 0 {
-		exposes := make([]map[string]interface{}, len(params.Expose))
-		for i, s := range params.Expose {
-			expose := map[string]interface{}{}
-			if idx := strings.IndexByte(s, ':'); idx >= 0 {
-				// "publicPort:guestPort" format
-				publicPort, _ := strconv.Atoi(s[:idx])
-				guestPort, _ := strconv.Atoi(s[idx+1:])
-				expose["port"] = guestPort
-				expose["public_port"] = publicPort
-			} else {
-				// Just guest port
-				guestPort, _ := strconv.Atoi(s)
-				expose["port"] = guestPort
-			}
-			exposes[i] = expose
-		}
-		body["exposes"] = exposes
 	}
 	if params.Workspace != "" {
 		body["workspace"] = params.Workspace
@@ -691,6 +695,62 @@ func handleSecretDelete(args json.RawMessage) *mcpToolResult {
 	return textResult(fmt.Sprintf("secret %q deleted", params.Key))
 }
 
+func handleInstanceExpose(args json.RawMessage) *mcpToolResult {
+	var params struct {
+		Name       string `json:"name"`
+		Port       int    `json:"port"`
+		PublicPort int    `json:"public_port"`
+		Protocol   string `json:"protocol"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return errorResult("invalid arguments: " + err.Error())
+	}
+	if params.Name == "" || params.Port <= 0 {
+		return errorResult("name and port are required")
+	}
+
+	body := map[string]interface{}{
+		"port": params.Port,
+	}
+	if params.PublicPort > 0 {
+		body["public_port"] = params.PublicPort
+	}
+	if params.Protocol != "" {
+		body["protocol"] = params.Protocol
+	}
+
+	status, data, err := doRequest("POST", "/v1/instances/"+params.Name+"/expose", body)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	if status >= 400 {
+		return errorResult(fmt.Sprintf("HTTP %d: %s", status, string(data)))
+	}
+	return textResult(string(data))
+}
+
+func handleInstanceUnexpose(args json.RawMessage) *mcpToolResult {
+	var params struct {
+		Name      string `json:"name"`
+		GuestPort int    `json:"guest_port"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return errorResult("invalid arguments: " + err.Error())
+	}
+	if params.Name == "" || params.GuestPort <= 0 {
+		return errorResult("name and guest_port are required")
+	}
+
+	status, data, err := doRequest("DELETE", fmt.Sprintf("/v1/instances/%s/expose/%d", params.Name, params.GuestPort), nil)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	if status >= 400 {
+		return errorResult(fmt.Sprintf("HTTP %d: %s", status, string(data)))
+	}
+	return textResult("port unexposed")
+}
+
 func loadKitManifest(name string) (map[string]interface{}, error) {
 	manifest, err := kit.LoadManifest(name)
 	if err != nil {
@@ -826,19 +886,21 @@ func errorResult(msg string) *mcpToolResult {
 // --- Tool dispatch ---
 
 var toolHandlers = map[string]func(json.RawMessage) *mcpToolResult{
-	"instance_start":  handleInstanceStart,
-	"instance_list":   handleInstanceList,
-	"instance_info":   handleInstanceInfo,
-	"instance_disable": handleInstanceDisable,
-	"instance_delete": handleInstanceDelete,
-	"exec":            handleExec,
-	"logs":            handleLogs,
-	"secret_set":      handleSecretSet,
-	"secret_list":     handleSecretList,
-	"secret_delete":   handleSecretDelete,
-	"kit_list":        handleKitList,
-	"tether_send":     handleTetherSend,
-	"tether_read":     handleTetherRead,
+	"instance_start":    handleInstanceStart,
+	"instance_list":     handleInstanceList,
+	"instance_info":     handleInstanceInfo,
+	"instance_expose":   handleInstanceExpose,
+	"instance_unexpose": handleInstanceUnexpose,
+	"instance_disable":  handleInstanceDisable,
+	"instance_delete":   handleInstanceDelete,
+	"exec":              handleExec,
+	"logs":              handleLogs,
+	"secret_set":        handleSecretSet,
+	"secret_list":       handleSecretList,
+	"secret_delete":     handleSecretDelete,
+	"kit_list":          handleKitList,
+	"tether_send":       handleTetherSend,
+	"tether_read":       handleTetherRead,
 }
 
 // --- Main loop ---
@@ -891,7 +953,7 @@ Key concepts:
 - Each instance is a lightweight VM running a single command. The VM runs Alpine Linux (ARM64).
 - Commands run INSIDE the VM, not on the host. Host files are NOT available inside the VM unless you use a workspace.
 - Workspace: pass an absolute host directory path as the "workspace" parameter. It will be mounted at /workspace/ inside the VM. Example: '/home/user/project' becomes /workspace/ in the VM.
-- Ports: the VM has its own network. To access a server running inside, use "expose" to map guest ports to the host. The response includes the host port in "endpoints".
+- Ports: the VM has its own network. To access a server running inside, use instance_expose to map guest ports to the host. Ports can be exposed/unexposed at any time — before, during, or after the instance starts.
 - The base VM has basic tools (sh, ls, cat, etc). For Python, Node, or other runtimes, use the "image" parameter with an OCI image ref (e.g. "python:3.12", "node:20").
 - Use "exec" to run commands inside a running instance. Use "logs" to see instance output.
 - Use "name" to give instances human-friendly handles for easy reference.
