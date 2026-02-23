@@ -67,7 +67,7 @@ aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
 
 # Configure the gateway (per-instance config)
 mkdir -p ~/.aegis/kits/my-agent
-echo '{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","instance":"my-agent","allowed_chats":["*"]}}' \
+echo '{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","allowed_chats":["*"]}}' \
   > ~/.aegis/kits/my-agent/gateway.json
 ```
 
@@ -248,6 +248,7 @@ make integration SHORT=1  # skip pause/resume test
 ## Documentation
 
 - [Quickstart](docs/QUICKSTART.md) — zero to running agent in 5 minutes
+- [Kits](docs/KITS.md) — optional add-on bundles, kit manifests, instance daemons
 - [Agent Kit](docs/AGENT_KIT.md) — Telegram bot with wake-on-message and streaming LLM responses
 - [CLI Reference](docs/CLI.md) — complete command reference
 - [Guest Orchestration API](docs/GUEST_API.md) — spawn and manage instances from inside a VM (HTTP + MCP)

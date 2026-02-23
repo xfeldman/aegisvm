@@ -26,13 +26,14 @@ Telegram ◄── Gateway (host) ◄── aegisd tether stream ◄── harne
 
 ```bash
 # From Homebrew
-brew install aegisvm-agent-kit
+brew tap xfeldman/aegisvm
+brew install aegisvm aegisvm-agent-kit
 
 # Or from source
 make install-kit
 ```
 
-This installs the kit manifest to `~/.aegis/kits/agent.json` and the `aegis-gateway` + `aegis-agent` binaries.
+This installs the `aegis-gateway` and `aegis-agent` binaries and the kit manifest.
 
 Verify installation:
 
@@ -87,7 +88,6 @@ Create `~/.aegis/kits/my-agent/gateway.json` (the directory matches the instance
 {
   "telegram": {
     "bot_token_secret": "TELEGRAM_BOT_TOKEN",
-    "instance": "my-agent",
     "allowed_chats": ["*"]
   }
 }
@@ -97,30 +97,24 @@ Create `~/.aegis/kits/my-agent/gateway.json` (the directory matches the instance
 |-------|-------------|
 | `bot_token_secret` | Name of the aegis secret containing the Telegram bot token |
 | `bot_token` | Alternative: inline bot token (not recommended) |
-| `instance` | Handle of the agent instance to route messages to |
 | `allowed_chats` | Chat IDs allowed to interact, or `["*"]` for all |
 
-### 4. Gateway lifecycle
+The instance handle is set automatically by aegisd — you don't need to specify it in the config.
 
-The gateway is managed per-instance by aegisd. When an instance is created with a kit that declares `instance_daemons` in its manifest, aegisd spawns the gateway automatically. The gateway:
+### 4. Gateway and wake-on-message
 
-- **Starts** when the instance is created or re-enabled
-- **Stops** when the instance is disabled or deleted
-- **Survives** VM pause/stop (enables wake-on-message for stopped instances)
-- **Hot-reloads** config by polling every 3 seconds. On parse failure, keeps the last-known-good config. Send SIGHUP to the gateway process for immediate reload.
+The gateway is a host-side process that bridges messaging channels (Telegram today, with multichannel support coming) with your agent instance. It runs alongside the instance as a kit daemon (see [Kits](KITS.md) for how kit daemons work).
 
-The gateway picks up config from `~/.aegis/kits/{handle}/gateway.json`. You can edit this file at any time and the gateway will reload it automatically.
+The gateway's key feature is **wake-on-message**: when the agent VM is paused or stopped (zero CPU), the gateway stays running on the host, listening for Telegram messages. When a message arrives, it wakes the VM automatically — cold boot in ~500ms, resume from pause in ~35ms.
 
-Check gateway status:
+The flow:
+1. User sends a Telegram message
+2. Gateway receives it and POSTs a tether frame to aegisd
+3. aegisd wakes the VM if needed, forwards the frame to the agent
+4. Agent calls the LLM, streams the response back through the tether
+5. Gateway renders the streaming response in Telegram (progressive message edits + typing indicator)
 
-```bash
-aegis instance info my-agent
-# ...
-# Gateway:     running
-# ...
-```
-
-`aegis down` stops aegisd, which stops all per-instance daemons.
+The gateway picks up config from `~/.aegis/kits/{handle}/gateway.json`. You can edit this file at any time — the gateway hot-reloads it automatically.
 
 Send a message to your Telegram bot — you should see a streaming response with typing indicators.
 
@@ -253,12 +247,7 @@ Returns the decrypted value of a secret. Used by the gateway to resolve `bot_tok
 
 ### Gateway (host)
 
-| Variable | Description |
-|----------|-------------|
-| `TELEGRAM_BOT_TOKEN` | Telegram bot token (alternative to config file) |
-| `TELEGRAM_BOT_TOKEN_SECRET` | Name of aegis secret to resolve bot token from |
-| `AEGIS_GATEWAY_INSTANCE` | Instance handle (alternative to config file) |
-| `AEGIS_GATEWAY_CONFIG` | Path to gateway config file |
+Each agent instance gets its own gateway process (see [Kits](KITS.md)). Configure at `~/.aegis/kits/{handle}/gateway.json`. Multiple instances can run simultaneously, each with its own Telegram bot.
 
 ## Using a custom OCI image
 
