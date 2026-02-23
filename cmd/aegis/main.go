@@ -617,6 +617,9 @@ func cmdDoctor() {
 				if v, ok := caps["pause_resume"].(bool); ok {
 					fmt.Printf("  Pause/Resume:          %s\n", boolYesNo(v))
 				}
+				if v, ok := caps["persistent_pause"].(bool); ok {
+					fmt.Printf("  Persistent pause:      %s\n", boolYesNo(v))
+				}
 				if v, ok := caps["boot_from_disk_layers"].(bool); ok {
 					fmt.Printf("  Boot from disk layers: %s\n", boolYesNo(v))
 				}

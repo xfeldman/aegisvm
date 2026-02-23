@@ -84,6 +84,13 @@ type BackendCaps struct {
 	// Pause indicates whether pause/resume with RAM retained is supported.
 	Pause bool
 
+	// PersistentPause indicates that paused VMs retain state indefinitely
+	// without needing to be stopped. When true, the lifecycle manager skips
+	// the PAUSED → STOPPED transition entirely — the OS manages memory
+	// pressure via swap. When false (e.g. Firecracker/KVM), paused VMs
+	// should be stopped after a timeout to free hypervisor resources.
+	PersistentPause bool
+
 	// RootFSType is the rootfs format this backend expects.
 	RootFSType RootFSType
 

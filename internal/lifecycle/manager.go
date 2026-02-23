@@ -947,12 +947,15 @@ func (m *Manager) pauseInstance(inst *Instance) {
 	inst.mu.Unlock()
 	m.notifyStateChange(inst.ID, StatePaused)
 
-	// Start terminate timer
-	inst.mu.Lock()
-	inst.stopTimer = time.AfterFunc(m.cfg.StopAfterIdle, func() {
-		m.stopIdleInstance(inst)
-	})
-	inst.mu.Unlock()
+	// Start terminate timer — unless backend has persistent pause (e.g. libkrun/macOS),
+	// where the OS manages memory pressure via swap and stopping is unnecessary.
+	if !m.vmm.Capabilities().PersistentPause {
+		inst.mu.Lock()
+		inst.stopTimer = time.AfterFunc(m.cfg.StopAfterIdle, func() {
+			m.stopIdleInstance(inst)
+		})
+		inst.mu.Unlock()
+	}
 }
 
 func (m *Manager) stopIdleInstance(inst *Instance) {

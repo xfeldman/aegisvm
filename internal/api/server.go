@@ -133,6 +133,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Backend: caps.Name,
 		Capabilities: map[string]interface{}{
 			"pause_resume":          caps.Pause,
+			"persistent_pause":      caps.PersistentPause,
 			"boot_from_disk_layers": true,
 			"network_backend":       caps.NetworkBackend,
 		},

@@ -442,9 +442,10 @@ func (l *LibkrunVMM) StopVM(h Handle) error {
 
 func (l *LibkrunVMM) Capabilities() BackendCaps {
 	return BackendCaps{
-		Pause:          true,
-		RootFSType:     RootFSDirectory,
-		Name:           "libkrun",
-		NetworkBackend: l.cfg.NetworkBackend,
+		Pause:           true,
+		PersistentPause: true,
+		RootFSType:      RootFSDirectory,
+		Name:            "libkrun",
+		NetworkBackend:  l.cfg.NetworkBackend,
 	}
 }
