@@ -41,6 +41,8 @@ aegis down                                                  # stop everything
 
 Agent Kit adds an LLM agent to AegisVM instances. Each agent runs in its own isolated VM — delegate tasks from Claude Code, connect messaging bots, or build multi-agent pipelines where agents spawn sub-agents.
 
+**Pair debugging across host + VM.** Run your backend inside a VM while a host-side agent and the in-VM agent collaborate over tether. You get live, interactive debugging with full isolation: the host agent can orchestrate, the VM agent can inspect the sandboxed runtime, and the VM still scale-to-zero when idle.
+
 ```bash
 brew install aegisvm-agent-kit
 
