@@ -9,7 +9,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -252,7 +254,7 @@ func handleConnection(ctx context.Context, conn net.Conn, hrpc *harnessRPC) {
 
 		// Notification from aegisd (no ID) — check for tether.frame
 		if msg.ID == nil && msg.Method == "tether.frame" {
-			go forwardTetherToAgent(msg.Params)
+			go handleTetherFrame(conn, msg.Params)
 			continue
 		}
 
@@ -597,10 +599,54 @@ func sendToAgent(params json.RawMessage) {
 	resp.Body.Close()
 }
 
-// forwardTetherToAgent forwards a tether.frame notification to the agent runtime.
-// Frames are buffered if the agent isn't ready yet and drained once it starts.
-func forwardTetherToAgent(params json.RawMessage) {
+// handleTetherFrame processes an incoming tether.frame:
+// 1. Emit event.ack immediately (delivery receipt)
+// 2. Persist to /workspace/tether/inbox.ndjson
+// 3. Forward to agent runtime (if available)
+func handleTetherFrame(conn net.Conn, params json.RawMessage) {
+	// Parse frame to extract session info for ack
+	var frame struct {
+		Session struct {
+			Channel string `json:"channel"`
+			ID      string `json:"id"`
+		} `json:"session"`
+		MsgID string `json:"msg_id"`
+	}
+	json.Unmarshal(params, &frame)
+
+	// 1. Emit ack
+	sendNotification(conn, "tether.frame", map[string]interface{}{
+		"v":       1,
+		"type":    "event.ack",
+		"session": frame.Session,
+		"msg_id":  frame.MsgID,
+		"payload": map[string]string{"status": "received"},
+	})
+
+	// 2. Persist to inbox
+	tetherPersistFrame(params)
+
+	// 3. Forward to agent runtime
 	tetherBuffer.enqueue(params)
+}
+
+// tetherInboxPath is the append-only inbox file for persisting tether frames.
+const tetherInboxPath = "/workspace/tether/inbox.ndjson"
+
+// tetherPersistFrame appends a tether frame to the inbox file.
+// Creates the directory and file if they don't exist.
+func tetherPersistFrame(params json.RawMessage) {
+	dir := filepath.Dir(tetherInboxPath)
+	os.MkdirAll(dir, 0755)
+
+	f, err := os.OpenFile(tetherInboxPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Printf("tether: persist inbox: %v", err)
+		return
+	}
+	defer f.Close()
+	f.Write(params)
+	f.Write([]byte("\n"))
 }
 
 // sendNotification sends a JSON-RPC notification (no ID, no response expected).

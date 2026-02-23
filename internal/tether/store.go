@@ -2,6 +2,7 @@ package tether
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,6 +33,16 @@ type QueryResult struct {
 	Frames   []Frame `json:"frames"`
 	NextSeq  int64   `json:"next_seq"`
 	TimedOut bool    `json:"timed_out"`
+}
+
+// MarshalJSON ensures Frames is serialized as [] not null when empty.
+func (r QueryResult) MarshalJSON() ([]byte, error) {
+	type Alias QueryResult
+	a := Alias(r)
+	if a.Frames == nil {
+		a.Frames = []Frame{}
+	}
+	return json.Marshal(a)
 }
 
 // NewStore creates a new tether store.

@@ -37,24 +37,33 @@ aegis down                                                  # stop everything
 
 ## Agent Kit
 
-Agent Kit turns AegisVM into a messaging-driven agent platform. The agent VM consumes zero CPU when idle — a new Telegram message wakes it in milliseconds, the LLM responds with streaming text, and the VM goes back to sleep.
+Agent Kit adds an LLM agent to AegisVM instances. Each agent runs in its own isolated VM — delegate tasks from Claude Code, connect messaging bots, or build multi-agent pipelines where agents spawn sub-agents.
 
 ```bash
 brew install aegisvm-agent-kit
 
 aegis secret set OPENAI_API_KEY sk-...
-aegis secret set TELEGRAM_BOT_TOKEN 123456:ABC-...
-
-# Start the agent — kit provides command, image, and capabilities
 aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
+```
 
-# Connect to Telegram
+The agent is immediately reachable via tether — Claude Code can delegate tasks, read streaming responses, and orchestrate multiple agents:
+
+```
+tether_send(instance="my-agent", text="Analyze the data in /workspace/data.csv")
+tether_read(instance="my-agent", after_seq=..., wait_ms=15000)
+→ {type: "assistant.done", text: "Here's the analysis..."}
+```
+
+Agents can also spawn sub-agents via the Guest API, and optionally connect to messaging apps for conversational AI with wake-on-message and scale-to-zero:
+
+```bash
+# Connect to Telegram (optional)
+aegis secret set TELEGRAM_BOT_TOKEN 123456:ABC-...
 mkdir -p ~/.aegis/kits/my-agent
 echo '{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","allowed_chats":["*"]}}' \
   > ~/.aegis/kits/my-agent/gateway.json
+# Gateway picks up config within seconds — send a message to your bot
 ```
-
-The gateway runs on the host alongside the instance, staying alive while the VM sleeps to catch incoming messages. Each agent instance gets its own gateway — run multiple bots independently.
 
 See [Agent Kit docs](docs/AGENT_KIT.md) for the full guide. See [Kits](docs/KITS.md) for how kits work.
 
