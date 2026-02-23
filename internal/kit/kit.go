@@ -17,9 +17,10 @@ var shareDir string
 
 // Manifest describes a kit's configuration, daemons, image recipe, and defaults.
 type Manifest struct {
-	Name        string   `json:"name"`
-	Version     string   `json:"version"`
-	Description string   `json:"description"`
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	Description string `json:"description"`
+	Usage       string `json:"usage,omitempty"`
 
 	// InstanceDaemons lists binaries to spawn per enabled instance using this kit.
 	// aegisd manages their lifecycle: start on instance create/enable,

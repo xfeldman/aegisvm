@@ -2,6 +2,7 @@
   "name": "agent",
   "version": "0.1.0",
   "description": "Messaging-driven LLM agent with Telegram integration",
+  "usage": "Creates a VM running an LLM agent that receives messages via Telegram and responds with streaming text. The agent has access to MCP tools for spawning child instances, running commands, and managing files.\n\nSetup:\n1. Set secrets: secret_set OPENAI_API_KEY and TELEGRAM_BOT_TOKEN\n2. Start: instance_start with kit=\"agent\", name=\"my-agent\", secrets=[\"OPENAI_API_KEY\"]\n3. Create gateway config at ~/.aegis/kits/my-agent/gateway.json:\n   {\"telegram\":{\"bot_token_secret\":\"TELEGRAM_BOT_TOKEN\",\"allowed_chats\":[\"*\"]}}\n4. The gateway starts automatically and picks up the config within seconds\n\nThe agent VM pauses when idle (zero CPU) and wakes on new Telegram messages. The gateway runs on the host and survives VM pause/stop to enable wake-on-message.\n\nRequired secrets: OPENAI_API_KEY (or ANTHROPIC_API_KEY), TELEGRAM_BOT_TOKEN\nOptional env: AEGIS_SYSTEM_PROMPT (custom system prompt for the LLM)",
   "instance_daemons": ["aegis-gateway"],
   "image": {
     "base": "python:3.12-alpine",

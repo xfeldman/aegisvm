@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xfeldman/aegisvm/internal/kit"
 	"github.com/xfeldman/aegisvm/internal/version"
 )
 
@@ -662,48 +663,24 @@ func handleSecretDelete(args json.RawMessage) *mcpToolResult {
 }
 
 func loadKitManifest(name string) (map[string]interface{}, error) {
-	home, _ := os.UserHomeDir()
-	path := filepath.Join(home, ".aegis", "kits", name+".json")
-	data, err := os.ReadFile(path)
+	manifest, err := kit.LoadManifest(name)
 	if err != nil {
-		return nil, fmt.Errorf("kit manifest not found at %s", path)
+		return nil, err
 	}
+	// Convert to generic map for JSON flexibility in handleInstanceStart
+	data, _ := json.Marshal(manifest)
 	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("invalid kit manifest: %v", err)
-	}
+	json.Unmarshal(data, &m)
 	return m, nil
 }
 
 func handleKitList(args json.RawMessage) *mcpToolResult {
-	home, _ := os.UserHomeDir()
-	kitsDir := filepath.Join(home, ".aegis", "kits")
-	entries, err := os.ReadDir(kitsDir)
-	if err != nil {
+	manifests, _ := kit.ListManifests()
+	if len(manifests) == 0 {
 		return textResult("No kits installed.")
 	}
 
-	var kits []map[string]interface{}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(kitsDir, e.Name()))
-		if err != nil {
-			continue
-		}
-		var manifest map[string]interface{}
-		if json.Unmarshal(data, &manifest) != nil {
-			continue
-		}
-		kits = append(kits, manifest)
-	}
-
-	if len(kits) == 0 {
-		return textResult("No kits installed.")
-	}
-
-	data, _ := json.MarshalIndent(kits, "", "  ")
+	data, _ := json.MarshalIndent(manifests, "", "  ")
 	return textResult(string(data))
 }
 
