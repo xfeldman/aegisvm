@@ -46,12 +46,21 @@ aegis secret set OPENAI_API_KEY sk-...
 aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
 ```
 
-The agent is immediately reachable via tether — Claude Code can delegate tasks, read streaming responses, and orchestrate multiple agents:
+The agent is immediately reachable — Claude Code can delegate tasks, read streaming responses, and orchestrate multiple agents:
 
 ```
-tether_send(instance="my-agent", text="Analyze the data in /workspace/data.csv")
-tether_read(instance="my-agent", after_seq=..., wait_ms=15000)
-→ {type: "assistant.done", text: "Here's the analysis..."}
+You: Start a new aegis instance with Agent kit using OpenAI, and try to contact its agent.
+
+Claude: Let me spin up an agent instance and ping it.
+        ⏺ aegis — instance_start (kit="agent", name="my-agent", secrets=["OPENAI_API_KEY"])
+        Instance is starting. Let me send it a message.
+        ⏺ aegis — tether_send (instance="my-agent", text="Hello, are you there?")
+        Message sent. Let me read the response.
+        ⏺ aegis — tether_read (instance="my-agent", after_seq=1, wait_ms=15000)
+        It's alive and responding! The agent replied:
+          "Hello! I'm an AI assistant running inside an Aegis VM. I can help with
+           executing shell commands, reading and writing files, and managing
+           resources within the workspace. Let me know what you need!"
 ```
 
 Agents can also spawn sub-agents via the Guest API, and optionally connect to messaging apps for conversational AI with wake-on-message and scale-to-zero:
