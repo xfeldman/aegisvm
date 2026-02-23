@@ -73,6 +73,7 @@ func (s *Server) registerRoutes() {
 	// Tether routes (Agent Kit messaging)
 	s.mux.HandleFunc("POST /v1/instances/{id}/tether", s.handleTetherIngress)
 	s.mux.HandleFunc("GET /v1/instances/{id}/tether/stream", s.handleTetherStream)
+	s.mux.HandleFunc("GET /v1/instances/{id}/tether/poll", s.handleTetherPoll)
 
 	// Secret routes (workspace-scoped key-value store)
 	s.mux.HandleFunc("PUT /v1/secrets/{name}", s.handleSetSecret)
@@ -881,12 +882,24 @@ func (s *Server) handleTetherIngress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Assign ingress seq for cursor tracking
+	ts := s.lifecycle.TetherStore()
+	var ingressSeq int64
+	if ts != nil {
+		ingressSeq = ts.NextSeq(inst.ID)
+		frame.Seq = ingressSeq
+	}
+
 	if err := s.lifecycle.SendTetherFrame(inst.ID, frame); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("send frame: %v", err))
 		return
 	}
 
-	w.WriteHeader(http.StatusAccepted)
+	writeJSON(w, http.StatusAccepted, map[string]interface{}{
+		"msg_id":      frame.MsgID,
+		"session_id":  frame.Session.ID,
+		"ingress_seq": ingressSeq,
+	})
 }
 
 func (s *Server) handleTetherStream(w http.ResponseWriter, r *http.Request) {
@@ -938,6 +951,60 @@ func (s *Server) handleTetherStream(w http.ResponseWriter, r *http.Request) {
 			streamJSON(w, frame)
 		}
 	}
+}
+
+func (s *Server) handleTetherPoll(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+
+	// Resolve by ID or handle
+	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	ts := s.lifecycle.TetherStore()
+	if ts == nil {
+		writeError(w, http.StatusServiceUnavailable, "tether not available")
+		return
+	}
+
+	q := r.URL.Query()
+
+	opts := tether.QueryOpts{
+		Channel:      q.Get("channel"),
+		SessionID:    q.Get("session_id"),
+		ReplyToMsgID: q.Get("reply_to_msg_id"),
+	}
+	if v := q.Get("after_seq"); v != "" {
+		fmt.Sscanf(v, "%d", &opts.AfterSeq)
+	}
+	if v := q.Get("limit"); v != "" {
+		fmt.Sscanf(v, "%d", &opts.Limit)
+	}
+	if v := q.Get("types"); v != "" {
+		opts.Types = strings.Split(v, ",")
+	}
+
+	waitMs := 0
+	if v := q.Get("wait_ms"); v != "" {
+		fmt.Sscanf(v, "%d", &waitMs)
+	}
+	if waitMs > 30000 {
+		waitMs = 30000
+	}
+
+	var result tether.QueryResult
+	if waitMs > 0 {
+		result = ts.WaitForFrames(r.Context(), inst.ID, opts, time.Duration(waitMs)*time.Millisecond)
+	} else {
+		result = ts.Query(inst.ID, opts)
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 // Secret handlers — dumb key-value store with encryption.

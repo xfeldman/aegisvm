@@ -151,6 +151,7 @@ Host
 ## Documentation
 
 - [Quickstart](docs/QUICKSTART.md) — zero to running in 5 minutes
+- [Tether](docs/TETHER.md) — host-to-agent messaging, delegation, long-poll
 - [Kits](docs/KITS.md) — optional add-on bundles, instance daemons
 - [Agent Kit](docs/AGENT_KIT.md) — Telegram bot with wake-on-message
 - [CLI Reference](docs/CLI.md) — complete command reference

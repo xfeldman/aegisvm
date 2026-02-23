@@ -215,3 +215,163 @@ func TestTetherUserIdentity(t *testing.T) {
 	t.Log("user identity in tether OK")
 }
 
+// TestTetherHostAgentPoll verifies the host-agent tether flow:
+// tether_send (host channel) → agent processes → tether_read via poll endpoint.
+// Tests: ingress_seq return, poll filtering, long-poll wakeup, seq ordering.
+func TestTetherHostAgentPoll(t *testing.T) {
+	handle := "tether-host-test"
+
+	apiDeleteAllowFail(t, fmt.Sprintf("/v1/instances/%s", handle))
+	time.Sleep(500 * time.Millisecond)
+
+	inst := apiPost(t, "/v1/instances", map[string]interface{}{
+		"command":   []string{"aegis-agent"},
+		"handle":    handle,
+		"image_ref": "python:3.12-alpine",
+		"workspace": "tether-host-test",
+		"kit":       "agent",
+	})
+	id := inst["id"].(string)
+	t.Cleanup(func() {
+		apiDeleteAllowFail(t, fmt.Sprintf("/v1/instances/%s", id))
+	})
+
+	waitForState(t, id, "running", 30*time.Second)
+	time.Sleep(2 * time.Second)
+
+	client := daemonClient()
+
+	// --- Test 1: Ingress returns ingress_seq ---
+	frame := map[string]interface{}{
+		"v":       1,
+		"type":    "user.message",
+		"session": map[string]string{"channel": "host", "id": "poll-test"},
+		"msg_id":  "host-poll-1",
+		"payload": map[string]interface{}{"text": "What is 3+3?"},
+	}
+	frameJSON, _ := json.Marshal(frame)
+	resp, err := client.Post(
+		fmt.Sprintf("http://aegis/v1/instances/%s/tether", id),
+		"application/json",
+		bytes.NewReader(frameJSON),
+	)
+	if err != nil {
+		t.Fatalf("POST tether: %v", err)
+	}
+	var ingressResp map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&ingressResp)
+	resp.Body.Close()
+
+	ingressSeq, ok := ingressResp["ingress_seq"].(float64)
+	if !ok || ingressSeq < 1 {
+		t.Fatalf("expected ingress_seq >= 1, got %v", ingressResp)
+	}
+	t.Logf("ingress_seq: %v", ingressSeq)
+
+	// --- Test 2: Poll in a loop until assistant.done (real usage pattern) ---
+	var allFrames []map[string]interface{}
+	cursor := int64(ingressSeq)
+	var gotPresence, gotDone bool
+	var doneText string
+	var nextSeq int64
+
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) && !gotDone {
+		pollURL := fmt.Sprintf(
+			"http://aegis/v1/instances/%s/tether/poll?channel=host&session_id=poll-test&after_seq=%d&wait_ms=10000",
+			id, cursor)
+		pollResp, err := client.Get(pollURL)
+		if err != nil {
+			t.Fatalf("GET tether/poll: %v", err)
+		}
+		var pollResult struct {
+			Frames   []map[string]interface{} `json:"frames"`
+			NextSeq  int64                    `json:"next_seq"`
+			TimedOut bool                     `json:"timed_out"`
+		}
+		json.NewDecoder(pollResp.Body).Decode(&pollResult)
+		pollResp.Body.Close()
+
+		for _, f := range pollResult.Frames {
+			t.Logf("frame: type=%s seq=%v", f["type"], f["seq"])
+			switch f["type"] {
+			case "status.presence":
+				gotPresence = true
+			case "assistant.done":
+				gotDone = true
+				if p, ok := f["payload"].(map[string]interface{}); ok {
+					doneText, _ = p["text"].(string)
+				}
+			}
+		}
+		allFrames = append(allFrames, pollResult.Frames...)
+		if pollResult.NextSeq > cursor {
+			cursor = pollResult.NextSeq
+		}
+		nextSeq = pollResult.NextSeq
+	}
+
+	if !gotPresence {
+		t.Error("missing status.presence frame")
+	}
+	if !gotDone {
+		t.Fatal("missing assistant.done frame (timeout)")
+	}
+
+	// Verify seq ordering across all frames
+	var prevSeq int64
+	for _, f := range allFrames {
+		seq := int64(f["seq"].(float64))
+		if seq <= prevSeq {
+			t.Errorf("seq not monotonic: %d <= %d", seq, prevSeq)
+		}
+		prevSeq = seq
+	}
+
+	t.Logf("poll OK: %d frames, next_seq=%d, done=%q", len(allFrames), nextSeq, doneText)
+
+	// --- Test 3: Poll with after_seq=next_seq returns empty (no new frames) ---
+	emptyURL := fmt.Sprintf(
+		"http://aegis/v1/instances/%s/tether/poll?channel=host&session_id=poll-test&after_seq=%d&wait_ms=500",
+		id, nextSeq)
+	emptyResp, err := client.Get(emptyURL)
+	if err != nil {
+		t.Fatalf("GET tether/poll (empty): %v", err)
+	}
+	var emptyResult struct {
+		Frames   []map[string]interface{} `json:"frames"`
+		TimedOut bool                     `json:"timed_out"`
+	}
+	json.NewDecoder(emptyResp.Body).Decode(&emptyResult)
+	emptyResp.Body.Close()
+
+	if len(emptyResult.Frames) != 0 {
+		t.Errorf("expected 0 frames after cursor, got %d", len(emptyResult.Frames))
+	}
+	if !emptyResult.TimedOut {
+		t.Error("expected timed_out=true when no new frames")
+	}
+	t.Log("empty poll with timeout OK")
+
+	// --- Test 4: Channel isolation — host frames not visible on telegram channel ---
+	telegramURL := fmt.Sprintf(
+		"http://aegis/v1/instances/%s/tether/poll?channel=telegram&session_id=poll-test&after_seq=0&wait_ms=500",
+		id)
+	telegramResp, err := client.Get(telegramURL)
+	if err != nil {
+		t.Fatalf("GET tether/poll (telegram): %v", err)
+	}
+	var telegramResult struct {
+		Frames []map[string]interface{} `json:"frames"`
+	}
+	json.NewDecoder(telegramResp.Body).Decode(&telegramResult)
+	telegramResp.Body.Close()
+
+	if len(telegramResult.Frames) != 0 {
+		t.Errorf("host frames leaked to telegram channel: %d frames", len(telegramResult.Frames))
+	}
+	t.Log("channel isolation OK")
+
+	t.Log("host-agent tether poll: all tests passed")
+}
+

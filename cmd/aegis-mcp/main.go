@@ -289,6 +289,35 @@ var tools = []mcpTool{
 			"properties": {}
 		}`),
 	},
+	{
+		Name:        "tether_send",
+		Description: "Send a natural language message to the LLM agent running inside a VM instance. The instance wakes automatically if paused or stopped (wake-on-message). The agent processes the message using its own LLM context and tools, then streams a response. Use tether_read to receive the response. Use this for delegation ('go research X'), debugging ('what are you working on'), or any task that benefits from an isolated agent with its own context and tools.",
+		InputSchema: rawJSON(`{
+			"type": "object",
+			"properties": {
+				"instance":   {"type": "string", "description": "Instance handle or ID"},
+				"text":       {"type": "string", "description": "Message text to send to the agent"},
+				"session_id": {"type": "string", "description": "Session identifier for conversation threading. Use a stable ID per conversation (e.g. 'debug-1', 'task-analyze'). Default: 'default'."}
+			},
+			"required": ["instance", "text"]
+		}`),
+	},
+	{
+		Name:        "tether_read",
+		Description: "Read response frames from the LLM agent inside a VM instance. Returns new frames since the given cursor. Supports long-polling: set wait_ms (e.g. 15000) to block until frames arrive or timeout. Call in a loop until you see an 'assistant.done' frame, which contains the complete response. Use ingress_seq from tether_send as your initial after_seq, then use next_seq from each response as the cursor for the next call.",
+		InputSchema: rawJSON(`{
+			"type": "object",
+			"properties": {
+				"instance":   {"type": "string", "description": "Instance handle or ID"},
+				"session_id": {"type": "string", "description": "Session ID (must match tether_send). Default: 'default'."},
+				"after_seq":  {"type": "integer", "description": "Return frames with seq > this value. Start with 0 or use ingress_seq from tether_send."},
+				"limit":      {"type": "integer", "description": "Max frames to return. Default: 50, max: 200."},
+				"wait_ms":    {"type": "integer", "description": "Long-poll timeout in milliseconds. Block until frames arrive or timeout. 0 = return immediately. Default: 0, max: 30000."},
+				"types":      {"type": "array", "items": {"type": "string"}, "description": "Filter by frame types. Example: ['assistant.delta', 'assistant.done']. Default: all types."}
+			},
+			"required": ["instance"]
+		}`),
+	},
 }
 
 func rawJSON(s string) json.RawMessage {
@@ -684,6 +713,101 @@ func handleKitList(args json.RawMessage) *mcpToolResult {
 	return textResult(string(data))
 }
 
+func handleTetherSend(args json.RawMessage) *mcpToolResult {
+	var params struct {
+		Instance  string `json:"instance"`
+		Text      string `json:"text"`
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return errorResult("invalid arguments: " + err.Error())
+	}
+	if params.Instance == "" || params.Text == "" {
+		return errorResult("instance and text are required")
+	}
+	if params.SessionID == "" {
+		params.SessionID = "default"
+	}
+
+	msgID := fmt.Sprintf("host-%d", time.Now().UnixNano())
+	frame := map[string]interface{}{
+		"v":    1,
+		"type": "user.message",
+		"ts":   time.Now().UTC().Format(time.RFC3339Nano),
+		"session": map[string]string{
+			"channel": "host",
+			"id":      params.SessionID,
+		},
+		"msg_id":  msgID,
+		"payload": map[string]string{"text": params.Text},
+	}
+
+	status, data, err := doRequest("POST", "/v1/instances/"+params.Instance+"/tether", frame)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	if status >= 400 {
+		return errorResult(fmt.Sprintf("HTTP %d: %s", status, string(data)))
+	}
+
+	// Parse ingress_seq from response
+	var resp struct {
+		IngressSeq int64 `json:"ingress_seq"`
+	}
+	json.Unmarshal(data, &resp)
+
+	result := map[string]interface{}{
+		"msg_id":      msgID,
+		"session_id":  params.SessionID,
+		"ingress_seq": resp.IngressSeq,
+	}
+	resultJSON, _ := json.Marshal(result)
+	return textResult(string(resultJSON))
+}
+
+func handleTetherRead(args json.RawMessage) *mcpToolResult {
+	var params struct {
+		Instance  string   `json:"instance"`
+		SessionID string   `json:"session_id"`
+		AfterSeq  int64    `json:"after_seq"`
+		Limit     int      `json:"limit"`
+		WaitMs    int      `json:"wait_ms"`
+		Types     []string `json:"types"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return errorResult("invalid arguments: " + err.Error())
+	}
+	if params.Instance == "" {
+		return errorResult("instance is required")
+	}
+	if params.SessionID == "" {
+		params.SessionID = "default"
+	}
+	if params.Limit <= 0 {
+		params.Limit = 50
+	}
+	if params.WaitMs > 30000 {
+		params.WaitMs = 30000
+	}
+
+	// Build poll URL
+	path := fmt.Sprintf("/v1/instances/%s/tether/poll?channel=host&session_id=%s&after_seq=%d&limit=%d&wait_ms=%d",
+		params.Instance, params.SessionID, params.AfterSeq, params.Limit, params.WaitMs)
+	if len(params.Types) > 0 {
+		path += "&types=" + strings.Join(params.Types, ",")
+	}
+
+	status, data, err := doRequest("GET", path, nil)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	if status >= 400 {
+		return errorResult(fmt.Sprintf("HTTP %d: %s", status, string(data)))
+	}
+
+	return textResult(string(data))
+}
+
 // --- Result helpers ---
 
 func textResult(text string) *mcpToolResult {
@@ -713,6 +837,8 @@ var toolHandlers = map[string]func(json.RawMessage) *mcpToolResult{
 	"secret_list":     handleSecretList,
 	"secret_delete":   handleSecretDelete,
 	"kit_list":        handleKitList,
+	"tether_send":     handleTetherSend,
+	"tether_read":     handleTetherRead,
 }
 
 // --- Main loop ---
@@ -776,8 +902,35 @@ Kits:
 - Use instance_start with kit="<name>" to create an instance with kit defaults. Explicit parameters override.
 - Example: instance_start with kit="agent", name="my-agent", secrets=["OPENAI_API_KEY"] creates a messaging-driven LLM agent.
 
-Example — run a Python script from the host:
-  1. instance_start with workspace="/path/to/project", command=["python3", "/workspace/script.py"], expose=["8080"], name="myapp"
+Tether — talk to an agent inside a VM:
+- Kit instances (--kit agent) run an LLM agent inside the VM that you can communicate with via tether.
+- tether_send sends a natural language message to the in-VM agent. The VM wakes automatically if paused or stopped.
+- tether_read reads the agent's response. It supports long-polling (wait_ms) so you can block until the response arrives.
+- The agent inside the VM has its own LLM context, session history, and access to MCP tools (can spawn child VMs, run commands, manage files).
+- Use tether for delegation ("research X and report back"), debugging ("what is your current state"), or orchestration.
+
+When to use tether vs exec:
+- exec runs a shell command inside the VM and returns output. Good for one-off commands (ls, cat, pip install).
+- tether sends a message to the in-VM LLM agent and gets an intelligent response. Good for tasks that need reasoning, multi-step work, or conversation context.
+
+Tether conversation pattern:
+  1. tether_send(instance="my-agent", text="Analyze the CSV file in /workspace/data.csv")
+     Returns {msg_id, session_id, ingress_seq}
+  2. tether_read(instance="my-agent", after_seq=<ingress_seq>, wait_ms=15000)
+     Returns {frames: [...], next_seq, timed_out}
+     Look for type="assistant.done" in frames — that's the complete response.
+  3. If no assistant.done yet, call tether_read again with after_seq=<next_seq> to continue reading.
+  4. Frame types: "status.presence" (agent is thinking), "assistant.delta" (streaming text chunk), "assistant.done" (complete response).
+
+Sessions: each tether_send uses a session_id (default: "default"). Use different session_ids for independent conversations with the same agent. Sessions maintain separate conversation histories.
+
+Example — delegate research to an agent:
+  1. instance_start with kit="agent", name="researcher", secrets=["OPENAI_API_KEY"]
+  2. tether_send(instance="researcher", text="Find the top 5 Python libraries for data visualization and explain each")
+  3. tether_read(instance="researcher", after_seq=<ingress_seq>, wait_ms=15000) — repeat until assistant.done
+
+Example — run a script directly:
+  1. instance_start with workspace="/path/to/project", command=["python3", "/workspace/script.py"], name="myapp"
   2. exec with name="myapp", command=["ls", "/workspace/"] to see mounted files
   3. logs with name="myapp" to check output`,
 			}

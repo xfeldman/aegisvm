@@ -1,18 +1,37 @@
 package tether
 
-import "sync"
+import (
+	"context"
+	"sync"
+	"sync/atomic"
+	"time"
+)
 
 const defaultRingSize = 1000
 
-// Store is a per-instance pub/sub ring buffer for egress tether frames.
-// Modeled after logstore.Store — append frames, subscribe for live updates,
-// query recent history.
-//
-// Only egress frames (assistant.*, status.*, event.*) are stored.
-// Ingress frames (user.*) are fire-and-forward only.
+// Store is a per-instance pub/sub ring buffer for tether frames.
+// Egress frames (assistant.*, status.*, event.*) are stored and queryable.
+// Ingress frames (user.*) only bump the seq counter (not stored).
 type Store struct {
 	mu      sync.RWMutex
 	buffers map[string]*ringBuffer
+}
+
+// QueryOpts filters frames in Query and WaitForFrames.
+type QueryOpts struct {
+	Channel      string   // filter by session.channel (e.g. "host")
+	SessionID    string   // filter by session.id
+	AfterSeq     int64    // frames with seq > this
+	Types        []string // filter by frame type (empty = all)
+	ReplyToMsgID string   // filter by reply_to msg_id
+	Limit        int      // max results (0 = default 50)
+}
+
+// QueryResult is returned by Query and WaitForFrames.
+type QueryResult struct {
+	Frames   []Frame `json:"frames"`
+	NextSeq  int64   `json:"next_seq"`
+	TimedOut bool    `json:"timed_out"`
 }
 
 // NewStore creates a new tether store.
@@ -22,30 +41,67 @@ func NewStore() *Store {
 	}
 }
 
-// Append adds an egress frame to the instance's ring buffer and notifies subscribers.
+// Append adds an egress frame to the instance's ring buffer, assigns a seq,
+// and notifies subscribers and poll waiters.
 func (s *Store) Append(instanceID string, frame Frame) {
-	s.mu.Lock()
-	rb, ok := s.buffers[instanceID]
-	if !ok {
-		rb = newRingBuffer(defaultRingSize)
-		s.buffers[instanceID] = rb
-	}
-	s.mu.Unlock()
-
+	rb := s.getOrCreate(instanceID)
 	rb.append(frame)
+}
+
+// NextSeq bumps the seq counter for an instance and returns the assigned seq.
+// Used for ingress frames (not stored, but need a seq for cursor tracking).
+func (s *Store) NextSeq(instanceID string) int64 {
+	rb := s.getOrCreate(instanceID)
+	return atomic.AddInt64(&rb.seqCounter, 1)
+}
+
+// Query returns frames matching the filter criteria. Non-blocking.
+func (s *Store) Query(instanceID string, opts QueryOpts) QueryResult {
+	s.mu.RLock()
+	rb, ok := s.buffers[instanceID]
+	s.mu.RUnlock()
+	if !ok {
+		return QueryResult{NextSeq: opts.AfterSeq}
+	}
+	return rb.query(opts)
+}
+
+// WaitForFrames returns matching frames, blocking up to timeout if none available.
+// Event-driven: wakes on any new frame appended to the instance, re-queries with filters.
+func (s *Store) WaitForFrames(ctx context.Context, instanceID string, opts QueryOpts, timeout time.Duration) QueryResult {
+	rb := s.getOrCreate(instanceID)
+
+	// Try immediate query first
+	result := rb.query(opts)
+	if len(result.Frames) > 0 || timeout <= 0 {
+		return result
+	}
+
+	// Long-poll: wait for new frames or timeout
+	deadline := time.After(timeout)
+	for {
+		// Subscribe to wakeup
+		wake := rb.waitChan()
+
+		select {
+		case <-ctx.Done():
+			return QueryResult{NextSeq: opts.AfterSeq, TimedOut: true}
+		case <-deadline:
+			return QueryResult{NextSeq: opts.AfterSeq, TimedOut: true}
+		case <-wake:
+			result = rb.query(opts)
+			if len(result.Frames) > 0 {
+				return result
+			}
+			// Woke but no matching frames (different channel/session) — loop
+		}
+	}
 }
 
 // Subscribe returns a channel that receives new egress frames for an instance,
 // plus a cancel function to unsubscribe.
 func (s *Store) Subscribe(instanceID string) (<-chan Frame, func()) {
-	s.mu.Lock()
-	rb, ok := s.buffers[instanceID]
-	if !ok {
-		rb = newRingBuffer(defaultRingSize)
-		s.buffers[instanceID] = rb
-	}
-	s.mu.Unlock()
-
+	rb := s.getOrCreate(instanceID)
 	return rb.subscribe()
 }
 
@@ -70,24 +126,50 @@ func (s *Store) Remove(instanceID string) {
 	s.mu.Unlock()
 }
 
-// ringBuffer is a fixed-size circular buffer with subscriber notification.
+func (s *Store) getOrCreate(instanceID string) *ringBuffer {
+	s.mu.RLock()
+	rb, ok := s.buffers[instanceID]
+	s.mu.RUnlock()
+	if ok {
+		return rb
+	}
+
+	s.mu.Lock()
+	rb, ok = s.buffers[instanceID]
+	if !ok {
+		rb = newRingBuffer(defaultRingSize)
+		s.buffers[instanceID] = rb
+	}
+	s.mu.Unlock()
+	return rb
+}
+
+// ringBuffer is a fixed-size circular buffer with subscriber notification and long-poll support.
 type ringBuffer struct {
-	mu      sync.Mutex
-	frames  []Frame
-	head    int
-	count   int
-	cap     int
-	subs    []chan Frame
+	mu         sync.Mutex
+	frames     []Frame
+	head       int
+	count      int
+	cap        int
+	seqCounter int64 // atomic, per-instance monotonic
+	subs       []chan Frame
+
+	// Long-poll notification: closed and replaced on each append
+	wakeCh chan struct{}
 }
 
 func newRingBuffer(capacity int) *ringBuffer {
 	return &ringBuffer{
 		frames: make([]Frame, capacity),
 		cap:    capacity,
+		wakeCh: make(chan struct{}),
 	}
 }
 
 func (rb *ringBuffer) append(frame Frame) {
+	seq := atomic.AddInt64(&rb.seqCounter, 1)
+	frame.Seq = seq
+
 	rb.mu.Lock()
 
 	// Write to ring
@@ -102,14 +184,79 @@ func (rb *ringBuffer) append(frame Frame) {
 	// Copy subs to notify outside lock
 	subs := make([]chan Frame, len(rb.subs))
 	copy(subs, rb.subs)
+
+	// Wake poll waiters: close current channel, create new one
+	oldWake := rb.wakeCh
+	rb.wakeCh = make(chan struct{})
 	rb.mu.Unlock()
+
+	close(oldWake)
 
 	for _, ch := range subs {
 		select {
 		case ch <- frame:
 		default:
-			// subscriber slow — drop frame
 		}
+	}
+}
+
+// waitChan returns a channel that will be closed when the next frame is appended.
+func (rb *ringBuffer) waitChan() <-chan struct{} {
+	rb.mu.Lock()
+	ch := rb.wakeCh
+	rb.mu.Unlock()
+	return ch
+}
+
+func (rb *ringBuffer) query(opts QueryOpts) QueryResult {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	var matched []Frame
+	maxSeq := opts.AfterSeq
+
+	typesSet := make(map[string]bool, len(opts.Types))
+	for _, t := range opts.Types {
+		typesSet[t] = true
+	}
+
+	for i := 0; i < rb.count && len(matched) < limit; i++ {
+		idx := (rb.head + i) % rb.cap
+		f := rb.frames[idx]
+
+		if f.Seq <= opts.AfterSeq {
+			continue
+		}
+		if opts.Channel != "" && f.Session.Channel != opts.Channel {
+			continue
+		}
+		if opts.SessionID != "" && f.Session.ID != opts.SessionID {
+			continue
+		}
+		if len(typesSet) > 0 && !typesSet[f.Type] {
+			continue
+		}
+		if opts.ReplyToMsgID != "" && f.MsgID != opts.ReplyToMsgID {
+			continue
+		}
+
+		matched = append(matched, f)
+		if f.Seq > maxSeq {
+			maxSeq = f.Seq
+		}
+	}
+
+	return QueryResult{
+		Frames:  matched,
+		NextSeq: maxSeq,
 	}
 }
 
@@ -159,4 +306,5 @@ func (rb *ringBuffer) closeAll() {
 		close(ch)
 	}
 	rb.subs = nil
+	close(rb.wakeCh)
 }
