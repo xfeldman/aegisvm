@@ -44,7 +44,6 @@ func Run() {
 	// Connect to host control channel.
 	// Two modes: vsock (gvproxy) or TCP (TSI legacy).
 	conn := connectToHost()
-	defer conn.Close()
 
 	// Create bidirectional RPC client for guest API
 	hrpc := newHarnessRPC(conn)
@@ -54,10 +53,43 @@ func Run() {
 	// The portProxy is set on hrpc by handleRun when the primary process starts.
 	go startGuestAPIServer(hrpc)
 
-	// Handle JSON-RPC from the host + responses to our guest API calls
-	handleConnection(ctx, conn, hrpc)
+	// Handle JSON-RPC from the host + responses to our guest API calls.
+	// On connection drop, attempt reconnect if vsock is available (handles
+	// snapshot/restore where CH sends VIRTIO_VSOCK_EVENT_TRANSPORT_RESET).
+	for {
+		handleConnection(ctx, conn, hrpc)
 
-	log.Println("harness shutting down")
+		// Check if context is cancelled (shutdown signal)
+		select {
+		case <-ctx.Done():
+			log.Println("harness shutting down")
+			conn.Close()
+			return
+		default:
+		}
+
+		// Only attempt reconnect if using vsock (snapshot/restore scenario)
+		vsockPort := os.Getenv("AEGIS_VSOCK_PORT")
+		if vsockPort == "" {
+			log.Println("harness shutting down (connection lost, no vsock reconnect)")
+			conn.Close()
+			return
+		}
+
+		log.Println("control channel lost, attempting vsock reconnect...")
+		conn.Close()
+
+		// Reconnect with retries
+		newConn := connectToHost()
+		conn = newConn
+
+		// Re-wire the harnessRPC to use the new connection
+		hrpc.mu.Lock()
+		hrpc.conn = newConn
+		hrpc.mu.Unlock()
+
+		log.Println("reconnected to host via vsock")
+	}
 }
 
 // connectToHost establishes the control channel to the host.

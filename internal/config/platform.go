@@ -11,7 +11,7 @@ type Platform struct {
 	Arch string // "arm64" or "amd64"
 
 	// VMM backend to use
-	Backend string // "libkrun" or "firecracker"
+	Backend string // "libkrun" or "cloud-hypervisor"
 }
 
 // DetectPlatform detects the host platform and selects the VMM backend.
@@ -25,10 +25,10 @@ func DetectPlatform() (*Platform, error) {
 	case p.OS == "darwin" && p.Arch == "arm64":
 		p.Backend = "libkrun"
 	case p.OS == "linux":
-		p.Backend = "firecracker"
+		p.Backend = "cloud-hypervisor"
 	default:
 		return nil, fmt.Errorf(
-			"unsupported platform: %s/%s. Aegis requires macOS ARM64 (libkrun) or Linux (Firecracker)",
+			"unsupported platform: %s/%s. Aegis requires macOS ARM64 (libkrun) or Linux (Cloud Hypervisor)",
 			p.OS, p.Arch,
 		)
 	}

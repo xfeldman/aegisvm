@@ -25,9 +25,15 @@ ifeq ($(HOST_ARCH),x86_64)
 	HOST_ARCH := amd64
 endif
 
-# Harness is always built for Linux ARM64 (runs inside the VM)
+# Harness target architecture:
+#   macOS: always cross-compile to Linux ARM64 (libkrun runs ARM64 VMs)
+#   Linux: match host arch (Cloud Hypervisor runs native)
 HARNESS_OS := linux
-HARNESS_ARCH := arm64
+ifeq ($(HOST_OS),linux)
+	HARNESS_ARCH := $(HOST_ARCH)
+else
+	HARNESS_ARCH := arm64
+endif
 
 # libkrun paths (macOS via Homebrew)
 ifeq ($(HOST_OS),darwin)
@@ -35,9 +41,19 @@ ifeq ($(HOST_OS),darwin)
 	CGO_LDFLAGS := -L/opt/homebrew/lib
 endif
 
-.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent base-rootfs clean test test-unit test-m2 test-m3 test-network integration install-kit release-tarball release-kit-tarball
+# Cloud Hypervisor version for download
+CH_VERSION := v43.0
 
-all: aegisd aegis harness vmm-worker mcp mcp-guest gateway agent
+# Platform-aware all target: skip vmm-worker on Linux (no libkrun)
+ifeq ($(HOST_OS),linux)
+ALL_TARGETS := aegisd aegis harness mcp mcp-guest gateway agent
+else
+ALL_TARGETS := aegisd aegis harness vmm-worker mcp mcp-guest gateway agent
+endif
+
+.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent base-rootfs clean test test-unit test-m2 test-m3 test-network integration install-kit release-tarball release-kit-tarball cloud-hypervisor kernel
+
+all: $(ALL_TARGETS)
 
 # aegisd — the daemon (no cgo needed in M0, cgo is in vmm-worker)
 aegisd:
@@ -49,13 +65,13 @@ aegis:
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BIN_DIR)/aegis ./cmd/aegis
 
-# aegis-harness — guest PID 1 (static Linux ARM64 binary)
+# aegis-harness — guest PID 1 (static Linux binary, arch matches VM target)
 harness:
 	@mkdir -p $(BIN_DIR)
 	GOOS=$(HARNESS_OS) GOARCH=$(HARNESS_ARCH) CGO_ENABLED=0 \
 		$(GO) build $(GOFLAGS) -o $(BIN_DIR)/aegis-harness ./cmd/aegis-harness
 
-# aegis-vmm-worker — per-VM helper process (cgo for libkrun)
+# aegis-vmm-worker — per-VM helper process (cgo for libkrun, macOS only)
 # On macOS, must be signed with com.apple.security.hypervisor entitlement
 vmm-worker:
 	@mkdir -p $(BIN_DIR)
@@ -72,7 +88,7 @@ mcp:
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BIN_DIR)/aegis-mcp ./cmd/aegis-mcp
 
-# aegis-mcp-guest — MCP server for agents inside VMs (guest-side, Linux ARM64)
+# aegis-mcp-guest — MCP server for agents inside VMs (guest-side, Linux)
 mcp-guest:
 	@mkdir -p $(BIN_DIR)
 	GOOS=$(HARNESS_OS) GOARCH=$(HARNESS_ARCH) CGO_ENABLED=0 \
@@ -83,16 +99,73 @@ gateway:
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BIN_DIR)/aegis-gateway ./cmd/aegis-gateway
 
-# aegis-agent — guest agent runtime (LLM bridge, Linux ARM64)
+# aegis-agent — guest agent runtime (LLM bridge, Linux)
 agent:
 	@mkdir -p $(BIN_DIR)
 	GOOS=$(HARNESS_OS) GOARCH=$(HARNESS_ARCH) CGO_ENABLED=0 \
 		$(GO) build $(GOFLAGS) -o $(BIN_DIR)/aegis-agent ./cmd/aegis-agent
 
-# Base rootfs — Alpine ARM64 with harness baked in
+# Base rootfs — Alpine with harness baked in
 # Requires: brew install e2fsprogs (for mkfs.ext4)
 base-rootfs: harness
 	$(MAKE) -C base
+
+# Download Cloud Hypervisor static binary (Linux only)
+cloud-hypervisor:
+ifeq ($(HOST_OS),linux)
+	@mkdir -p $(BIN_DIR)
+	@echo "==> Downloading Cloud Hypervisor $(CH_VERSION) ($(HOST_ARCH))..."
+ifeq ($(HOST_ARCH),amd64)
+	curl -sSL -o $(BIN_DIR)/cloud-hypervisor \
+		"https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/$(CH_VERSION)/cloud-hypervisor-static"
+	curl -sSL -o $(BIN_DIR)/ch-remote \
+		"https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/$(CH_VERSION)/ch-remote-static"
+else ifeq ($(HOST_ARCH),arm64)
+	curl -sSL -o $(BIN_DIR)/cloud-hypervisor \
+		"https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/$(CH_VERSION)/cloud-hypervisor-static-aarch64"
+	curl -sSL -o $(BIN_DIR)/ch-remote \
+		"https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/$(CH_VERSION)/ch-remote-static-aarch64"
+endif
+	chmod +x $(BIN_DIR)/cloud-hypervisor $(BIN_DIR)/ch-remote
+	@echo "==> Cloud Hypervisor $(CH_VERSION) installed to $(BIN_DIR)/"
+else
+	@echo "cloud-hypervisor target is Linux-only (current: $(HOST_OS))"
+endif
+
+# Build microVM kernel with virtiofs + vsock support (Linux only, ~10 min)
+# Downloads Linux 6.1 source, applies minimal microVM config, builds vmlinux.
+kernel:
+ifeq ($(HOST_OS),linux)
+	@echo "==> Building microVM kernel (vmlinux)..."
+	@mkdir -p $(HOME)/.aegis/kernel
+	@if [ -f $(HOME)/.aegis/kernel/vmlinux ]; then \
+		echo "Kernel already exists at $(HOME)/.aegis/kernel/vmlinux, skipping build"; \
+		echo "Delete it and re-run to rebuild"; \
+	else \
+		TMPDIR=$$(mktemp -d) && \
+		echo "==> Downloading Linux 6.1 source..." && \
+		curl -sSL "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.1.120.tar.xz" | tar -xJ -C $$TMPDIR --strip-components=1 && \
+		echo "==> Downloading microvm kernel config..." && \
+		curl -sSL "https://raw.githubusercontent.com/firecracker-microvm/firecracker/main/resources/guest_configs/microvm-kernel-x86_64-6.1.config" -o $$TMPDIR/.config && \
+		echo "==> Patching config for virtiofs + vsock..." && \
+		sed -i 's/# CONFIG_FUSE_FS is not set/CONFIG_FUSE_FS=y/' $$TMPDIR/.config && \
+		sed -i 's/# CONFIG_VIRTIO_FS is not set/CONFIG_VIRTIO_FS=y/' $$TMPDIR/.config && \
+		sed -i 's/CONFIG_VIRTIO_VSOCKETS=m/CONFIG_VIRTIO_VSOCKETS=y/' $$TMPDIR/.config && \
+		sed -i 's/CONFIG_VIRTIO_VSOCKETS_COMMON=m/CONFIG_VIRTIO_VSOCKETS_COMMON=y/' $$TMPDIR/.config && \
+		echo "CONFIG_FUSE_FS=y" >> $$TMPDIR/.config && \
+		echo "CONFIG_VIRTIO_FS=y" >> $$TMPDIR/.config && \
+		echo "CONFIG_VIRTIO_VSOCKETS=y" >> $$TMPDIR/.config && \
+		echo "CONFIG_VIRTIO_VSOCKETS_COMMON=y" >> $$TMPDIR/.config && \
+		echo "==> Building vmlinux (this takes ~10 minutes)..." && \
+		$(MAKE) -C $$TMPDIR -j$$(nproc) olddefconfig && \
+		$(MAKE) -C $$TMPDIR -j$$(nproc) vmlinux && \
+		cp $$TMPDIR/vmlinux $(HOME)/.aegis/kernel/vmlinux && \
+		rm -rf $$TMPDIR && \
+		echo "==> Kernel installed to $(HOME)/.aegis/kernel/vmlinux"; \
+	fi
+else
+	@echo "kernel target is Linux-only (current: $(HOST_OS))"
+endif
 
 # Run unit tests
 test:

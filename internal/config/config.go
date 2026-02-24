@@ -55,10 +55,25 @@ type Config struct {
 	StopAfterIdle time.Duration
 
 	// NetworkBackend selects the data-plane networking mode for libkrun VMs.
-	// "auto" (default): gvproxy on darwin, tsi elsewhere.
+	// "auto" (default): gvproxy on darwin, tap on linux.
 	// "gvproxy": in-process gvisor-tap-vsock (compiled into vmm-worker).
 	// "tsi": TSI unconditionally (known ~32KB outbound body limit).
+	// "tap": tap + iptables NAT (Cloud Hypervisor on Linux).
 	NetworkBackend string
+
+	// KernelPath is the path to the vmlinux kernel image (Linux/CH only).
+	KernelPath string
+
+	// CloudHypervisorBin is the path to the cloud-hypervisor binary.
+	// Empty means search PATH.
+	CloudHypervisorBin string
+
+	// VirtiofsdBin is the path to the virtiofsd binary.
+	// Empty means search PATH.
+	VirtiofsdBin string
+
+	// SnapshotsDir is the directory for VM memory snapshots (Linux/CH only).
+	SnapshotsDir string
 }
 
 // DefaultConfig returns the default configuration.
@@ -67,11 +82,17 @@ func DefaultConfig() *Config {
 	aegisDir := filepath.Join(homeDir, ".aegis")
 	execDir := executableDir()
 
+	// Platform-specific base rootfs path
+	baseRootfs := filepath.Join(aegisDir, "base-rootfs")
+	if runtime.GOOS == "linux" {
+		baseRootfs = filepath.Join(aegisDir, "base-rootfs.ext4")
+	}
+
 	return &Config{
 		DataDir:            filepath.Join(aegisDir, "data"),
 		BinDir:             execDir,
 		SocketPath:         filepath.Join(aegisDir, "aegisd.sock"),
-		BaseRootfsPath:     filepath.Join(aegisDir, "base-rootfs"),
+		BaseRootfsPath:     baseRootfs,
 		DefaultMemoryMB:    512,
 		DefaultVCPUs:       1,
 		RouterAddr:         "127.0.0.1:8099",
@@ -84,6 +105,8 @@ func DefaultConfig() *Config {
 		PauseAfterIdle:     60 * time.Second,
 		StopAfterIdle:      5 * time.Minute,
 		NetworkBackend:     "auto",
+		KernelPath:         filepath.Join(aegisDir, "kernel", "vmlinux"),
+		SnapshotsDir:       filepath.Join(aegisDir, "data", "snapshots"),
 	}
 }
 
@@ -98,6 +121,9 @@ func (c *Config) EnsureDirs() error {
 		c.WorkspacesDir,
 		c.LogsDir,
 	}
+	if runtime.GOOS == "linux" {
+		dirs = append(dirs, filepath.Dir(c.KernelPath), c.SnapshotsDir)
+	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0700); err != nil {
 			return err
@@ -108,16 +134,19 @@ func (c *Config) EnsureDirs() error {
 
 // ResolveNetworkBackend resolves "auto" to a concrete backend.
 // On darwin (macOS), gvproxy is always available (compiled into vmm-worker).
-// No external binary needed.
+// On linux, tap + iptables NAT (Cloud Hypervisor).
 func (c *Config) ResolveNetworkBackend() {
 	switch c.NetworkBackend {
-	case "gvproxy", "tsi":
+	case "gvproxy", "tsi", "tap":
 		// Explicit choice — keep as-is
 	default:
 		// "auto" or unset
-		if runtime.GOOS == "darwin" {
+		switch runtime.GOOS {
+		case "darwin":
 			c.NetworkBackend = "gvproxy"
-		} else {
+		case "linux":
+			c.NetworkBackend = "tap"
+		default:
 			c.NetworkBackend = "tsi"
 		}
 	}

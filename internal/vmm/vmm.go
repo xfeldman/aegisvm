@@ -77,6 +77,12 @@ type HostEndpoint struct {
 	GuestPort int
 	HostPort  int
 	Protocol  string
+
+	// BackendAddr is the address to dial for this endpoint.
+	// When set (e.g. "172.16.0.2" for tap networking), the router dials
+	// BackendAddr:HostPort instead of 127.0.0.1:HostPort.
+	// Empty means use 127.0.0.1 (libkrun/gvproxy backward compat).
+	BackendAddr string
 }
 
 // BackendCaps reports what a VMM backend can do.

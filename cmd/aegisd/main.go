@@ -55,8 +55,11 @@ func main() {
 		if err != nil {
 			log.Fatalf("init libkrun backend: %v", err)
 		}
-	case "firecracker":
-		log.Fatal("firecracker backend not yet implemented (M4)")
+	case "cloud-hypervisor":
+		backend, err = vmm.NewCloudHypervisorVMM(cfg)
+		if err != nil {
+			log.Fatalf("init cloud-hypervisor backend: %v", err)
+		}
 	default:
 		log.Fatalf("unknown backend: %s", platform.Backend)
 	}

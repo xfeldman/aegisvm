@@ -5,9 +5,53 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"syscall"
 	"time"
 )
+
+// parseCmdlineEnv reads /proc/cmdline and sets environment variables from KEY=VALUE
+// tokens. Only sets vars that are not already in the environment. This handles the
+// Cloud Hypervisor boot path where env vars are passed via kernel cmdline rather
+// than inherited from the parent process (as with libkrun).
+func parseCmdlineEnv() {
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return // /proc not mounted yet or not available
+	}
+
+	// Kernel cmdline env vars we care about
+	envPrefixes := []string{"AEGIS_", "PATH=", "HOME=", "TERM="}
+
+	for _, token := range strings.Fields(string(data)) {
+		eqIdx := strings.IndexByte(token, '=')
+		if eqIdx < 1 {
+			continue
+		}
+		key := token[:eqIdx]
+		value := token[eqIdx+1:]
+
+		// Only set vars with recognized prefixes
+		match := false
+		for _, prefix := range envPrefixes {
+			if strings.HasPrefix(token, prefix) {
+				match = true
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+
+		// Don't overwrite existing env vars
+		if _, exists := os.LookupEnv(key); exists {
+			continue
+		}
+
+		os.Setenv(key, value)
+		log.Printf("cmdline env: %s=%s", key, value)
+	}
+}
 
 // mountWorkspace mounts the "workspace" virtiofs tag at /workspace.
 // Behavior depends on whether a workspace was configured by the host:
@@ -37,6 +81,11 @@ func mountWorkspace() {
 // Without the read-only remount, any guest write to /usr, /etc, etc. would
 // mutate the release directory on the host, breaking immutability.
 func mountEssential() {
+	// Parse kernel cmdline for AEGIS_* env vars and standard env (PATH, HOME, TERM).
+	// Cloud Hypervisor passes env via kernel cmdline; libkrun passes env directly.
+	// This is a safety net — if the var is already set, we don't overwrite it.
+	parseCmdlineEnv()
+
 	// Phase 1: Mount writable filesystems first (before making / read-only)
 	writableMounts := []struct {
 		source string

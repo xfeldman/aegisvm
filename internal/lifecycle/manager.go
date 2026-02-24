@@ -18,6 +18,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -486,6 +489,24 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		rootfsPath = inst.RootfsPath
 	}
 
+	// If the backend needs a block image and we have a directory, convert it
+	needsBlock := m.vmm.Capabilities().RootFSType == vmm.RootFSBlockImage
+	if needsBlock {
+		if info, err := os.Stat(rootfsPath); err == nil && info.IsDir() {
+			log.Printf("instance %s: converting directory rootfs to ext4: %s", inst.ID, rootfsPath)
+			ext4Path, err := dirToExt4(rootfsPath, 512)
+			if err != nil {
+				inst.mu.Lock()
+				inst.State = StateStopped
+				inst.StoppedAt = time.Now()
+				inst.mu.Unlock()
+				m.notifyStateChange(inst.ID, StateStopped)
+				return fmt.Errorf("convert rootfs to ext4: %w", err)
+			}
+			rootfsPath = ext4Path
+		}
+	}
+
 	memoryMB := m.cfg.DefaultMemoryMB
 	if inst.MemoryMB > 0 {
 		memoryMB = inst.MemoryMB
@@ -514,6 +535,18 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		inst.mu.Unlock()
 		m.notifyStateChange(inst.ID, StateStopped)
 		return fmt.Errorf("create VM: %w", err)
+	}
+
+	// If a snapshot exists for this instance, tell the VMM to restore from it
+	snapshotDir := filepath.Join(m.cfg.SnapshotsDir, inst.ID)
+	if info, err := os.Stat(snapshotDir); err == nil && info.IsDir() {
+		if setter, ok := m.vmm.(interface{ SetSnapshotDir(vmm.Handle, string) error }); ok {
+			if err := setter.SetSnapshotDir(handle, snapshotDir); err != nil {
+				log.Printf("instance %s: set snapshot dir: %v (proceeding with fresh boot)", inst.ID, err)
+			} else {
+				log.Printf("instance %s: will restore from snapshot %s", inst.ID, snapshotDir)
+			}
+		}
 	}
 
 	ch, err := m.vmm.StartVM(handle)
@@ -735,6 +768,13 @@ func (m *Manager) handleProcessExited(inst *Instance, exitCode int) {
 	il.Append("stdout", fmt.Sprintf("process exited (code=%d)", exitCode), "", logstore.SourceSystem)
 
 	m.notifyStateChange(inst.ID, StateStopped)
+
+	// Clean up stale snapshot (process crashed/exited, snapshot is stale)
+	snapshotDir := filepath.Join(m.cfg.SnapshotsDir, inst.ID)
+	if _, err := os.Stat(snapshotDir); err == nil {
+		os.RemoveAll(snapshotDir)
+		log.Printf("instance %s: removed stale snapshot (process exited)", inst.ID)
+	}
 
 	// Shutdown demuxer → VM (demuxer.Stop closes the channel)
 	if demux != nil {
@@ -967,16 +1007,32 @@ func (m *Manager) stopIdleInstance(inst *Instance) {
 	handle := inst.Handle
 	ch := inst.Channel
 	demux := inst.demuxer
+	instID := inst.ID
 	inst.State = StateStopped
-		inst.StoppedAt = time.Now()
+	inst.StoppedAt = time.Now()
 	inst.Channel = nil
 	inst.Endpoints = nil
 	inst.demuxer = nil
 	inst.logCapture = false
 	inst.mu.Unlock()
 
-	log.Printf("instance %s: stopped (extended idle)", inst.ID)
-	m.notifyStateChange(inst.ID, StateStopped)
+	// Snapshot before stopping if backend supports it (Cloud Hypervisor).
+	// This enables cold restart from snapshot instead of full reboot.
+	if snapshotter, ok := m.vmm.(interface {
+		SnapshotVM(vmm.Handle, string) error
+	}); ok {
+		snapshotDir := filepath.Join(m.cfg.SnapshotsDir, instID)
+		if err := snapshotter.SnapshotVM(handle, snapshotDir); err != nil {
+			log.Printf("instance %s: snapshot before stop failed: %v", instID, err)
+			// Clean up partial snapshot
+			os.RemoveAll(snapshotDir)
+		} else {
+			log.Printf("instance %s: snapshot saved before stop", instID)
+		}
+	}
+
+	log.Printf("instance %s: stopped (extended idle)", instID)
+	m.notifyStateChange(instID, StateStopped)
 
 	// Stop demuxer (closes channel internally) or close channel directly
 	if demux != nil {
@@ -1003,7 +1059,11 @@ func (m *Manager) GetEndpoint(id string, guestPort int) (string, error) {
 
 	for _, ep := range inst.Endpoints {
 		if ep.GuestPort == guestPort {
-			return fmt.Sprintf("127.0.0.1:%d", ep.HostPort), nil
+			host := "127.0.0.1"
+			if ep.BackendAddr != "" {
+				host = ep.BackendAddr
+			}
+			return fmt.Sprintf("%s:%d", host, ep.HostPort), nil
 		}
 	}
 	return "", fmt.Errorf("no endpoint for guest port %d on instance %s", guestPort, id)
@@ -1074,6 +1134,20 @@ func (m *Manager) prepareImageRootfs(ctx context.Context, inst *Instance) (strin
 	}
 
 	return overlayDir, nil
+}
+
+// dirToExt4 creates an ext4 block image from a directory.
+// Used when the backend requires RootFSBlockImage but the rootfs is a directory
+// (e.g. OCI image overlay or base-rootfs directory on Linux).
+func dirToExt4(dir string, sizeMB int) (string, error) {
+	out := dir + ".ext4"
+	cmd := exec.Command("mkfs.ext4", "-d", dir, "-L", "aegis", out, fmt.Sprintf("%dM", sizeMB))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("mkfs.ext4 -d %s: %w", dir, err)
+	}
+	return out, nil
 }
 
 // InstanceCount returns the number of active instances.
