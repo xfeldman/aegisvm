@@ -1016,7 +1016,7 @@ func (m *Manager) stopIdleInstance(inst *Instance) {
 	inst.logCapture = false
 	inst.mu.Unlock()
 
-	// Snapshot before stopping if backend supports it (Cloud Hypervisor).
+	// Snapshot before stopping if backend supports it.
 	// This enables cold restart from snapshot instead of full reboot.
 	if snapshotter, ok := m.vmm.(interface {
 		SnapshotVM(vmm.Handle, string) error

@@ -1,11 +1,15 @@
 // Package vmm defines the virtual machine manager interface.
-// Both LibkrunVMM (macOS) and FirecrackerVMM (Linux) implement this interface.
+// Both LibkrunVMM (macOS) and CloudHypervisorVMM (Linux) implement this interface.
 package vmm
 
 import (
 	"context"
 	"fmt"
 )
+
+// harnessVsockPort is the vsock port the harness connects to for the control channel.
+// Shared between all backends that use vsock (libkrun, cloud-hypervisor).
+const harnessVsockPort = 5000
 
 // Handle is an opaque reference to a running VM.
 type Handle struct {
@@ -22,7 +26,7 @@ type RootFSType int
 const (
 	// RootFSDirectory is a host directory (used by libkrun's krun_set_root).
 	RootFSDirectory RootFSType = iota
-	// RootFSBlockImage is a raw block device image, e.g. ext4 (used by Firecracker).
+	// RootFSBlockImage is a raw block device image, e.g. ext4 (used by Cloud Hypervisor).
 	RootFSBlockImage
 )
 
@@ -38,7 +42,7 @@ func (t RootFSType) String() string {
 }
 
 // RootFS describes a root filesystem for a VM.
-// libkrun expects a directory. Firecracker expects a raw block image.
+// libkrun expects a directory. Cloud Hypervisor expects a raw block image.
 // Core never assumes the format — the backend declares what it needs
 // via Capabilities().RootFSType, and the image pipeline produces the right artifact.
 type RootFS struct {
@@ -92,14 +96,14 @@ type BackendCaps struct {
 	// PersistentPause indicates that paused VMs retain state indefinitely
 	// without needing to be stopped. When true, the lifecycle manager skips
 	// the PAUSED → STOPPED transition entirely — the OS manages memory
-	// pressure via swap. When false (e.g. Firecracker/KVM), paused VMs
+	// pressure via swap. When false (e.g. Cloud Hypervisor/KVM), paused VMs
 	// should be stopped after a timeout to free hypervisor resources.
 	PersistentPause bool
 
 	// RootFSType is the rootfs format this backend expects.
 	RootFSType RootFSType
 
-	// Name is the backend identifier ("libkrun" or "firecracker").
+	// Name is the backend identifier ("libkrun" or "cloud-hypervisor").
 	Name string
 
 	// NetworkBackend is the active networking mode ("gvproxy" or "tsi").
@@ -114,7 +118,7 @@ func (c BackendCaps) String() string {
 // ControlChannel is a message-oriented, bidirectional channel between aegisd
 // and the guest harness. The underlying transport is backend-specific:
 //   - libkrun: TCP over TSI (harness connects outbound to host listener)
-//   - Firecracker: vsock (host connects to guest via AF_VSOCK)
+//   - Cloud Hypervisor: vsock (host pre-creates unix socket, guest dials CID=2)
 //
 // Framing contract:
 //   - Each message is exactly one complete JSON-RPC 2.0 object.
@@ -150,7 +154,7 @@ type VMM interface {
 	// StartVM starts a previously created VM and returns a ControlChannel
 	// for communicating with the guest harness.
 	// The channel is ready to use when StartVM returns — the backend handles
-	// all transport setup (TCP listener + accept for libkrun, vsock dial for Firecracker).
+	// all transport setup (TCP listener + accept for libkrun, vsock for Cloud Hypervisor).
 	StartVM(h Handle) (ControlChannel, error)
 
 	// PauseVM pauses a running VM, retaining RAM.

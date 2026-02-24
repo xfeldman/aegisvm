@@ -250,11 +250,11 @@ func main() {
 	os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
 	defer os.Remove(pidPath)
 
-	log.Printf("aegisd ready (pid %d, socket %s, router %s)", os.Getpid(), cfg.SocketPath, cfg.RouterAddr)
-
 	// When running via sudo, chown ~/.aegis/ to the invoking user so the CLI
-	// and user can access all files without sudo.
+	// and user can access all files (socket, PID, DB) without sudo.
 	chownToInvokingUser(cfg)
+
+	log.Printf("aegisd ready (pid %d, socket %s, router %s)", os.Getpid(), cfg.SocketPath, cfg.RouterAddr)
 
 	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)

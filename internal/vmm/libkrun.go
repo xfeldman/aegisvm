@@ -44,8 +44,6 @@ type WorkerPortForward struct {
 	GuestPort int `json:"guest_port"`
 }
 
-// harnessVsockPort is the vsock port the harness connects to for the control channel.
-const harnessVsockPort = 5000
 
 type vmInstance struct {
 	id        string

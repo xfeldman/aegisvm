@@ -98,9 +98,9 @@ func (s *Server) Start() error {
 	}
 	s.ln = ln
 
-	// Make socket accessible to the invoking user. When aegisd runs as root
-	// (via sudo on Linux), the CLI runs as the normal user and needs to connect.
-	os.Chmod(s.cfg.SocketPath, 0666)
+	// Socket permissions: default (0755 from net.Listen) is fine.
+	// When running via sudo, chownToInvokingUser() in aegisd makes the
+	// socket user-owned, so the CLI can connect without permission hacks.
 
 	log.Printf("aegisd API listening on %s", s.cfg.SocketPath)
 

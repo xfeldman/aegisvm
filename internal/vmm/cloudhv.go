@@ -131,6 +131,10 @@ func NewCloudHypervisorVMM(cfg *config.Config) (*CloudHypervisorVMM, error) {
 		return nil, fmt.Errorf("kernel not found at %s (build via 'make kernel'): %w", cfg.KernelPath, err)
 	}
 
+	// Clean up orphaned tap devices and NAT rules from a previous crash.
+	// On clean shutdown, StopVM removes these. On crash, they leak.
+	cleanupOrphanedTaps()
+
 	return &CloudHypervisorVMM{
 		instances:    make(map[string]*chInstance),
 		chBin:        chBin,
@@ -530,8 +534,34 @@ func (v *CloudHypervisorVMM) SnapshotVM(h Handle, dir string) error {
 		return fmt.Errorf("vm.snapshot returned %d: %s", resp.StatusCode, body)
 	}
 
+	// Chown snapshot dir to invoking user (daemon runs as root via sudo)
+	chownToInvokingUser(dir)
+
 	log.Printf("vmm: snapshot saved to %s (vm %s)", dir, h.ID)
 	return nil
+}
+
+// chownToInvokingUser recursively chowns a path to the SUDO_UID/SUDO_GID user.
+// No-op when not running under sudo.
+func chownToInvokingUser(path string) {
+	if os.Geteuid() != 0 {
+		return
+	}
+	uidStr, gidStr := os.Getenv("SUDO_UID"), os.Getenv("SUDO_GID")
+	if uidStr == "" || gidStr == "" {
+		return
+	}
+	uid, _ := strconv.Atoi(uidStr)
+	gid, _ := strconv.Atoi(gidStr)
+	if uid == 0 {
+		return
+	}
+	filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+		if err == nil {
+			os.Chown(p, uid, gid)
+		}
+		return nil
+	})
 }
 
 func (v *CloudHypervisorVMM) HostEndpoints(h Handle) ([]HostEndpoint, error) {
@@ -635,6 +665,29 @@ func (v *CloudHypervisorVMM) cleanupInstance(inst *chInstance) {
 }
 
 // --- Networking helpers ---
+
+// cleanupOrphanedTaps removes any aegis* tap devices and their NAT rules
+// left over from a previous daemon crash. Called once at startup.
+func cleanupOrphanedTaps() {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return
+	}
+	for _, iface := range ifaces {
+		if strings.HasPrefix(iface.Name, "aegis") {
+			log.Printf("vmm: cleaning up orphaned tap %s", iface.Name)
+			// Best-effort: remove NAT + FORWARD rules, then delete the tap.
+			// Derive the guest IP from the tap index (same allocation scheme as CreateVM).
+			var idx uint32
+			fmt.Sscanf(iface.Name, "aegis%d", &idx)
+			thirdOctet := idx / 64
+			fourthBase := (idx % 64) * 4
+			guestIP := fmt.Sprintf("172.16.%d.%d", thirdOctet, fourthBase+2)
+			removeNAT(iface.Name, guestIP)
+			destroyTap(iface.Name)
+		}
+	}
+}
 
 // enableIPForward enables IPv4 packet forwarding.
 func enableIPForward() error {
