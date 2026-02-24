@@ -12,6 +12,9 @@ type Platform struct {
 
 	// VMM backend to use
 	Backend string // "libkrun" or "cloud-hypervisor"
+
+	// NeedsRoot indicates the backend requires root/sudo at startup.
+	NeedsRoot bool
 }
 
 // DetectPlatform detects the host platform and selects the VMM backend.
@@ -26,6 +29,7 @@ func DetectPlatform() (*Platform, error) {
 		p.Backend = "libkrun"
 	case p.OS == "linux":
 		p.Backend = "cloud-hypervisor"
+		p.NeedsRoot = true // tap + iptables networking
 	default:
 		return nil, fmt.Errorf(
 			"unsupported platform: %s/%s. Aegis requires macOS ARM64 (libkrun) or Linux (Cloud Hypervisor)",

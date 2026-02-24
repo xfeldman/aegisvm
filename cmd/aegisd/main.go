@@ -8,9 +8,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -249,6 +252,10 @@ func main() {
 
 	log.Printf("aegisd ready (pid %d, socket %s, router %s)", os.Getpid(), cfg.SocketPath, cfg.RouterAddr)
 
+	// When running via sudo, chown ~/.aegis/ to the invoking user so the CLI
+	// and user can access all files without sudo.
+	chownToInvokingUser(cfg)
+
 	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
@@ -276,4 +283,32 @@ func main() {
 	os.Remove(cfg.SocketPath)
 
 	log.Println("aegisd stopped")
+}
+
+// chownToInvokingUser recursively chowns ~/.aegis/ to the user who ran sudo.
+// No-op when not running as root or not invoked via sudo.
+func chownToInvokingUser(cfg *config.Config) {
+	if os.Geteuid() != 0 {
+		return
+	}
+	uidStr, gidStr := os.Getenv("SUDO_UID"), os.Getenv("SUDO_GID")
+	if uidStr == "" || gidStr == "" {
+		return
+	}
+	uid, _ := strconv.Atoi(uidStr)
+	gid, _ := strconv.Atoi(gidStr)
+	if uid == 0 {
+		return
+	}
+
+	// Chown the aegis home directory and everything under it
+	aegisDir := filepath.Dir(cfg.SocketPath) // ~/.aegis
+	filepath.WalkDir(aegisDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip inaccessible
+		}
+		os.Chown(path, uid, gid)
+		return nil
+	})
+	log.Printf("chown %s → uid=%d gid=%d", aegisDir, uid, gid)
 }

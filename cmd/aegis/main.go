@@ -194,12 +194,24 @@ func startDaemon() {
 		os.Exit(1)
 	}
 
-	// On Linux, aegisd needs root for tap networking. Elevate via sudo
-	// so the user never has to type "sudo aegis up" themselves.
+	// Some backends (e.g. cloud-hypervisor with tap networking) need root.
+	// Authenticate via sudo -v (interactive prompt), then start with cached creds.
+	platform, _ := config.DetectPlatform()
+	needsSudo := platform != nil && platform.NeedsRoot && os.Geteuid() != 0
+	if needsSudo {
+		validate := exec.Command("sudo", "-v")
+		validate.Stdin = os.Stdin
+		validate.Stdout = os.Stdout
+		validate.Stderr = os.Stderr
+		if err := validate.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "sudo authentication failed: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	var cmd *exec.Cmd
-	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
-		home, _ := os.UserHomeDir()
-		cmd = exec.Command("sudo", fmt.Sprintf("HOME=%s", home), aegisdBin)
+	if needsSudo {
+		cmd = exec.Command("sudo", "--preserve-env=HOME", aegisdBin)
 	} else {
 		cmd = exec.Command(aegisdBin)
 	}
@@ -292,7 +304,10 @@ func cmdDown() {
 	// Try direct signal first; if EPERM (daemon is root, we're not), use sudo
 	err = proc.Signal(syscall.SIGTERM)
 	if err != nil && errors.Is(err, syscall.EPERM) {
-		err = exec.Command("sudo", "kill", "-TERM", strconv.Itoa(pid)).Run()
+		sudoKill := exec.Command("sudo", "kill", "-TERM", strconv.Itoa(pid))
+		sudoKill.Stdin = os.Stdin
+		sudoKill.Stderr = os.Stderr
+		err = sudoKill.Run()
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "send SIGTERM: %v\n", err)
@@ -617,6 +632,14 @@ func cmdDoctor() {
 
 	fmt.Printf("Version:  %s\n", version.Version())
 	fmt.Printf("Platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	if p, err := config.DetectPlatform(); err == nil {
+		fmt.Printf("Backend:  %s\n", p.Backend)
+		if p.NeedsRoot {
+			fmt.Printf("Root:     required (auto-elevated via sudo)\n")
+		} else {
+			fmt.Printf("Root:     not required\n")
+		}
+	}
 
 	fmt.Println()
 
@@ -652,13 +675,6 @@ func cmdDoctor() {
 			var status map[string]interface{}
 			json.NewDecoder(resp.Body).Decode(&status)
 
-			if backend, ok := status["backend"].(string); ok {
-				fmt.Printf("\nBackend:     %s\n", backend)
-			}
-			if network, ok := status["network"].(string); ok {
-				fmt.Printf("Network:     %s\n", network)
-			}
-
 			if caps, ok := status["capabilities"].(map[string]interface{}); ok {
 				fmt.Println("Capabilities:")
 				if v, ok := caps["pause_resume"].(bool); ok {
@@ -667,8 +683,8 @@ func cmdDoctor() {
 				if v, ok := caps["persistent_pause"].(bool); ok {
 					fmt.Printf("  Persistent pause:      %s\n", boolYesNo(v))
 				}
-				if v, ok := caps["snapshot_restore"].(bool); ok {
-					fmt.Printf("  Snapshot/Restore:      %s\n", boolYesNo(v))
+				if v, ok := caps["network_backend"].(string); ok {
+					fmt.Printf("  Network:               %s\n", v)
 				}
 			}
 		}
@@ -769,12 +785,6 @@ func doctorLinux() {
 		fmt.Printf("base-rootfs:        not found (install via: aegis rootfs pull python)\n")
 	}
 
-	// Root/CAP_NET_ADMIN check
-	if os.Geteuid() == 0 {
-		fmt.Printf("root:               yes\n")
-	} else {
-		fmt.Printf("root:               no (aegisd requires root for tap networking)\n")
-	}
 }
 
 func boolYesNo(v bool) string {

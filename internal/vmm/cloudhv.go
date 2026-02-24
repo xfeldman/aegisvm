@@ -546,6 +546,28 @@ func (v *CloudHypervisorVMM) HostEndpoints(h Handle) ([]HostEndpoint, error) {
 	return eps, nil
 }
 
+// DynamicExposePort registers a new port endpoint at runtime.
+// With tap networking, the router dials the guest IP directly — no port
+// forwarding setup needed, just add the endpoint so GetEndpoint finds it.
+func (v *CloudHypervisorVMM) DynamicExposePort(h Handle, guestPort int) (int, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	inst, ok := v.instances[h.ID]
+	if !ok {
+		return 0, fmt.Errorf("vm %s not found", h.ID)
+	}
+
+	inst.endpoints = append(inst.endpoints, HostEndpoint{
+		GuestPort:   guestPort,
+		HostPort:    guestPort,
+		Protocol:    "tcp",
+		BackendAddr: inst.guestIP,
+	})
+
+	log.Printf("vmm: dynamic expose guest:%d (vm %s, guest %s)", guestPort, h.ID, inst.guestIP)
+	return guestPort, nil
+}
+
 func (v *CloudHypervisorVMM) Capabilities() BackendCaps {
 	return BackendCaps{
 		Pause:           true,

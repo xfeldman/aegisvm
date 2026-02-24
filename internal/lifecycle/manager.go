@@ -1619,14 +1619,21 @@ func (m *Manager) ExposePort(id string, guestPort, publicPort int, protocol stri
 			inst.mu.Unlock()
 			return 0, fmt.Errorf("vmm expose: %w", err)
 		}
-		// Update lifecycle endpoints so GetEndpoint can find this port
-		inst.mu.Lock()
-		inst.Endpoints = append(inst.Endpoints, vmm.HostEndpoint{
-			GuestPort: guestPort,
-			HostPort:  hostPort,
-			Protocol:  protocol,
-		})
-		inst.mu.Unlock()
+		// Refresh lifecycle endpoints from VMM so GetEndpoint gets BackendAddr
+		if eps, err := m.vmm.HostEndpoints(handle); err == nil {
+			inst.mu.Lock()
+			inst.Endpoints = eps
+			inst.mu.Unlock()
+		} else {
+			// Fallback: add without BackendAddr
+			inst.mu.Lock()
+			inst.Endpoints = append(inst.Endpoints, vmm.HostEndpoint{
+				GuestPort: guestPort,
+				HostPort:  hostPort,
+				Protocol:  protocol,
+			})
+			inst.mu.Unlock()
+		}
 	}
 
 	// Allocate router port

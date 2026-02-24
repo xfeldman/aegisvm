@@ -133,12 +133,10 @@ cp base/base-rootfs.ext4 ~/.aegis/base-rootfs.ext4
 ## 4. Start AegisVM
 
 ```bash
-# macOS
 aegis up
-
-# Linux (requires root for tap networking)
-sudo aegis up
 ```
+
+On Linux, you'll be prompted for your password (sudo is needed for tap networking). Subsequent runs use cached credentials.
 
 This launches `aegisd` in the background. If no rootfs is installed, it downloads the default (`python`) first. Verify it is running:
 
