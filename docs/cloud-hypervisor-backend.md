@@ -125,8 +125,10 @@ sudo apt install virtiofsd
 # Cloud Hypervisor binary
 make cloud-hypervisor             # downloads static binary from GitHub
 
-# MicroVM kernel with virtiofs + vsock support
-make kernel                       # builds vmlinux from Linux 6.1 source (~10 min, one-time)
+# MicroVM kernel (prebuilt, x86_64 + arm64)
+make kernel                       # downloads from cloud-hypervisor/linux releases
+# Or build from source (unsupported arch, custom config):
+# make kernel-build               # requires build-essential, ~10 min
 
 # Build binaries (harness matches host arch on Linux)
 make all

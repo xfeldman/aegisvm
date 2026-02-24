@@ -13,7 +13,7 @@ import (
 
 // Backend conformance: exercises the core instance lifecycle paths that any
 // VMM backend must support. These tests run against whatever backend aegisd
-// was started with (libkrun today, Firecracker in M4+).
+// was started with (libkrun on macOS, Cloud Hypervisor on Linux).
 
 // TestConformance_RunEcho — boot VM, run command, verify output, instance stops.
 func TestConformance_RunEcho(t *testing.T) {

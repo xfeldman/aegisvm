@@ -51,7 +51,7 @@ else
 ALL_TARGETS := aegisd aegis harness vmm-worker mcp mcp-guest gateway agent
 endif
 
-.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent base-rootfs clean test test-unit test-m2 test-m3 test-network integration install-kit release-tarball release-kit-tarball cloud-hypervisor kernel
+.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent base-rootfs clean test test-unit test-m2 test-m3 test-network integration install-kit release-tarball release-kit-tarball cloud-hypervisor kernel kernel-build
 
 all: $(ALL_TARGETS)
 
@@ -132,39 +132,60 @@ else
 	@echo "cloud-hypervisor target is Linux-only (current: $(HOST_OS))"
 endif
 
-# Build microVM kernel with virtiofs + vsock support (Linux only, ~10 min)
-# Downloads Linux 6.1 source, applies minimal microVM config, builds vmlinux.
+# Download prebuilt microVM kernel from Cloud Hypervisor's linux repo (Linux only).
+# The CH project maintains kernels with virtiofs, vsock, and virtio-net built-in
+# for x86_64 and arm64. Use `make kernel-build` to compile from source instead
+# (for unsupported architectures or custom configs).
+CH_KERNEL_RELEASE := ch-release-v6.16.9-20251112
 kernel:
 ifeq ($(HOST_OS),linux)
-	@echo "==> Building microVM kernel (vmlinux)..."
 	@mkdir -p $(HOME)/.aegis/kernel
 	@if [ -f $(HOME)/.aegis/kernel/vmlinux ]; then \
-		echo "Kernel already exists at $(HOME)/.aegis/kernel/vmlinux, skipping build"; \
+		echo "Kernel already exists at $(HOME)/.aegis/kernel/vmlinux"; \
+		echo "Delete it and re-run to re-download"; \
+	else \
+		echo "==> Downloading Cloud Hypervisor kernel $(CH_KERNEL_RELEASE) ($(HOST_ARCH))..." && \
+		case $(HOST_ARCH) in \
+			amd64) \
+				curl -sSL -o $(HOME)/.aegis/kernel/vmlinux \
+					"https://github.com/cloud-hypervisor/linux/releases/download/$(CH_KERNEL_RELEASE)/vmlinux-x86_64" ;; \
+			arm64) \
+				curl -sSL -o $(HOME)/.aegis/kernel/vmlinux \
+					"https://github.com/cloud-hypervisor/linux/releases/download/$(CH_KERNEL_RELEASE)/Image-arm64" ;; \
+			*) \
+				echo "No prebuilt kernel for $(HOST_ARCH). Use 'make kernel-build' to compile from source."; \
+				exit 1 ;; \
+		esac && \
+		echo "==> Kernel installed to $(HOME)/.aegis/kernel/vmlinux"; \
+	fi
+else
+	@echo "kernel target is Linux-only (current: $(HOST_OS))"
+endif
+
+# Build microVM kernel from source (Linux only, fallback for unsupported archs).
+# Uses Cloud Hypervisor's kernel branch with ch_defconfig (virtiofs + vsock built-in).
+# Requires: build-essential flex bison libelf-dev libssl-dev bc
+kernel-build:
+ifeq ($(HOST_OS),linux)
+	@mkdir -p $(HOME)/.aegis/kernel
+	@if [ -f $(HOME)/.aegis/kernel/vmlinux ]; then \
+		echo "Kernel already exists at $(HOME)/.aegis/kernel/vmlinux"; \
 		echo "Delete it and re-run to rebuild"; \
 	else \
 		TMPDIR=$$(mktemp -d) && \
-		echo "==> Downloading Linux 6.1 source..." && \
-		curl -sSL "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.1.120.tar.xz" | tar -xJ -C $$TMPDIR --strip-components=1 && \
-		echo "==> Downloading microvm kernel config..." && \
-		curl -sSL "https://raw.githubusercontent.com/firecracker-microvm/firecracker/main/resources/guest_configs/microvm-kernel-x86_64-6.1.config" -o $$TMPDIR/.config && \
-		echo "==> Patching config for virtiofs + vsock..." && \
-		sed -i 's/# CONFIG_FUSE_FS is not set/CONFIG_FUSE_FS=y/' $$TMPDIR/.config && \
-		sed -i 's/# CONFIG_VIRTIO_FS is not set/CONFIG_VIRTIO_FS=y/' $$TMPDIR/.config && \
-		sed -i 's/CONFIG_VIRTIO_VSOCKETS=m/CONFIG_VIRTIO_VSOCKETS=y/' $$TMPDIR/.config && \
-		sed -i 's/CONFIG_VIRTIO_VSOCKETS_COMMON=m/CONFIG_VIRTIO_VSOCKETS_COMMON=y/' $$TMPDIR/.config && \
-		echo "CONFIG_FUSE_FS=y" >> $$TMPDIR/.config && \
-		echo "CONFIG_VIRTIO_FS=y" >> $$TMPDIR/.config && \
-		echo "CONFIG_VIRTIO_VSOCKETS=y" >> $$TMPDIR/.config && \
-		echo "CONFIG_VIRTIO_VSOCKETS_COMMON=y" >> $$TMPDIR/.config && \
-		echo "==> Building vmlinux (this takes ~10 minutes)..." && \
-		$(MAKE) -C $$TMPDIR -j$$(nproc) olddefconfig && \
+		echo "==> Cloning Cloud Hypervisor kernel ($(CH_KERNEL_RELEASE))..." && \
+		git clone --depth 1 --branch $(CH_KERNEL_RELEASE) \
+			https://github.com/cloud-hypervisor/linux.git $$TMPDIR && \
+		echo "==> Configuring (ch_defconfig)..." && \
+		$(MAKE) -C $$TMPDIR ch_defconfig && \
+		echo "==> Building vmlinux (this may take ~10 minutes)..." && \
 		$(MAKE) -C $$TMPDIR -j$$(nproc) vmlinux && \
 		cp $$TMPDIR/vmlinux $(HOME)/.aegis/kernel/vmlinux && \
 		rm -rf $$TMPDIR && \
 		echo "==> Kernel installed to $(HOME)/.aegis/kernel/vmlinux"; \
 	fi
 else
-	@echo "kernel target is Linux-only (current: $(HOST_OS))"
+	@echo "kernel-build target is Linux-only (current: $(HOST_OS))"
 endif
 
 # Run unit tests
@@ -215,6 +236,18 @@ ifdef SHORT
 	$(GO) test -tags integration -v -count=1 -short -timeout 10m ./test/integration/
 else
 	$(GO) test -tags integration -v -count=1 -timeout 10m ./test/integration/
+endif
+
+# Run Linux-specific integration tests (Cloud Hypervisor backend)
+# Requires: sudo, kernel, cloud-hypervisor, virtiofsd, base-rootfs.ext4
+# Use SHORT=1 to skip snapshot/pause tests
+test-linux: all
+ifdef SHORT
+	$(GO) test -tags integration -v -count=1 -short -timeout 15m \
+		-run 'TestLinux_' ./test/integration/
+else
+	$(GO) test -tags integration -v -count=1 -timeout 15m \
+		-run 'TestLinux_' ./test/integration/
 endif
 
 # Release tarballs

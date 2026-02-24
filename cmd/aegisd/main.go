@@ -43,8 +43,9 @@ func main() {
 
 	log.Printf("aegisd starting on %s/%s (backend: %s)", platform.OS, platform.Arch, platform.Backend)
 
-	// Resolve network backend (auto → gvproxy on darwin, tsi elsewhere)
+	// Resolve network backend (auto → gvproxy on darwin, tap on linux)
 	cfg.ResolveNetworkBackend()
+	cfg.ResolveBinaries()
 	log.Printf("network backend: %s", cfg.NetworkBackend)
 
 	// Initialize VMM backend

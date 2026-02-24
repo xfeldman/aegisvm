@@ -38,11 +38,13 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/xfeldman/aegisvm/internal/config"
 	"github.com/xfeldman/aegisvm/internal/kit"
 	"github.com/xfeldman/aegisvm/internal/version"
 )
@@ -189,7 +191,14 @@ func startDaemon() {
 		os.Exit(1)
 	}
 
-	cmd := exec.Command(aegisdBin)
+	// On Linux, aegisd needs root for tap networking. Elevate via sudo
+	// so the user never has to type "sudo aegis up" themselves.
+	var cmd *exec.Cmd
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		cmd = exec.Command("sudo", aegisdBin)
+	} else {
+		cmd = exec.Command(aegisdBin)
+	}
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
@@ -198,6 +207,13 @@ func startDaemon() {
 		os.Exit(1)
 	}
 
+	// Monitor for early exit in background
+	exited := make(chan struct{})
+	go func() {
+		cmd.Wait()
+		close(exited)
+	}()
+
 	time.Sleep(500 * time.Millisecond)
 
 	for i := 0; i < 10; i++ {
@@ -205,11 +221,37 @@ func startDaemon() {
 			fmt.Println("aegisd: started")
 			return
 		}
+		// Check if the process exited early (e.g. missing root, missing binary)
+		select {
+		case <-exited:
+			logFile.Close() // flush before reading
+			fmt.Fprintln(os.Stderr, "aegisd exited immediately. Last log lines:")
+			showLogTail(logFile.Name(), 5)
+			os.Exit(1)
+		default:
+		}
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	fmt.Fprintln(os.Stderr, "aegisd did not start within timeout")
+	fmt.Fprintln(os.Stderr, "aegisd did not start within timeout. Check log:")
+	fmt.Fprintf(os.Stderr, "  %s\n", logFile.Name())
 	os.Exit(1)
+}
+
+// showLogTail prints the last n lines of a log file to stderr.
+func showLogTail(path string, n int) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	start := len(lines) - n
+	if start < 0 {
+		start = 0
+	}
+	for _, line := range lines[start:] {
+		fmt.Fprintf(os.Stderr, "  %s\n", line)
+	}
 }
 
 // daemonPidFilePath returns the PID file path for a daemon binary name.
@@ -242,7 +284,12 @@ func cmdDown() {
 		return
 	}
 
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
+	err = proc.Signal(syscall.SIGTERM)
+	if err != nil && runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		// Daemon runs as root on Linux — need sudo to signal it
+		err = exec.Command("sudo", "kill", "-TERM", strconv.Itoa(pid)).Run()
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "send SIGTERM: %v\n", err)
 		os.Exit(1)
 	}
@@ -564,42 +611,34 @@ func cmdDoctor() {
 	fmt.Println()
 
 	fmt.Printf("Version:  %s\n", version.Version())
-	fmt.Printf("Go:       installed\n")
+	fmt.Printf("Platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 
-	_, err := exec.LookPath("krunvm")
-	if err == nil {
-		fmt.Printf("krunvm:   found (libkrun CLI available)\n")
+	fmt.Println()
+
+	// Platform-specific dependency checks
+	switch runtime.GOOS {
+	case "darwin":
+		doctorDarwin()
+	case "linux":
+		doctorLinux()
+	}
+
+	// Common tools
+	if _, err := exec.LookPath("mkfs.ext4"); err == nil {
+		fmt.Printf("e2fsprogs:          found\n")
 	} else {
-		fmt.Printf("krunvm:   not found\n")
-	}
-
-	libPaths := []string{
-		"/opt/homebrew/lib/libkrun.dylib",
-		"/usr/local/lib/libkrun.dylib",
-		"/usr/lib/libkrun.so",
-	}
-	libFound := false
-	for _, p := range libPaths {
-		if _, err := os.Stat(p); err == nil {
-			fmt.Printf("libkrun:  found at %s\n", p)
-			libFound = true
-			break
+		hint := ""
+		if runtime.GOOS == "darwin" {
+			hint = " (install via: brew install e2fsprogs)"
+		} else {
+			hint = " (install via: apt install e2fsprogs)"
 		}
-	}
-	if !libFound {
-		fmt.Printf("libkrun:  not found (install via: brew tap slp/krun && brew install libkrun)\n")
-	}
-
-	_, err = exec.LookPath("mkfs.ext4")
-	if err == nil {
-		fmt.Printf("e2fsprogs: found\n")
-	} else {
-		fmt.Printf("e2fsprogs: not found (install via: brew install e2fsprogs)\n")
+		fmt.Printf("e2fsprogs:          not found%s\n", hint)
 	}
 
 	fmt.Println()
 	if isDaemonRunning() {
-		fmt.Printf("aegisd:   running\n")
+		fmt.Printf("aegisd:             running\n")
 
 		client := httpClient()
 		resp, err := client.Get("http://aegis/v1/status")
@@ -611,6 +650,9 @@ func cmdDoctor() {
 			if backend, ok := status["backend"].(string); ok {
 				fmt.Printf("\nBackend:     %s\n", backend)
 			}
+			if network, ok := status["network"].(string); ok {
+				fmt.Printf("Network:     %s\n", network)
+			}
 
 			if caps, ok := status["capabilities"].(map[string]interface{}); ok {
 				fmt.Println("Capabilities:")
@@ -620,13 +662,109 @@ func cmdDoctor() {
 				if v, ok := caps["persistent_pause"].(bool); ok {
 					fmt.Printf("  Persistent pause:      %s\n", boolYesNo(v))
 				}
-				if v, ok := caps["boot_from_disk_layers"].(bool); ok {
-					fmt.Printf("  Boot from disk layers: %s\n", boolYesNo(v))
+				if v, ok := caps["snapshot_restore"].(bool); ok {
+					fmt.Printf("  Snapshot/Restore:      %s\n", boolYesNo(v))
 				}
 			}
 		}
 	} else {
-		fmt.Printf("aegisd:   not running\n")
+		fmt.Printf("aegisd:             not running\n")
+	}
+}
+
+func doctorDarwin() {
+	// libkrun
+	libPaths := []string{
+		"/opt/homebrew/lib/libkrun.dylib",
+		"/usr/local/lib/libkrun.dylib",
+	}
+	libFound := false
+	for _, p := range libPaths {
+		if _, err := os.Stat(p); err == nil {
+			fmt.Printf("libkrun:            found at %s\n", p)
+			libFound = true
+			break
+		}
+	}
+	if !libFound {
+		fmt.Printf("libkrun:            not found\n")
+	}
+
+	// vmm-worker
+	home, _ := os.UserHomeDir()
+	workerPaths := []string{
+		filepath.Join(home, ".aegis", "bin", "aegis-vmm-worker"),
+		"aegis-vmm-worker",
+	}
+	workerFound := false
+	for _, p := range workerPaths {
+		if _, err := os.Stat(p); err == nil {
+			fmt.Printf("vmm-worker:         found at %s\n", p)
+			workerFound = true
+			break
+		}
+	}
+	if !workerFound {
+		if _, err := exec.LookPath("aegis-vmm-worker"); err == nil {
+			fmt.Printf("vmm-worker:         found in PATH\n")
+		} else {
+			fmt.Printf("vmm-worker:         not found\n")
+		}
+	}
+}
+
+func doctorLinux() {
+	// Use the same binary discovery as the runtime
+	cfg := config.DefaultConfig()
+
+	// KVM
+	if _, err := os.Stat("/dev/kvm"); err == nil {
+		fmt.Printf("kvm:                found (/dev/kvm)\n")
+	} else {
+		fmt.Printf("kvm:                not found (required for VM acceleration)\n")
+	}
+
+	// Cloud Hypervisor
+	if path := config.FindBinary("cloud-hypervisor", cfg.BinDir); path != "" {
+		fmt.Printf("cloud-hypervisor:   found at %s\n", path)
+		if out, err := exec.Command(path, "--version").CombinedOutput(); err == nil {
+			ver := strings.TrimSpace(string(out))
+			fmt.Printf("                    %s\n", ver)
+		}
+	} else {
+		fmt.Printf("cloud-hypervisor:   not found (install via: make cloud-hypervisor)\n")
+	}
+
+	// virtiofsd
+	if path := config.FindBinary("virtiofsd", cfg.BinDir); path != "" {
+		fmt.Printf("virtiofsd:          found at %s\n", path)
+		if out, err := exec.Command(path, "--version").CombinedOutput(); err == nil {
+			ver := strings.TrimSpace(string(out))
+			fmt.Printf("                    %s\n", ver)
+		}
+	} else {
+		fmt.Printf("virtiofsd:          not found (install via: apt install virtiofsd)\n")
+	}
+
+	// Kernel
+	if info, err := os.Stat(cfg.KernelPath); err == nil {
+		fmt.Printf("kernel:             found at %s (%dMB)\n", cfg.KernelPath, info.Size()/(1024*1024))
+	} else {
+		fmt.Printf("kernel:             not found (install via: make kernel)\n")
+	}
+
+	// Base rootfs
+	if info, err := os.Stat(cfg.BaseRootfsPath); err == nil {
+		fmt.Printf("base-rootfs:        found at %s (%dMB)\n", cfg.BaseRootfsPath, info.Size()/(1024*1024))
+	} else {
+		fmt.Printf("base-rootfs:        not found (install via: aegis rootfs pull python)\n")
+	}
+
+	// Root/CAP_NET_ADMIN check
+	if os.Geteuid() == 0 {
+		fmt.Printf("root:               yes\n")
+	} else {
+		fmt.Printf("root:               no (aegisd requires root for tap networking)\n")
 	}
 }
 

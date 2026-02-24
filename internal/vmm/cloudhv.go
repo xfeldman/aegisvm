@@ -111,27 +111,19 @@ func (c *chClient) get(path string) (*http.Response, error) {
 func NewCloudHypervisorVMM(cfg *config.Config) (*CloudHypervisorVMM, error) {
 	// Fail fast if not root
 	if os.Geteuid() != 0 {
-		return nil, fmt.Errorf("aegisd on Linux requires root or CAP_NET_ADMIN for tap networking")
+		return nil, fmt.Errorf("cloud-hypervisor backend requires root for tap networking")
 	}
 
-	// Resolve cloud-hypervisor binary
+	// Check cloud-hypervisor binary (resolved by cfg.ResolveBinaries)
 	chBin := cfg.CloudHypervisorBin
 	if chBin == "" {
-		var err error
-		chBin, err = exec.LookPath("cloud-hypervisor")
-		if err != nil {
-			return nil, fmt.Errorf("cloud-hypervisor binary not found in PATH (install via 'make cloud-hypervisor'): %w", err)
-		}
+		return nil, fmt.Errorf("cloud-hypervisor not found (install via: make cloud-hypervisor)")
 	}
 
-	// Resolve virtiofsd binary
+	// Check virtiofsd binary (resolved by cfg.ResolveBinaries)
 	virtiofsdBin := cfg.VirtiofsdBin
 	if virtiofsdBin == "" {
-		var err error
-		virtiofsdBin, err = exec.LookPath("virtiofsd")
-		if err != nil {
-			return nil, fmt.Errorf("virtiofsd binary not found in PATH (install via 'apt install virtiofsd'): %w", err)
-		}
+		return nil, fmt.Errorf("virtiofsd not found (install via: apt install virtiofsd)")
 	}
 
 	// Check kernel exists

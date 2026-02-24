@@ -2,8 +2,10 @@ package config
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -78,7 +80,7 @@ type Config struct {
 
 // DefaultConfig returns the default configuration.
 func DefaultConfig() *Config {
-	homeDir, _ := os.UserHomeDir()
+	homeDir := realUserHomeDir()
 	aegisDir := filepath.Join(homeDir, ".aegis")
 	execDir := executableDir()
 
@@ -150,6 +152,93 @@ func (c *Config) ResolveNetworkBackend() {
 			c.NetworkBackend = "tsi"
 		}
 	}
+}
+
+// ResolveBinaries eagerly resolves CloudHypervisorBin and VirtiofsdBin
+// if they are empty. Called once at startup so the backend and doctor
+// share the same discovery result.
+func (c *Config) ResolveBinaries() {
+	if runtime.GOOS != "linux" {
+		return
+	}
+	if c.CloudHypervisorBin == "" {
+		c.CloudHypervisorBin = FindBinary("cloud-hypervisor", c.BinDir)
+	}
+	if c.VirtiofsdBin == "" {
+		c.VirtiofsdBin = FindBinary("virtiofsd", c.BinDir)
+	}
+}
+
+// FindBinary locates a binary by name. Search order:
+//  1. PATH (exec.LookPath)
+//  2. Sibling directory of the running executable (BinDir)
+//  3. Known system paths (/usr/libexec — Ubuntu puts virtiofsd here)
+//
+// Returns the absolute path, or "" if not found.
+func FindBinary(name string, binDir string) string {
+	// 1. PATH
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+
+	// 2. Sibling of the running executable
+	if binDir != "" {
+		p := filepath.Join(binDir, name)
+		if _, err := os.Stat(p); err == nil {
+			abs, _ := filepath.Abs(p)
+			return abs
+		}
+	}
+
+	// 3. Known system paths
+	for _, dir := range []string{"/usr/libexec", "/usr/local/bin"} {
+		p := filepath.Join(dir, name)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+
+	return ""
+}
+
+// HomeDir returns the home directory of the real user, even under sudo.
+// Exported for use by the CLI and any code that needs ~/.aegis paths.
+func HomeDir() string {
+	return realUserHomeDir()
+}
+
+// realUserHomeDir returns the home directory of the real user, even under sudo.
+// When running via "sudo aegisd", os.UserHomeDir() returns /root. We want the
+// invoking user's home so all state stays in their ~/.aegis/.
+func realUserHomeDir() string {
+	// Check SUDO_USER first — set by sudo to the invoking user's name
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		// Look up the user's home directory from /etc/passwd
+		if home := lookupUserHome(sudoUser); home != "" {
+			return home
+		}
+	}
+	home, _ := os.UserHomeDir()
+	return home
+}
+
+// lookupUserHome gets a user's home directory without importing os/user
+// (which pulls in cgo on some platforms). Reads /etc/passwd directly.
+func lookupUserHome(username string) string {
+	data, err := os.ReadFile("/etc/passwd")
+	if err != nil {
+		return ""
+	}
+	prefix := username + ":"
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			fields := strings.Split(line, ":")
+			if len(fields) >= 6 {
+				return fields[5]
+			}
+		}
+	}
+	return ""
 }
 
 // executableDir returns the directory containing the current executable.
