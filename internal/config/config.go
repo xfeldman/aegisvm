@@ -5,7 +5,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 )
 
@@ -80,7 +79,7 @@ type Config struct {
 
 // DefaultConfig returns the default configuration.
 func DefaultConfig() *Config {
-	homeDir := realUserHomeDir()
+	homeDir, _ := os.UserHomeDir()
 	aegisDir := filepath.Join(homeDir, ".aegis")
 	execDir := executableDir()
 
@@ -198,46 +197,6 @@ func FindBinary(name string, binDir string) string {
 		}
 	}
 
-	return ""
-}
-
-// HomeDir returns the home directory of the real user, even under sudo.
-// Exported for use by the CLI and any code that needs ~/.aegis paths.
-func HomeDir() string {
-	return realUserHomeDir()
-}
-
-// realUserHomeDir returns the home directory of the real user, even under sudo.
-// When running via "sudo aegisd", os.UserHomeDir() returns /root. We want the
-// invoking user's home so all state stays in their ~/.aegis/.
-func realUserHomeDir() string {
-	// Check SUDO_USER first — set by sudo to the invoking user's name
-	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
-		// Look up the user's home directory from /etc/passwd
-		if home := lookupUserHome(sudoUser); home != "" {
-			return home
-		}
-	}
-	home, _ := os.UserHomeDir()
-	return home
-}
-
-// lookupUserHome gets a user's home directory without importing os/user
-// (which pulls in cgo on some platforms). Reads /etc/passwd directly.
-func lookupUserHome(username string) string {
-	data, err := os.ReadFile("/etc/passwd")
-	if err != nil {
-		return ""
-	}
-	prefix := username + ":"
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(line, prefix) {
-			fields := strings.Split(line, ":")
-			if len(fields) >= 6 {
-				return fields[5]
-			}
-		}
-	}
 	return ""
 }
 

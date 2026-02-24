@@ -92,6 +92,7 @@ func mountEssential() {
 		fstype string
 	}{
 		{"proc", "/proc", "proc"},
+		{"sysfs", "/sys", "sysfs"},
 		{"tmpfs", "/tmp", "tmpfs"},
 		{"tmpfs", "/run", "tmpfs"},
 		{"tmpfs", "/var", "tmpfs"},
@@ -105,7 +106,13 @@ func mountEssential() {
 		}
 	}
 
-	// Configure network if AEGIS_NET_IP is set (gvproxy mode).
+	// Bring up loopback interface. On direct kernel boot (no init system),
+	// nobody else does this — localhost won't work without it.
+	if lo, err := net.InterfaceByName("lo"); err == nil {
+		netlinkSetLinkUp(lo.Index)
+	}
+
+	// Configure network if AEGIS_NET_IP is set.
 	// Must happen before /etc/resolv.conf setup since it may override DNS.
 	// Must happen before read-only remount since it writes to /etc.
 	setupNetwork()
@@ -128,6 +135,9 @@ func mountEssential() {
 		}
 	}
 
+	// Mount workspace before read-only remount (needs to create /workspace dir)
+	mountWorkspace()
+
 	// Phase 2: Remount / read-only to protect the release rootfs.
 	// MS_REMOUNT | MS_RDONLY changes an existing mount to read-only.
 	// This only affects the root virtiofs — /tmp, /run, /var, /workspace
@@ -140,7 +150,7 @@ func mountEssential() {
 	}
 }
 
-// setupNetwork configures eth0 when AEGIS_NET_IP is set (gvproxy mode).
+// setupNetwork configures eth0 when AEGIS_NET_IP is set.
 // In TSI mode (no AEGIS_NET_IP), this is a no-op.
 //
 // Uses netlink syscalls directly — no dependency on iproute2 or busybox in the

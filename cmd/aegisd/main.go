@@ -244,7 +244,7 @@ func main() {
 
 	// Write PID file
 	pidPath := cfg.DataDir + "/aegisd.pid"
-	os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0600)
+	os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
 	defer os.Remove(pidPath)
 
 	log.Printf("aegisd ready (pid %d, socket %s, router %s)", os.Getpid(), cfg.SocketPath, cfg.RouterAddr)

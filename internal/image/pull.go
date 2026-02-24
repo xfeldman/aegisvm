@@ -4,6 +4,7 @@ package image
 import (
 	"context"
 	"fmt"
+	"runtime"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -11,22 +12,33 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/types"
 )
 
+// vmArch returns the guest architecture for OCI image pulls.
+// On macOS, VMs are always arm64 (libkrun on Apple Silicon).
+// On Linux, VMs match the host architecture (Cloud Hypervisor runs native).
+func vmArch() string {
+	if runtime.GOOS == "darwin" {
+		return "arm64"
+	}
+	return runtime.GOARCH
+}
+
 // PullResult contains the pulled image and its digest.
 type PullResult struct {
 	Image  v1.Image
 	Digest string // e.g. "sha256:abc123..."
 }
 
-// Pull resolves an image reference and pulls the linux/arm64 variant.
+// Pull resolves an image reference and pulls the linux variant matching the VM architecture.
 func Pull(ctx context.Context, imageRef string) (*PullResult, error) {
 	ref, err := name.ParseReference(imageRef)
 	if err != nil {
 		return nil, fmt.Errorf("parse image ref %q: %w", imageRef, err)
 	}
 
+	arch := vmArch()
 	platform := &v1.Platform{
 		OS:           "linux",
-		Architecture: "arm64",
+		Architecture: arch,
 	}
 
 	desc, err := remote.Get(ref, remote.WithContext(ctx), remote.WithPlatform(*platform))
@@ -47,16 +59,16 @@ func Pull(ctx context.Context, imageRef string) (*PullResult, error) {
 			return nil, fmt.Errorf("get index manifest: %w", err)
 		}
 		for _, m := range indexManifest.Manifests {
-			if m.Platform != nil && m.Platform.OS == "linux" && m.Platform.Architecture == "arm64" {
+			if m.Platform != nil && m.Platform.OS == "linux" && m.Platform.Architecture == arch {
 				img, err = idx.Image(m.Digest)
 				if err != nil {
-					return nil, fmt.Errorf("get arm64 image: %w", err)
+					return nil, fmt.Errorf("get %s image: %w", arch, err)
 				}
 				break
 			}
 		}
 		if img == nil {
-			return nil, fmt.Errorf("no linux/arm64 variant found in %s", imageRef)
+			return nil, fmt.Errorf("no linux/%s variant found in %s", arch, imageRef)
 		}
 	default:
 		img, err = desc.Image()
@@ -70,8 +82,8 @@ func Pull(ctx context.Context, imageRef string) (*PullResult, error) {
 		if err != nil {
 			return nil, fmt.Errorf("get image config: %w", err)
 		}
-		if cfg.OS != "linux" || cfg.Architecture != "arm64" {
-			return nil, fmt.Errorf("image %s is %s/%s, aegis requires linux/arm64", imageRef, cfg.OS, cfg.Architecture)
+		if cfg.OS != "linux" || cfg.Architecture != arch {
+			return nil, fmt.Errorf("image %s is %s/%s, aegis requires linux/%s", imageRef, cfg.OS, cfg.Architecture, arch)
 		}
 	}
 

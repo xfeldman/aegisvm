@@ -30,6 +30,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -159,7 +160,9 @@ func isDaemonRunning() bool {
 		return false
 	}
 	err = proc.Signal(syscall.Signal(0))
-	return err == nil
+	// err == nil: process alive, we can signal it
+	// EPERM: process alive but owned by root (daemon runs via sudo)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func cmdUp() {
@@ -195,7 +198,8 @@ func startDaemon() {
 	// so the user never has to type "sudo aegis up" themselves.
 	var cmd *exec.Cmd
 	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
-		cmd = exec.Command("sudo", aegisdBin)
+		home, _ := os.UserHomeDir()
+		cmd = exec.Command("sudo", fmt.Sprintf("HOME=%s", home), aegisdBin)
 	} else {
 		cmd = exec.Command(aegisdBin)
 	}
@@ -278,15 +282,16 @@ func cmdDown() {
 	}
 
 	// Check if actually alive before sending signal
-	if proc.Signal(syscall.Signal(0)) != nil {
+	probeErr := proc.Signal(syscall.Signal(0))
+	if probeErr != nil && !errors.Is(probeErr, syscall.EPERM) {
 		fmt.Println("aegisd is not running (stale pid file)")
 		os.Remove(pidFilePath())
 		return
 	}
 
+	// Try direct signal first; if EPERM (daemon is root, we're not), use sudo
 	err = proc.Signal(syscall.SIGTERM)
-	if err != nil && runtime.GOOS == "linux" && os.Geteuid() != 0 {
-		// Daemon runs as root on Linux — need sudo to signal it
+	if err != nil && errors.Is(err, syscall.EPERM) {
 		err = exec.Command("sudo", "kill", "-TERM", strconv.Itoa(pid)).Run()
 	}
 	if err != nil {
@@ -714,8 +719,10 @@ func doctorDarwin() {
 }
 
 func doctorLinux() {
-	// Use the same binary discovery as the runtime
-	cfg := config.DefaultConfig()
+	home, _ := os.UserHomeDir()
+	aegisDir := filepath.Join(home, ".aegis")
+	exe, _ := os.Executable()
+	binDir := filepath.Dir(exe)
 
 	// KVM
 	if _, err := os.Stat("/dev/kvm"); err == nil {
@@ -724,8 +731,8 @@ func doctorLinux() {
 		fmt.Printf("kvm:                not found (required for VM acceleration)\n")
 	}
 
-	// Cloud Hypervisor
-	if path := config.FindBinary("cloud-hypervisor", cfg.BinDir); path != "" {
+	// Cloud Hypervisor — same discovery as the runtime
+	if path := config.FindBinary("cloud-hypervisor", binDir); path != "" {
 		fmt.Printf("cloud-hypervisor:   found at %s\n", path)
 		if out, err := exec.Command(path, "--version").CombinedOutput(); err == nil {
 			ver := strings.TrimSpace(string(out))
@@ -735,8 +742,8 @@ func doctorLinux() {
 		fmt.Printf("cloud-hypervisor:   not found (install via: make cloud-hypervisor)\n")
 	}
 
-	// virtiofsd
-	if path := config.FindBinary("virtiofsd", cfg.BinDir); path != "" {
+	// virtiofsd — same discovery as the runtime
+	if path := config.FindBinary("virtiofsd", binDir); path != "" {
 		fmt.Printf("virtiofsd:          found at %s\n", path)
 		if out, err := exec.Command(path, "--version").CombinedOutput(); err == nil {
 			ver := strings.TrimSpace(string(out))
@@ -747,15 +754,17 @@ func doctorLinux() {
 	}
 
 	// Kernel
-	if info, err := os.Stat(cfg.KernelPath); err == nil {
-		fmt.Printf("kernel:             found at %s (%dMB)\n", cfg.KernelPath, info.Size()/(1024*1024))
+	kernelPath := filepath.Join(aegisDir, "kernel", "vmlinux")
+	if info, err := os.Stat(kernelPath); err == nil {
+		fmt.Printf("kernel:             found at %s (%dMB)\n", kernelPath, info.Size()/(1024*1024))
 	} else {
 		fmt.Printf("kernel:             not found (install via: make kernel)\n")
 	}
 
 	// Base rootfs
-	if info, err := os.Stat(cfg.BaseRootfsPath); err == nil {
-		fmt.Printf("base-rootfs:        found at %s (%dMB)\n", cfg.BaseRootfsPath, info.Size()/(1024*1024))
+	rootfsPath := filepath.Join(aegisDir, "base-rootfs.ext4")
+	if info, err := os.Stat(rootfsPath); err == nil {
+		fmt.Printf("base-rootfs:        found at %s (%dMB)\n", rootfsPath, info.Size()/(1024*1024))
 	} else {
 		fmt.Printf("base-rootfs:        not found (install via: aegis rootfs pull python)\n")
 	}
