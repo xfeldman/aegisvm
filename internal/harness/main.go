@@ -55,7 +55,7 @@ func Run() {
 
 	// Handle JSON-RPC from the host + responses to our guest API calls.
 	// On connection drop, attempt reconnect if vsock is available (handles
-	// snapshot/restore where CH sends VIRTIO_VSOCK_EVENT_TRANSPORT_RESET).
+	// snapshot/restore where the backend resets the vsock transport).
 	for {
 		handleConnection(ctx, conn, hrpc)
 

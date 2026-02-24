@@ -11,9 +11,9 @@ import (
 )
 
 // parseCmdlineEnv reads /proc/cmdline and sets environment variables from KEY=VALUE
-// tokens. Only sets vars that are not already in the environment. This handles the
-// Cloud Hypervisor boot path where env vars are passed via kernel cmdline rather
-// than inherited from the parent process (as with libkrun).
+// tokens. Only sets vars that are not already in the environment. Some backends
+// pass env vars via kernel cmdline rather than inheriting them from the parent
+// process — this ensures AEGIS_* vars are available regardless of boot method.
 func parseCmdlineEnv() {
 	data, err := os.ReadFile("/proc/cmdline")
 	if err != nil {
@@ -82,8 +82,7 @@ func mountWorkspace() {
 // mutate the release directory on the host, breaking immutability.
 func mountEssential() {
 	// Parse kernel cmdline for AEGIS_* env vars and standard env (PATH, HOME, TERM).
-	// Cloud Hypervisor passes env via kernel cmdline; libkrun passes env directly.
-	// This is a safety net — if the var is already set, we don't overwrite it.
+	// Safety net for backends that pass env via kernel cmdline rather than process env.
 	parseCmdlineEnv()
 
 	// Phase 1: Mount writable filesystems first (before making / read-only)

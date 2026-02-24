@@ -54,14 +54,14 @@ type Config struct {
 	// StopAfterIdle is the duration after which a paused instance is stopped.
 	StopAfterIdle time.Duration
 
-	// NetworkBackend selects the data-plane networking mode for libkrun VMs.
+	// NetworkBackend selects the data-plane networking mode.
 	// "auto" (default): gvproxy on darwin, tap on linux.
 	// "gvproxy": in-process gvisor-tap-vsock (compiled into vmm-worker).
 	// "tsi": TSI unconditionally (known ~32KB outbound body limit).
-	// "tap": tap + iptables NAT (Cloud Hypervisor on Linux).
+	// "tap": tap + NAT (Linux).
 	NetworkBackend string
 
-	// KernelPath is the path to the vmlinux kernel image (Linux/CH only).
+	// KernelPath is the path to the vmlinux kernel image (Linux only).
 	KernelPath string
 
 	// CloudHypervisorBin is the path to the cloud-hypervisor binary.
@@ -72,7 +72,7 @@ type Config struct {
 	// Empty means search PATH.
 	VirtiofsdBin string
 
-	// SnapshotsDir is the directory for VM memory snapshots (Linux/CH only).
+	// SnapshotsDir is the directory for VM memory snapshots (Linux only).
 	SnapshotsDir string
 }
 
