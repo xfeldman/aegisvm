@@ -24,6 +24,12 @@ type Manifest struct {
 	Description string `json:"description"`
 	Usage       string `json:"usage,omitempty"`
 
+	// RequiredSecrets declares secrets needed by this kit. Each element is a
+	// group of alternatives — at least one secret from each group must be
+	// passed via the secrets parameter. Example: [["OPENAI_API_KEY","ANTHROPIC_API_KEY"]]
+	// means either key satisfies the requirement.
+	RequiredSecrets [][]string `json:"required_secrets,omitempty"`
+
 	// InstanceDaemons lists binaries to spawn per enabled instance using this kit.
 	// aegisd manages their lifecycle: start on instance create/enable,
 	// stop on instance disable/delete, restart on crash with backoff.

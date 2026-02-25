@@ -288,7 +288,7 @@ var tools = []mcpTool{
 	},
 	{
 		Name:        "secret_list",
-		Description: "List all secret names (values are not returned).",
+		Description: "List all secret names (values are not returned). Use this to check which secrets are available before creating kit instances that require them.",
 		InputSchema: rawJSON(`{
 			"type": "object",
 			"properties": {}
@@ -307,7 +307,7 @@ var tools = []mcpTool{
 	},
 	{
 		Name:        "kit_list",
-		Description: "List installed kits. Kits are optional add-on bundles that provide preset configurations for instances (command, image, capabilities). Use the kit name with instance_start's 'kit' parameter.",
+		Description: "List installed kits with their requirements. Returns each kit's description, required_secrets, usage instructions, and defaults. Always call this before creating a kit instance to discover what secrets and configuration it needs.",
 		InputSchema: rawJSON(`{
 			"type": "object",
 			"properties": {}
@@ -960,9 +960,11 @@ Key concepts:
 
 Kits:
 - Kits are optional add-on bundles that provide preset configurations for instances.
-- Use kit_list to see installed kits. Each kit provides a default command, image, and capabilities.
+- BEFORE creating a kit instance, call kit_list to check the kit's required_secrets and usage instructions. Then call secret_list to verify the required secrets are available.
 - Use instance_start with kit="<name>" to create an instance with kit defaults. Explicit parameters override.
-- Example: instance_start with kit="agent", name="my-agent", secrets=["OPENAI_API_KEY"] creates a messaging-driven LLM agent.
+- Always pass the kit's required_secrets via the secrets parameter — without them the instance will start but fail to operate (e.g. an agent kit without an LLM API key will reject all tether messages).
+- If the task involves creating or modifying files the user needs, pass workspace to mount their project directory.
+- Example: instance_start with kit="agent", name="my-agent", secrets=["OPENAI_API_KEY"], workspace="/path/to/project" creates a messaging-driven LLM agent with access to the project files.
 
 Tether — talk to an agent inside a VM:
 - Kit instances (--kit agent) run an LLM agent inside the VM that you can communicate with via tether.
@@ -974,6 +976,7 @@ Tether — talk to an agent inside a VM:
 When to use tether vs exec:
 - exec runs a shell command inside the VM and returns output. Good for one-off commands (ls, cat, pip install).
 - tether sends a message to the in-VM LLM agent and gets an intelligent response. Good for tasks that need reasoning, multi-step work, or conversation context.
+- If tether fails (e.g. "No LLM API key configured"), fix the root cause (recreate the instance with the correct secrets) rather than falling back to exec to do the agent's job manually.
 
 Tether conversation pattern:
   1. tether_send(instance="my-agent", text="Analyze the CSV file in /workspace/data.csv")
