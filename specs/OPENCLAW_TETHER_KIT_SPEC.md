@@ -14,6 +14,18 @@ Instead of running two competing channel stacks, we bridge them: a custom OpenCl
 
 A critical benefit: **AegisVM's gateway runs on the host**, outside the VM. This means it survives VM pause/stop/restart and enables wake-on-message for all channels. OpenClaw's built-in channels run inside the VM — when the VM pauses, the channels die. By routing all messaging through our gateway and tether, we get proper power management for free: VM pauses when idle, wakes on any inbound message from any channel.
 
+### Workspace is required
+
+The OpenClaw kit requires `--workspace` on instance creation. Without it, nothing works:
+- **OpenClaw config and state** live in the workspace (`/workspace/.openclaw/`)
+- **npm install cache** persists across restarts via workspace (`/workspace/.npm-global/`)
+- **Image blob store** uses workspace (`/workspace/.aegis/blobs/`)
+- **Semantic memory** stores vectors in workspace (`/workspace/.openclaw/memory/`)
+- **Canvas output** writes to workspace (`/workspace/canvas/`)
+- **Session transcripts** persist in workspace
+
+If `instance_start` is called with `kit="openclaw"` but no `--workspace`, the MCP server / CLI should return an error: `"openclaw kit requires --workspace"`.
+
 ---
 
 ## 2. Architecture
@@ -89,7 +101,30 @@ An OpenClaw channel extension (~300-500 lines of TypeScript) that runs in-proces
 - Implements the channel monitor pattern (normalize, route, deliver)
 - Runs in-process — no WebSocket hop, no IPC
 
-### Design principle: keep the bridge dumb
+### Why channel extension (not WebSocket client)
+
+| | Channel extension (chosen) | WebSocket client (rejected) |
+|---|---|---|
+| **API surface** | Channel monitor pattern — same interface OpenClaw's own Telegram/Slack/Discord use | Client protocol — designed for human-facing apps (CLI, mobile) |
+| **Stability** | OpenClaw can't break it without breaking their own bundled channels | Can change for UX reasons unrelated to us |
+| **Coupling** | Documented, versioned via npm, discoverable from `node_modules` | Reverse-engineered from source, undocumented |
+| **Process model** | In-process with gateway — no extra process, no WebSocket hop | Separate process + WebSocket connection |
+| **Media handling** | Built into channel API (normalized media attachments) | Must re-implement media serialization |
+
+### Package structure
+
+```
+@aegis/openclaw-channel-aegis/
+  package.json          ← declares as OpenClaw extension (channel type)
+  src/
+    index.ts            ← channel monitor: tether HTTP ↔ InboundContext
+    tether.ts           ← tether frame send/receive helpers
+  dist/                 ← compiled JS
+```
+
+Installed alongside OpenClaw at first boot. Auto-discovered by OpenClaw gateway at startup via `package.json` metadata — no manual registration needed beyond `channels.aegis.enabled: true` in config.
+
+### Design principle: keep the extension dumb
 
 The bridge is a strict adapter — no platform logic, no rate limiting, no retries, no buffering, minimal session mapping. If policy is needed (throttling, dedupe, buffering), it belongs in aegis-gateway (host) or aegisd tether store, not in the bridge. This keeps the guest side easy to restart and stateless.
 
@@ -135,12 +170,18 @@ This is critical for cold boot: the gateway may have queued messages while the V
 
 ### Session mapping
 
-| Tether session | OpenClaw session |
-|---------------|-----------------|
+**The tether session is the single source of truth for session identity.** The OpenClaw session ID is derived from it — never the other way around. The channel extension computes the OpenClaw session key deterministically from the tether session:
+
+```
+OpenClaw session = "agent:default:aegis:dm:" + session.channel + "_" + session.id
+```
+
+| Tether session (authoritative) | OpenClaw session (derived) |
+|-------------------------------|---------------------------|
 | `{channel: "telegram", id: "12345"}` | `agent:default:aegis:dm:telegram_12345` |
 | `{channel: "host", id: "default"}` | `agent:default:aegis:dm:host_default` |
 
-Each tether session maps to a unique OpenClaw session. Session history persists in OpenClaw's JSONL transcripts at `/workspace/.openclaw/.openclaw/agents/default/sessions/`.
+The gateway and tether store own session lifecycle. OpenClaw just stores conversation history under the derived key. Session history persists in OpenClaw's JSONL transcripts at `/workspace/.openclaw/.openclaw/agents/default/sessions/`.
 
 ---
 
@@ -174,117 +215,21 @@ The kit pre-sets OpenClaw configuration to match AegisVM's architecture. The use
 | **Custom skills** | User adds to `/workspace/.openclaw/workspace/skills/`, OpenClaw discovers automatically |
 | **AGENTS.md / SOUL.md** | User can customize agent identity by placing files in workspace |
 
-### 4.3 Pre-set identity files
+### 4.3 Pre-set identity and MCP integration
 
-The bridge writes default identity files if they don't exist:
+Bootstrap writes two additional files (if missing) to give the agent AegisVM awareness:
 
-**`/workspace/.openclaw/.openclaw/AGENTS.md`:**
-```markdown
-You are an AI assistant running inside an isolated AegisVM microVM.
+- **`AGENTS.md`** — default agent identity describing the VM environment, workspace, and available Aegis orchestration tools. User can edit to customize.
+- **`mcp.json`** — registers `aegis-mcp-guest` as an MCP tool server, giving the OpenClaw agent access to `instance_spawn`, `instance_list`, `instance_stop`, `expose_port`, etc.
 
-Your workspace is at /workspace/ — files here are shared with the host and persist across restarts.
+See section 5 (Kit Manifest → Bootstrap) for the exact file contents and generation logic.
 
-You have access to Aegis MCP tools for infrastructure orchestration:
-- Spawn child VMs for isolated workloads (instance_spawn)
-- List and manage running instances (instance_list, instance_stop)
-- Expose ports from child instances (expose_port)
-
-Use child VMs for heavy or risky tasks — your own VM is the "bot" tier.
-```
-
-User can override by editing the file — the bridge only writes if missing.
-
-### 4.4 MCP integration: aegis-mcp-guest
-
-OpenClaw supports MCP tool servers. The kit registers aegis-mcp-guest (already injected by the harness into every VM) so the OpenClaw agent can use Aegis orchestration tools:
-
-**`/workspace/.openclaw/.openclaw/mcp.json`** (or equivalent OpenClaw MCP config):
-```json
-{
-  "mcpServers": {
-    "aegis": {
-      "command": "aegis-mcp-guest",
-      "args": [],
-      "description": "AegisVM guest tools — spawn child VMs, manage instances, expose ports"
-    }
-  }
-}
-```
-
-This gives the OpenClaw agent access to `instance_spawn`, `instance_list`, `instance_stop`, `expose_port`, `self_info`, etc. — the same tools available to the lightweight agent kit, but now wielded by OpenClaw's richer reasoning engine.
-
-### 4.5 Generated `openclaw.json`
-
-```json
-{
-  "gateway": {
-    "port": 18789,
-    "mode": "local",
-    "bind": "loopback"
-  },
-  "agents": {
-    "defaults": {
-      "model": {"primary": "${MODEL_FROM_SECRETS}"},
-      "workspace": "/workspace",
-      "maxConcurrent": 4,
-      "tools": {
-        "allow": ["*"]
-      },
-      "sandbox": {"mode": "off"},
-      "compaction": {"mode": "safeguard"},
-      "canvas": {
-        "outputDir": "/workspace/canvas"
-      }
-    }
-  },
-  "memory": {
-    "dataDir": "/workspace/.openclaw/memory",
-    "embedding": {
-      "provider": "${EMBEDDING_PROVIDER_FROM_SECRETS}"
-    }
-  },
-  "channels": {},
-  "plugins": {
-    "entries": {}
-  }
-}
-```
-
-Model auto-detection:
-- `ANTHROPIC_API_KEY` set → `"anthropic/claude-sonnet-4-20250514"`, embedding provider `"anthropic"`
-- `OPENAI_API_KEY` set → `"openai/gpt-4o"`, embedding provider `"openai"`
-- Both set → prefer Anthropic (consistent with agent kit behavior)
-
-### 4.6 Auth profiles
-
-Generated at boot from Aegis secrets — always rewritten (secrets may change between restarts):
-
-```json
-{
-  "version": 1,
-  "profiles": {
-    "anthropic:default": {
-      "type": "api_key",
-      "provider": "anthropic",
-      "key": "${ANTHROPIC_API_KEY}"
-    },
-    "openai:default": {
-      "type": "api_key",
-      "provider": "openai",
-      "key": "${OPENAI_API_KEY}"
-    }
-  }
-}
-```
-
-Only profiles for available secrets are written. Missing keys → profile omitted.
-
-### 4.7 Environment
+### 4.4 Environment
 
 ```sh
 HOME=/workspace
 OPENCLAW_HOME=/workspace/.openclaw
-NODE_OPTIONS="--max-old-space-size=384"   # conservative for bot tier
+NODE_OPTIONS="--max-old-space-size=384"
 npm_config_prefix=/workspace/.npm-global
 PATH=/workspace/.npm-global/bin:$PATH
 ```
@@ -333,37 +278,167 @@ The kit manifest's `defaults.command` declares the main process — the harness 
 
 For the OpenClaw kit, a thin bootstrap script (`aegis-claw-bootstrap`) handles first-boot setup (npm install, config generation) then `exec`s into the OpenClaw gateway process. The tether bridge is an OpenClaw channel extension — an npm package loaded in-process by the gateway, not a separate binary.
 
-**`aegis-claw-bootstrap`** (injected shell script):
-```sh
-#!/bin/sh
-set -e
+**`aegis-claw-bootstrap`** is a small Go binary (injected into rootfs like `aegis-agent`). It handles first-boot setup, generates OpenClaw configuration from Aegis environment, and `exec`s into the OpenClaw gateway process. After exec, it's gone — OpenClaw is the main process.
 
-export HOME=/workspace
-export OPENCLAW_HOME=/workspace/.openclaw
-export NODE_OPTIONS="--max-old-space-size=384"
-export npm_config_prefix=/workspace/.npm-global
-export PATH=/workspace/.npm-global/bin:$PATH
+Go is the right choice here: it's a static binary (no Node.js dependency for bootstrap), it can generate JSON cleanly, and it matches the existing pattern (`aegis-agent`, `aegis-harness` are all Go binaries injected into the rootfs).
 
-# First-boot: install OpenClaw + tether channel extension
-if [ ! -f /workspace/.npm-global/bin/openclaw ]; then
-  npm install -g openclaw@0.2.x @aegis/openclaw-channel-aegis
-fi
+### What bootstrap does
 
-# Generate config from env vars (idempotent)
-aegis-claw-config  # helper that writes openclaw.json, auth-profiles.json, AGENTS.md, mcp.json
-
-# Hand off to OpenClaw — it becomes the main process
-exec openclaw gateway --allow-unconfigured
+```
+aegis-claw-bootstrap
+  │
+  ├─ 1. Set environment
+  │     HOME=/workspace
+  │     OPENCLAW_HOME=/workspace/.openclaw
+  │     NODE_OPTIONS="--max-old-space-size=384"
+  │     npm_config_prefix=/workspace/.npm-global
+  │     PATH=/workspace/.npm-global/bin:$PATH
+  │
+  ├─ 2. First-boot install (if /workspace/.npm-global/bin/openclaw missing)
+  │     exec: npm install -g openclaw@0.2.19 @aegis/openclaw-channel-aegis
+  │
+  ├─ 3. Generate config files
+  │
+  └─ 4. exec openclaw gateway --allow-unconfigured
+        (bootstrap process replaced by OpenClaw)
 ```
 
-After `exec`, the process tree is:
+### Config generation mechanism
+
+**Input:** Environment variables (Aegis secrets) + embedded templates (`go:embed`)
+
+**Output:** Files in `/workspace/.openclaw/.openclaw/` (OpenClaw config dir)
+
+**How it works:** The bootstrap binary embeds config templates as Go `embed` files. At runtime, it reads env vars, applies simple substitutions (model name, API keys), and writes the results to the workspace. This is the same pattern as `aegis-agent` embedding its `defaultSystemPrompt` — the kit's opinions are compiled into the binary, versioned with the kit release.
+
+```go
+//go:embed templates/openclaw.json.tmpl
+var openclawConfigTmpl string
+
+//go:embed templates/agents.md
+var agentsMdDefault string
+
+//go:embed templates/mcp.json
+var mcpConfigDefault string
+```
+
+The templates are plain JSON/Markdown with `{{.Model}}`, `{{.EmbeddingProvider}}` style placeholders — Go's `text/template`. Minimal logic, maximum transparency.
+
+**Write rules:**
+
+| File | Rule | Why |
+|------|------|-----|
+| `openclaw.json` | Write if missing | User may customize after first boot |
+| `credentials/auth-profiles.json` | Always rewrite | Secrets may rotate between restarts |
+| `AGENTS.md` | Write if missing | User may customize agent identity |
+| `mcp.json` | Write if missing | User may add more MCP servers |
+
+If a user pre-populates any of these files in the workspace before first boot, bootstrap respects them — write-if-missing means "don't clobber."
+
+### Config files
+
+#### File 1: `openclaw.json` (write if missing)
+
+Template with two substitutions: `{{.Model}}` and `{{.EmbeddingProvider}}`.
+
+```json
+{
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "loopback"
+  },
+  "agents": {
+    "defaults": {
+      "model": {"primary": "{{.Model}}"},
+      "workspace": "/workspace",
+      "maxConcurrent": 4,
+      "tools": {"allow": ["*"]},
+      "sandbox": {"mode": "off"},
+      "compaction": {"mode": "safeguard"},
+      "canvas": {"outputDir": "/workspace/canvas"}
+    }
+  },
+  "memory": {
+    "dataDir": "/workspace/.openclaw/memory",
+    "embedding": {"provider": "{{.EmbeddingProvider}}"}
+  },
+  "channels": {
+    "aegis": {"enabled": true}
+  },
+  "plugins": {"entries": {}}
+}
+```
+
+Substitution logic:
+- `ANTHROPIC_API_KEY` present → Model `"anthropic/claude-sonnet-4-20250514"`, EmbeddingProvider `"anthropic"`
+- `OPENAI_API_KEY` present → Model `"openai/gpt-4o"`, EmbeddingProvider `"openai"`
+- Both → prefer Anthropic
+
+Everything else in the template is static — the kit's opinion, baked in.
+
+#### File 2: `credentials/auth-profiles.json` (always rewrite)
+
+Not templated — built programmatically from env. Bootstrap scans for known key env vars and emits matching profiles:
+
+```go
+profiles := map[string]interface{}{}
+if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+    profiles["anthropic:default"] = map[string]string{
+        "type": "api_key", "provider": "anthropic", "key": key,
+    }
+}
+if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+    profiles["openai:default"] = map[string]string{
+        "type": "api_key", "provider": "openai", "key": key,
+    }
+}
+writeJSON(authProfilesPath, map[string]interface{}{"version": 1, "profiles": profiles})
+```
+
+Always rewritten — secrets may have been rotated via `aegis secret set` between restarts.
+
+#### File 3: `AGENTS.md` (write if missing)
+
+Static embedded file, no substitutions:
+
+```markdown
+You are an AI assistant running inside an isolated AegisVM microVM.
+
+Your workspace is at /workspace/ — files here are shared with the host and persist across restarts.
+
+You have access to Aegis MCP tools for infrastructure orchestration:
+- Spawn child VMs for isolated workloads (instance_spawn)
+- List and manage running instances (instance_list, instance_stop)
+- Expose ports from child instances (expose_port)
+
+Use child VMs for heavy or risky tasks — your own VM is the "bot" tier.
+```
+
+#### File 4: `mcp.json` (write if missing)
+
+Static embedded file, no substitutions:
+
+```json
+{
+  "mcpServers": {
+    "aegis": {
+      "command": "aegis-mcp-guest",
+      "args": []
+    }
+  }
+}
+```
+
+### After exec
+
 ```
 harness (PID 1) → openclaw gateway (main process)
                      └─ @aegis/openclaw-channel-aegis (in-process plugin, listens :7778)
                      └─ Pi Agent (in-process, spawned per session)
 ```
 
-No bridge process. No wrapper. OpenClaw IS the main process. The tether channel extension runs inside it.
+No bootstrap process. No wrapper. OpenClaw IS the main process. The tether channel extension runs inside it.
 
 ### Key differences from agent kit
 
@@ -388,7 +463,7 @@ No bridge process. No wrapper. OpenClaw IS the main process. The tether channel 
 aegis-claw-bootstrap starts (PID from harness)
   │
   ├─ 1. Check /workspace/.npm-global/bin/openclaw
-  │     If missing: npm install -g openclaw@0.2.x @aegis/openclaw-channel-aegis (~60s first time)
+  │     If missing: npm install -g openclaw@0.2.19 @aegis/openclaw-channel-aegis (~60s first time)
   │
   ├─ 2. Generate OpenClaw config from env vars (aegis-claw-config helper)
   │     Write openclaw.json (if not exists — includes channels.aegis.enabled: true)
@@ -421,72 +496,21 @@ The npm install cost is amortized over the lifetime of the instance. On Mac, ins
 
 ### Versioning
 
-**v0.1:** Pin `openclaw@0.2.x` (or whatever the current stable semver range is). Bridge checks installed version at boot — if outside pinned range, reinstalls.
+**v0.1:** Pin exact version with integrity check. Bootstrap verifies the installed version matches and reinstalls if it drifts:
 
-**v0.2:** Publish a pre-built OCI image (`aegis-openclaw:0.2`) with OpenClaw pre-installed. Eliminates npm install entirely. Kit manifest changes `image.base` from `node:22-alpine` to `aegis-openclaw:0.2`.
-
----
-
-## 7. Bridge Implementation: OpenClaw Channel Extension
-
-The bridge is an OpenClaw channel extension (`@aegis/openclaw-channel-aegis`) — an npm package that registers as a custom channel inside the OpenClaw gateway process.
-
-### Why channel extension, not WebSocket client
-
-| | Channel extension (chosen) | WebSocket client (rejected) |
-|---|---|---|
-| **API surface** | Channel monitor pattern — same interface OpenClaw's own Telegram/Slack/Discord use | Client protocol — designed for human-facing apps (CLI, mobile) |
-| **Stability** | OpenClaw can't break it without breaking their own bundled channels | Can change for UX reasons unrelated to us |
-| **Coupling** | Documented, versioned via npm, discoverable from `node_modules` | Reverse-engineered from source, undocumented |
-| **Process model** | In-process with gateway — no extra process, no WebSocket hop | Separate process + WebSocket connection |
-| **Media handling** | Built into channel API (normalized media attachments) | Must re-implement media serialization |
-| **Streaming** | Channel delivery callback gives us response chunks natively | Must parse WS frames and reconstruct streaming |
-
-The channel extension API is OpenClaw's core abstraction for messaging. Every bundled channel depends on it. It's the most stable surface to couple to.
-
-### Package structure
-
-```
-@aegis/openclaw-channel-aegis/
-  package.json          ← declares as OpenClaw extension (channel type)
-  src/
-    index.ts            ← channel monitor: tether HTTP ↔ InboundContext
-    tether.ts           ← tether frame send/receive helpers
-  dist/                 ← compiled JS
-```
-
-Installed into the OpenClaw environment at boot:
 ```sh
-npm install -g @aegis/openclaw-channel-aegis
+OPENCLAW_VERSION="0.2.19"
+OPENCLAW_SHA="sha512-<integrity-hash>"
+npm install -g "openclaw@${OPENCLAW_VERSION}" --integrity="${OPENCLAW_SHA}"
 ```
 
-Or bundled directly into the pre-built image (v0.2).
+Exact pinning prevents silent breakage from upstream changes. The pinned version and hash are compiled into the bootstrap binary and updated explicitly when we test a new OpenClaw release.
 
-### Registration
-
-The extension auto-registers when its npm package is present in `node_modules/@aegis/`. OpenClaw discovers extensions at gateway startup via `package.json` metadata. No manual config needed — the bridge writes a minimal channel config section:
-
-```json
-{
-  "channels": {
-    "aegis": {
-      "enabled": true
-    }
-  }
-}
-```
-
-### What the channel monitor does
-
-1. **Startup:** Opens HTTP server on `:7778` (tether recv endpoint)
-2. **Ingress:** Receives tether `user.message` → normalizes to `InboundContext` → dispatches to OpenClaw auto-reply
-3. **Egress:** Receives OpenClaw response via channel delivery callback → emits tether `assistant.delta` / `assistant.done` frames
-4. **Media:** Reads image blobs from workspace for ingress, writes blobs for egress
-5. **Health:** Sends `status.ready` tether frame once OpenClaw gateway is fully initialized
+**v0.2:** Publish a pre-built OCI image (`aegis-openclaw:0.2.19`) with OpenClaw pre-installed. Eliminates npm install entirely. Kit manifest changes `image.base` from `node:22-alpine` to `aegis-openclaw:0.2.19`.
 
 ---
 
-## 8. Image Support Through the Bridge
+## 7. Image Support Through the Extension
 
 Images flow through the existing blob store — no base64 in tether frames.
 
@@ -508,7 +532,7 @@ Images flow through the existing blob store — no base64 in tether frames.
 
 ---
 
-## 9. Workspace Layout
+## 8. Workspace Layout
 
 ```
 /workspace/                              ← Aegis workspace mount (shared with host, persists)
@@ -531,7 +555,7 @@ Images flow through the existing blob store — no base64 in tether frames.
 
 ---
 
-## 10. Guest Orchestration
+## 9. Guest Orchestration
 
 OpenClaw kit inherits the same guest orchestration as the agent kit. The bridge (or OpenClaw tools) can spawn child VMs via aegis-mcp-guest tools:
 
@@ -543,7 +567,7 @@ OpenClaw's built-in `exec` and `bash` tools run inside the OpenClaw VM. For isol
 
 ---
 
-## 11. Lifecycle & Power Model
+## 10. Lifecycle & Power Model
 
 The gateway-on-host architecture enables proper power management that OpenClaw standalone cannot achieve.
 
@@ -572,7 +596,7 @@ When the VM is paused/stopped, inbound tether frames accumulate in aegisd's teth
 
 ---
 
-## 12. What Changes in AegisVM Core
+## 11. What Changes in AegisVM Core
 
 **Nothing.** The bridge is a guest binary, injected like aegis-agent. The kit manifest uses existing fields. Tether, blob store, gateway, harness — all unchanged.
 
@@ -582,12 +606,14 @@ New artifacts to build:
 
 ---
 
-## 13. Decisions Made
+## 12. Decisions Made
 
 | Question | Decision | Rationale |
 |----------|----------|-----------|
 | **Bridge approach** | OpenClaw channel extension (Option B) | Same API surface as bundled channels — documented, versioned, can't break without breaking Telegram/Slack/etc. In-process, no WebSocket hop. |
-| **Version pinning** | Pin to semver range (e.g., `openclaw@0.2.x`) | Breakage looks like "Aegis is flaky." Explicit upgrade path later. |
+| **Version pinning** | Pin exact version + integrity hash (`openclaw@0.2.19 --integrity=sha512-...`) | Breakage looks like "Aegis is flaky." No silent drift. |
+| **Workspace** | Required for openclaw kit | Config, npm cache, blobs, memory, canvas, sessions all need persistent writable storage. |
+| **Session authority** | Tether session is source of truth, OpenClaw session derived | Gateway and tether store own session lifecycle; OpenClaw just stores history. |
 | **Pre-built image** | v0.1: npm install at first boot. v0.2: publish pinned image. | First boot only happens once per instance lifetime. Acceptable for v0.1. |
 | **Bridge language** | Node.js (TypeScript) | Natural for OpenClaw ecosystem. Bridge talks WS to OpenClaw, HTTP to harness. |
 | **Auth sync** | Write at boot from env vars | Simple, sufficient. Secrets don't change while VM is running. |
@@ -595,7 +621,7 @@ New artifacts to build:
 
 ---
 
-## 14. Open Questions
+## 13. Open Questions
 
 1. **OpenClaw WebSocket client protocol:** Need to map the exact message format for Option A. The CLI and mobile apps use it — reverse-engineer from TypeScript source (`src/gateway/`) or find documentation.
 
@@ -607,7 +633,7 @@ New artifacts to build:
 
 ---
 
-## 15. Comparison with Previous Specs
+## 14. Comparison with Previous Specs
 
 | Aspect | Previous specs (standalone) | This spec (tether bridge) |
 |--------|---------------------------|--------------------------|
