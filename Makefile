@@ -51,7 +51,7 @@ else
 ALL_TARGETS := aegisd aegis harness vmm-worker mcp mcp-guest gateway agent
 endif
 
-.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent base-rootfs clean test test-unit test-m2 test-m3 test-network integration install-kit release-tarball release-kit-tarball cloud-hypervisor kernel kernel-build
+.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent base-rootfs clean test test-unit test-m2 test-m3 test-network integration install-kit release-tarball release-kit-tarball cloud-hypervisor kernel kernel-build deb deb-agent-kit release-linux-tarball
 
 all: $(ALL_TARGETS)
 
@@ -262,6 +262,60 @@ release-kit-tarball: gateway agent
 	tar czf aegisvm-agent-kit-$(VERSION)-darwin-arm64.tar.gz -C /tmp/agent-kit-staging \
 		aegis-gateway aegis-agent agent.json
 	@rm -rf /tmp/agent-kit-staging
+
+# Linux .deb packages
+# Rebuilds binaries with system shareDir, then packages with debian/Makefile.
+# Requires: all binaries built, cloud-hypervisor downloaded, kernel downloaded.
+DEB_LDFLAGS := -X $(VERSION_PKG).version=$(VERSION) -X $(KIT_PKG).shareDir=/usr/share/aegisvm/kits
+DEB_GOFLAGS := -trimpath -ldflags "$(DEB_LDFLAGS)"
+
+deb: $(ALL_TARGETS)
+	@echo "==> Rebuilding binaries with system paths for .deb..."
+	CGO_ENABLED=0 $(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis ./cmd/aegis
+	CGO_ENABLED=0 $(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegisd ./cmd/aegisd
+	CGO_ENABLED=0 $(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis-mcp ./cmd/aegis-mcp
+	GOOS=$(HARNESS_OS) GOARCH=$(HARNESS_ARCH) CGO_ENABLED=0 \
+		$(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis-harness ./cmd/aegis-harness
+	GOOS=$(HARNESS_OS) GOARCH=$(HARNESS_ARCH) CGO_ENABLED=0 \
+		$(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis-mcp-guest ./cmd/aegis-mcp-guest
+	$(MAKE) -C debian aegisvm \
+		VERSION=$(VERSION) ARCH=$(HOST_ARCH) BIN_DIR=../$(BIN_DIR) KITS_DIR=../kits
+
+deb-agent-kit: gateway agent
+	@echo "==> Rebuilding agent kit binaries with system paths for .deb..."
+	CGO_ENABLED=0 $(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis-gateway ./cmd/aegis-gateway
+	GOOS=$(HARNESS_OS) GOARCH=$(HARNESS_ARCH) CGO_ENABLED=0 \
+		$(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis-agent ./cmd/aegis-agent
+	$(MAKE) -C debian aegisvm-agent-kit \
+		VERSION=$(VERSION) ARCH=$(HOST_ARCH) BIN_DIR=../$(BIN_DIR) KITS_DIR=../kits
+
+# Linux release tarball (alternative to .deb for non-apt users)
+release-linux-tarball: $(ALL_TARGETS) gateway agent
+	@echo "==> Rebuilding binaries with system paths for tarball..."
+	CGO_ENABLED=0 $(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis ./cmd/aegis
+	CGO_ENABLED=0 $(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegisd ./cmd/aegisd
+	CGO_ENABLED=0 $(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis-mcp ./cmd/aegis-mcp
+	GOOS=$(HARNESS_OS) GOARCH=$(HARNESS_ARCH) CGO_ENABLED=0 \
+		$(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis-harness ./cmd/aegis-harness
+	GOOS=$(HARNESS_OS) GOARCH=$(HARNESS_ARCH) CGO_ENABLED=0 \
+		$(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis-mcp-guest ./cmd/aegis-mcp-guest
+	CGO_ENABLED=0 $(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis-gateway ./cmd/aegis-gateway
+	GOOS=$(HARNESS_OS) GOARCH=$(HARNESS_ARCH) CGO_ENABLED=0 \
+		$(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis-agent ./cmd/aegis-agent
+	@mkdir -p /tmp/aegisvm-tarball-staging/{bin,lib,share/kernel,share/kits}
+	cp $(BIN_DIR)/aegis $(BIN_DIR)/aegisd $(BIN_DIR)/aegis-mcp \
+		/tmp/aegisvm-tarball-staging/bin/
+	cp $(BIN_DIR)/aegis-harness $(BIN_DIR)/aegis-mcp-guest \
+		$(BIN_DIR)/cloud-hypervisor $(BIN_DIR)/ch-remote \
+		$(BIN_DIR)/aegis-gateway $(BIN_DIR)/aegis-agent \
+		/tmp/aegisvm-tarball-staging/lib/
+	cp $(HOME)/.aegis/kernel/vmlinux /tmp/aegisvm-tarball-staging/share/kernel/
+	sed 's/"version": *"[^"]*"/"version": "$(VERSION)"/' kits/agent.json \
+		> /tmp/aegisvm-tarball-staging/share/kits/agent.json
+	tar czf aegisvm-$(VERSION)-linux-$(HOST_ARCH).tar.gz \
+		-C /tmp/aegisvm-tarball-staging bin lib share
+	@rm -rf /tmp/aegisvm-tarball-staging
+	@echo "==> Built aegisvm-$(VERSION)-linux-$(HOST_ARCH).tar.gz"
 
 # Install kit manifests for development (stamps git version into manifest)
 install-kit:

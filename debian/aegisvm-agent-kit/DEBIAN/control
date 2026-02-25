@@ -1,0 +1,11 @@
+Package: aegisvm-agent-kit
+Version: __VERSION__
+Section: devel
+Priority: optional
+Architecture: __ARCH__
+Depends: aegisvm (>= __VERSION__)
+Maintainer: AegisVM <aegisvm@xfeldman.dev>
+Homepage: https://github.com/xfeldman/aegisvm
+Description: Agent kit for AegisVM — messaging-driven LLM agent
+ Adds the agent kit to AegisVM: a messaging-driven LLM agent with
+ Telegram integration, host-side gateway, and guest agent runtime.

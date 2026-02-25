@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+if [ ! -e /dev/kvm ]; then
+    echo "WARNING: /dev/kvm not found."
+    echo "AegisVM requires KVM for hardware-accelerated VMs."
+    echo "Ensure your kernel has KVM support and load the module:"
+    echo "  sudo modprobe kvm"
+    echo "  sudo modprobe kvm_intel  # or kvm_amd"
+fi
+
+exit 0

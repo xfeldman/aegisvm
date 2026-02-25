@@ -1,0 +1,12 @@
+Package: aegisvm
+Version: __VERSION__
+Section: devel
+Priority: optional
+Architecture: __ARCH__
+Depends: virtiofsd, e2fsprogs, iptables, iproute2
+Maintainer: AegisVM <aegisvm@xfeldman.dev>
+Homepage: https://github.com/xfeldman/aegisvm
+Description: Local agent runtime platform using isolated microVMs
+ AegisVM runs AI agent workloads inside isolated Linux microVMs.
+ Includes aegisd daemon, aegis CLI, Cloud Hypervisor VMM, and
+ a prebuilt microVM kernel.

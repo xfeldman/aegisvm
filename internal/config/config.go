@@ -89,6 +89,17 @@ func DefaultConfig() *Config {
 		baseRootfs = filepath.Join(aegisDir, "base-rootfs.ext4")
 	}
 
+	// Kernel path: prefer user-local, fall back to system package path
+	kernelPath := filepath.Join(aegisDir, "kernel", "vmlinux")
+	if runtime.GOOS == "linux" {
+		if _, err := os.Stat(kernelPath); err != nil {
+			sysKernel := "/usr/share/aegisvm/kernel/vmlinux"
+			if _, err := os.Stat(sysKernel); err == nil {
+				kernelPath = sysKernel
+			}
+		}
+	}
+
 	return &Config{
 		DataDir:            filepath.Join(aegisDir, "data"),
 		BinDir:             execDir,
@@ -106,7 +117,7 @@ func DefaultConfig() *Config {
 		PauseAfterIdle:     60 * time.Second,
 		StopAfterIdle:      5 * time.Minute,
 		NetworkBackend:     "auto",
-		KernelPath:         filepath.Join(aegisDir, "kernel", "vmlinux"),
+		KernelPath:         kernelPath,
 		SnapshotsDir:       filepath.Join(aegisDir, "data", "snapshots"),
 	}
 }
@@ -190,7 +201,7 @@ func FindBinary(name string, binDir string) string {
 	}
 
 	// 3. Known system paths
-	for _, dir := range []string{"/usr/libexec", "/usr/local/bin"} {
+	for _, dir := range []string{"/usr/lib/aegisvm", "/usr/libexec", "/usr/local/bin"} {
 		p := filepath.Join(dir, name)
 		if _, err := os.Stat(p); err == nil {
 			return p

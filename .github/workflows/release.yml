@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  release-macos:
     runs-on: macos-14  # M-series ARM64
     steps:
       - uses: actions/checkout@v4
@@ -88,3 +88,68 @@ jobs:
           git add Formula/aegisvm.rb Formula/aegisvm-agent-kit.rb
           git commit -m "${VERSION}"
           git push
+
+  release-linux:
+    needs: release-macos  # release must exist before we upload to it
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: false
+
+      - name: Set version from tag
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+
+      - name: Build all binaries
+        run: make all VERSION=${VERSION}
+
+      - name: Run tests
+        run: make test
+
+      - name: Download Cloud Hypervisor
+        run: make cloud-hypervisor
+
+      - name: Download microVM kernel
+        run: make kernel
+
+      - name: Build .deb packages
+        run: |
+          make deb VERSION=${VERSION}
+          make deb-agent-kit VERSION=${VERSION}
+
+      - name: Build Linux tarball
+        run: make release-linux-tarball VERSION=${VERSION}
+
+      - name: Create unversioned .deb copies (latest)
+        run: |
+          cp debian/aegisvm_${VERSION}_amd64.deb aegisvm.deb
+          cp debian/aegisvm-agent-kit_${VERSION}_amd64.deb aegisvm-agent-kit.deb
+
+      - name: Generate checksums
+        run: |
+          sha256sum debian/aegisvm_${VERSION}_amd64.deb | awk '{print $1}' > debian/aegisvm_${VERSION}_amd64.deb.sha256
+          sha256sum debian/aegisvm-agent-kit_${VERSION}_amd64.deb | awk '{print $1}' > debian/aegisvm-agent-kit_${VERSION}_amd64.deb.sha256
+          sha256sum aegisvm.deb | awk '{print $1}' > aegisvm.deb.sha256
+          sha256sum aegisvm-agent-kit.deb | awk '{print $1}' > aegisvm-agent-kit.deb.sha256
+          sha256sum aegisvm-${VERSION}-linux-amd64.tar.gz | awk '{print $1}' > aegisvm-${VERSION}-linux-amd64.tar.gz.sha256
+
+      - name: Upload Linux artifacts to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${VERSION}" \
+            debian/aegisvm_${VERSION}_amd64.deb \
+            debian/aegisvm_${VERSION}_amd64.deb.sha256 \
+            debian/aegisvm-agent-kit_${VERSION}_amd64.deb \
+            debian/aegisvm-agent-kit_${VERSION}_amd64.deb.sha256 \
+            aegisvm.deb \
+            aegisvm.deb.sha256 \
+            aegisvm-agent-kit.deb \
+            aegisvm-agent-kit.deb.sha256 \
+            aegisvm-${VERSION}-linux-amd64.tar.gz \
+            aegisvm-${VERSION}-linux-amd64.tar.gz.sha256

@@ -18,12 +18,24 @@ Agent workloads don't fit containers or serverless. They run for minutes or hour
 
 ## Install
 
+### macOS (Homebrew)
+
 ```bash
 brew tap xfeldman/aegisvm
 brew install aegisvm
 ```
 
-Requires macOS ARM64 (Apple Silicon M1+).
+Requires Apple Silicon (M1+).
+
+### Linux (apt / .deb)
+
+```bash
+curl -sSL https://github.com/xfeldman/aegisvm/releases/latest/download/aegisvm.deb -o aegisvm.deb
+sudo dpkg -i aegisvm.deb
+sudo apt-get install -f    # pulls virtiofsd, e2fsprogs
+```
+
+Requires x86_64 or arm64 with KVM (`/dev/kvm`).
 
 ## Quick start
 
@@ -44,8 +56,15 @@ Agent Kit adds an LLM agent to AegisVM instances. Each agent runs in its own iso
 **Pair debugging across host + VM.** Run your backend inside a VM while a host-side agent and the in-VM agent collaborate over tether. You get live, interactive debugging with full isolation: the host agent can orchestrate, the VM agent can inspect the sandboxed runtime, and the VM still scale-to-zero when idle.
 
 ```bash
+# macOS
 brew install aegisvm-agent-kit
 
+# Linux
+curl -sSL https://github.com/xfeldman/aegisvm/releases/latest/download/aegisvm-agent-kit.deb -o aegisvm-agent-kit.deb
+sudo dpkg -i aegisvm-agent-kit.deb
+```
+
+```bash
 aegis secret set OPENAI_API_KEY sk-...
 aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
 ```
@@ -154,7 +173,7 @@ Host
     └── ...
 ```
 
-**libkrun** on macOS (Apple Hypervisor.framework), **Firecracker** on Linux (KVM). Same daemon, same harness, same CLI.
+**libkrun** on macOS (Apple Hypervisor.framework), **Cloud Hypervisor** on Linux (KVM). Same daemon, same harness, same CLI.
 
 ## Why not...
 
