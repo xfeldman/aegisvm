@@ -18,7 +18,7 @@ Components:
 - **aegis** (Go): CLI tool
 - **aegis-harness** (Go): guest control agent (PID 1 inside VMs, JSON-RPC server)
 - **aegis-mcp** (Go): MCP server for LLM integration (stdio JSON-RPC, talks to aegisd via unix socket)
-- **VMM Backend**: libkrun on macOS (Apple HVF), Firecracker on Linux (KVM)
+- **VMM Backend**: libkrun on macOS (Apple HVF), Cloud Hypervisor on Linux (KVM)
 - **Registry**: SQLite for persistent state (instances, secrets)
 - **Wire Protocol**: JSON-RPC 2.0 over vsock (control channel)
 - **Ingress**: Docker-style static port mapping (`--expose`), infrastructure config not app semantics

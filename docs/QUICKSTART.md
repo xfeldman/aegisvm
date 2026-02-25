@@ -347,5 +347,5 @@ rm -rf ~/.aegis
 
 - [AGENT_CONVENTIONS.md](AGENT_CONVENTIONS.md) -- conventions for building agents that run on AegisVM
 - [CLI.md](CLI.md) -- full CLI reference
-- [cloud-hypervisor-backend.md](cloud-hypervisor-backend.md) -- Linux backend architecture (for contributors)
+- [cloud-hypervisor-backend.md](../specs/cloud-hypervisor-backend.md) -- Linux backend architecture (for contributors)
 - `examples/` -- sample agents

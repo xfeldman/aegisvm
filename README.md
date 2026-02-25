@@ -161,7 +161,7 @@ Host
 ├── aegisd          daemon: API, lifecycle, router, VMM backend
 ├── aegis           CLI
 ├── aegis-mcp       MCP server for LLMs (host-side)
-└── VMM (libkrun / Firecracker)
+└── VMM (libkrun / Cloud Hypervisor)
     ├── VM 1: aegis-harness (PID 1) → user command
     ├── VM 2: aegis-harness (PID 1) → user command
     └── ...
@@ -175,7 +175,7 @@ Host
 
 **E2B** — Cloud-hosted sandboxes. Great if you want managed infrastructure, but your code runs on someone else's machines, your data leaves your network, and you pay per-second. AegisVM runs locally on your own hardware — zero latency to your local files, no API keys leaving the machine, no cloud bills. You own the box.
 
-**Firecracker directly** — Firecracker is a VMM, not a runtime. It gives you a VM. You still need to build rootfs images, manage networking, handle lifecycle, implement port mapping, build a control plane, and write a guest agent. AegisVM does all of that and gives you a single CLI.
+**Cloud Hypervisor / Firecracker directly** — These are VMMs, not runtimes. They give you a VM. You still need to build rootfs images, manage networking, handle lifecycle, implement port mapping, build a control plane, and write a guest agent. AegisVM does all of that and gives you a single CLI.
 
 **AWS Lambda / Cloud Functions** — Designed for stateless request-response, not long-running agents. Cold starts are seconds, not milliseconds. No persistent connections, no exposed ports, no local filesystem. Agent workloads need to maintain state, run for minutes or hours, and wake on various triggers — not just HTTP.
 
