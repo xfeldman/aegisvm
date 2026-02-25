@@ -76,19 +76,33 @@ All platform-specific work (downloading photos, sending typing indicators, editi
 
 ---
 
-## 3. The Tether Bridge (`aegis-claw-bridge`)
+## 3. The Tether Channel Extension (`@aegis/openclaw-channel-aegis`)
 
-A small Node.js process (~300-500 lines of TypeScript) that implements two interfaces:
+An OpenClaw channel extension (~300-500 lines of TypeScript) that runs in-process with the OpenClaw gateway. Not a separate process — it's an npm package that OpenClaw auto-discovers and loads at startup.
 
 **Tether side:** HTTP server on `:7778` (same endpoint as aegis-agent today)
 - Receives `POST /v1/tether/recv` with TetherFrame JSON
-- Routes `user.message` frames to OpenClaw
+- Routes `user.message` frames to OpenClaw auto-reply system
 - Sends `assistant.delta`, `assistant.done`, `status.presence` frames back to harness via `POST :7777/v1/tether/send`
 
-**OpenClaw side:** Custom channel plugin registered with OpenClaw gateway
+**OpenClaw side:** Registered as a channel monitor via extension metadata
 - Implements the channel monitor pattern (normalize, route, deliver)
-- Connects to OpenClaw gateway WebSocket on `ws://127.0.0.1:18789`
-- Or, if bundled as an OpenClaw extension, runs in-process (no WebSocket hop)
+- Runs in-process — no WebSocket hop, no IPC
+
+### Design principle: keep the bridge dumb
+
+The bridge is a strict adapter — no platform logic, no rate limiting, no retries, no buffering, minimal session mapping. If policy is needed (throttling, dedupe, buffering), it belongs in aegis-gateway (host) or aegisd tether store, not in the bridge. This keeps the guest side easy to restart and stateless.
+
+### Bridge health contract
+
+On startup, the bridge must signal readiness before accepting tether frames:
+
+1. Bridge boots, starts OpenClaw, waits for `ws://127.0.0.1:18789` to become reachable
+2. Bridge opens HTTP server on `:7778`
+3. Bridge sends `status.ready` frame to harness via `POST :7777/v1/tether/send`
+4. Harness (which already buffers tether frames during agent startup) begins draining queued frames
+
+This is critical for cold boot: the gateway may have queued messages while the VM was starting. Without a readiness signal, frames arrive before OpenClaw is ready and get dropped.
 
 ### Message flow: ingress (user → agent)
 
@@ -108,7 +122,7 @@ A small Node.js process (~300-500 lines of TypeScript) that implements two inter
 1. OpenClaw agent produces response (streamed via Pi Agent)
 2. Bridge receives response chunks from OpenClaw (streaming API or channel delivery callback)
 3. Bridge emits tether frames:
-   - Text chunks → `assistant.delta` frames (throttled, ~1/sec)
+   - Text chunks → `assistant.delta` frames
    - Final text → `assistant.done` frame
    - Tool execution → `status.presence` with tool name
 4. Harness forwards frames to aegisd → gateway/MCP
@@ -289,10 +303,10 @@ PATH=/workspace/.npm-global/bin:$PATH
   "instance_daemons": ["aegis-gateway"],
   "image": {
     "base": "node:22-alpine",
-    "inject": ["aegis-claw-bridge"]
+    "inject": ["aegis-claw-bootstrap"]
   },
   "defaults": {
-    "command": ["aegis-claw-bridge"],
+    "command": ["aegis-claw-bootstrap"],
     "memory_mb": 1024,
     "capabilities": {
       "spawn": true,
@@ -308,12 +322,56 @@ PATH=/workspace/.npm-global/bin:$PATH
 }
 ```
 
+### Main process model
+
+The kit manifest's `defaults.command` declares the main process — the harness runs it as the VM's primary workload. Each kit owns this decision:
+
+| Kit | `defaults.command` | Main process | Tether integration |
+|-----|-------------------|-------------|-------------------|
+| **agent** | `["aegis-agent"]` | Go binary, listens on `:7778` | Built-in (native tether HTTP) |
+| **openclaw** | `["aegis-claw-bootstrap"]` | Shell script → `exec openclaw gateway` | Via `@aegis/openclaw-channel-aegis` extension (in-process plugin) |
+
+For the OpenClaw kit, a thin bootstrap script (`aegis-claw-bootstrap`) handles first-boot setup (npm install, config generation) then `exec`s into the OpenClaw gateway process. The tether bridge is an OpenClaw channel extension — an npm package loaded in-process by the gateway, not a separate binary.
+
+**`aegis-claw-bootstrap`** (injected shell script):
+```sh
+#!/bin/sh
+set -e
+
+export HOME=/workspace
+export OPENCLAW_HOME=/workspace/.openclaw
+export NODE_OPTIONS="--max-old-space-size=384"
+export npm_config_prefix=/workspace/.npm-global
+export PATH=/workspace/.npm-global/bin:$PATH
+
+# First-boot: install OpenClaw + tether channel extension
+if [ ! -f /workspace/.npm-global/bin/openclaw ]; then
+  npm install -g openclaw@0.2.x @aegis/openclaw-channel-aegis
+fi
+
+# Generate config from env vars (idempotent)
+aegis-claw-config  # helper that writes openclaw.json, auth-profiles.json, AGENTS.md, mcp.json
+
+# Hand off to OpenClaw — it becomes the main process
+exec openclaw gateway --allow-unconfigured
+```
+
+After `exec`, the process tree is:
+```
+harness (PID 1) → openclaw gateway (main process)
+                     └─ @aegis/openclaw-channel-aegis (in-process plugin, listens :7778)
+                     └─ Pi Agent (in-process, spawned per session)
+```
+
+No bridge process. No wrapper. OpenClaw IS the main process. The tether channel extension runs inside it.
+
 ### Key differences from agent kit
 
 | | agent kit | openclaw kit |
 |---|-----------|-------------|
 | Base image | `python:3.12-alpine` | `node:22-alpine` |
-| Agent binary | `aegis-agent` (Go, 5MB) | `aegis-claw-bridge` (Node.js, ~500 lines) + OpenClaw (~150MB npm) |
+| Main process | `aegis-agent` (Go, 5MB) | `openclaw gateway` (Node.js) |
+| Tether integration | Native HTTP server in agent binary | `@aegis/openclaw-channel-aegis` npm extension (in-process) |
 | LLM integration | Direct API calls | Pi Agent (streaming, tool loop, context mgmt) |
 | Tools | bash, read/write/list files, MCP guest tools | bash, file I/O, edit/patch, browser (CDP), memory search, canvas, cron, web fetch, + MCP guest tools |
 | Memory | None | Vector + BM25 hybrid search (SQLite) |
@@ -324,53 +382,107 @@ PATH=/workspace/.npm-global/bin:$PATH
 
 ---
 
-## 6. Boot Sequence
+## 6. Boot Sequence & Cold Start
 
 ```
-aegis-claw-bridge starts (PID from harness)
+aegis-claw-bootstrap starts (PID from harness)
   │
   ├─ 1. Check /workspace/.npm-global/bin/openclaw
-  │     If missing: npm install -g openclaw@latest (~60s first time)
+  │     If missing: npm install -g openclaw@0.2.x @aegis/openclaw-channel-aegis (~60s first time)
   │
-  ├─ 2. Generate OpenClaw config from env vars
-  │     Write openclaw.json (if not exists)
+  ├─ 2. Generate OpenClaw config from env vars (aegis-claw-config helper)
+  │     Write openclaw.json (if not exists — includes channels.aegis.enabled: true)
   │     Write auth-profiles.json (always, from Aegis secrets)
+  │     Write AGENTS.md, mcp.json (if not exists)
   │
-  ├─ 3. Start OpenClaw gateway as child process
-  │     exec: openclaw gateway --allow-unconfigured
-  │     Wait for ws://127.0.0.1:18789 to become ready
+  ├─ 3. exec openclaw gateway --allow-unconfigured
+  │     Bootstrap exits, OpenClaw gateway becomes the main process
+  │     OpenClaw discovers @aegis/openclaw-channel-aegis extension
+  │     Channel extension starts HTTP server on :7778
   │
-  ├─ 4. Start HTTP server on :7778
-  │     POST /v1/tether/recv → route to OpenClaw
+  ├─ 4. Channel extension sends status.ready frame to harness
+  │     Harness begins draining buffered tether frames
   │
-  └─ 5. Ready for tether frames
+  └─ 5. Ready
 ```
 
-Subsequent boots skip npm install (cached in workspace). Config generation is idempotent — only writes if missing or if secrets changed.
+### Cold start timing
+
+Cold start (npm install) only happens on **first-ever boot** of a new instance. Subsequent lifecycle events don't trigger it:
+
+| Event | macOS (libkrun) | Linux (Cloud Hypervisor) | npm install? |
+|-------|----------------|--------------------------|-------------|
+| First boot | ~60s (npm install) | ~60s (npm install) | Yes |
+| Resume from pause | ~100ms | ~100ms | No (workspace persists) |
+| Resume from stop | N/A (Mac never stops) | ~2s (memory snapshot restore) | No (workspace persists) |
+| VM restart after crash | ~5s (boot) | ~5s (boot) | No (workspace persists) |
+
+The npm install cost is amortized over the lifetime of the instance. On Mac, instances are never fully stopped — they pause and resume. On Linux, memory snapshots restore the full process state.
+
+### Versioning
+
+**v0.1:** Pin `openclaw@0.2.x` (or whatever the current stable semver range is). Bridge checks installed version at boot — if outside pinned range, reinstalls.
+
+**v0.2:** Publish a pre-built OCI image (`aegis-openclaw:0.2`) with OpenClaw pre-installed. Eliminates npm install entirely. Kit manifest changes `image.base` from `node:22-alpine` to `aegis-openclaw:0.2`.
 
 ---
 
-## 7. Bridge Implementation Approach
+## 7. Bridge Implementation: OpenClaw Channel Extension
 
-Two options for how the bridge talks to OpenClaw:
+The bridge is an OpenClaw channel extension (`@aegis/openclaw-channel-aegis`) — an npm package that registers as a custom channel inside the OpenClaw gateway process.
 
-### Option A: External bridge + WebSocket client
+### Why channel extension, not WebSocket client
 
-Bridge is a separate Node.js process that connects to OpenClaw gateway via WebSocket. Sends messages using OpenClaw's client protocol. Receives responses via the same WebSocket.
+| | Channel extension (chosen) | WebSocket client (rejected) |
+|---|---|---|
+| **API surface** | Channel monitor pattern — same interface OpenClaw's own Telegram/Slack/Discord use | Client protocol — designed for human-facing apps (CLI, mobile) |
+| **Stability** | OpenClaw can't break it without breaking their own bundled channels | Can change for UX reasons unrelated to us |
+| **Coupling** | Documented, versioned via npm, discoverable from `node_modules` | Reverse-engineered from source, undocumented |
+| **Process model** | In-process with gateway — no extra process, no WebSocket hop | Separate process + WebSocket connection |
+| **Media handling** | Built into channel API (normalized media attachments) | Must re-implement media serialization |
+| **Streaming** | Channel delivery callback gives us response chunks natively | Must parse WS frames and reconstruct streaming |
 
-**Pros:** No OpenClaw modifications. Clean separation.
-**Cons:** Extra process, WebSocket hop, need to reverse-engineer client protocol.
+The channel extension API is OpenClaw's core abstraction for messaging. Every bundled channel depends on it. It's the most stable surface to couple to.
 
-### Option B: OpenClaw channel extension (npm package)
+### Package structure
 
-Bridge is an OpenClaw extension (`@aegis/openclaw-channel-aegis`) that registers as a custom channel. Runs in-process with the OpenClaw gateway. Receives tether frames via HTTP, normalizes to InboundContext, delivers responses via channel callback.
+```
+@aegis/openclaw-channel-aegis/
+  package.json          ← declares as OpenClaw extension (channel type)
+  src/
+    index.ts            ← channel monitor: tether HTTP ↔ InboundContext
+    tether.ts           ← tether frame send/receive helpers
+  dist/                 ← compiled JS
+```
 
-**Pros:** In-process, no WebSocket hop, uses official channel API, media handling built-in.
-**Cons:** Coupled to OpenClaw's extension API (may break on upgrades), need to package as npm module.
+Installed into the OpenClaw environment at boot:
+```sh
+npm install -g @aegis/openclaw-channel-aegis
+```
 
-### Recommendation: Option A for v1
+Or bundled directly into the pre-built image (v0.2).
 
-Start with the external bridge. It's simpler to build and debug, doesn't require deep OpenClaw extension knowledge, and isolates us from OpenClaw internal API changes. The WebSocket protocol is documented (used by CLI, mobile apps, web UI). If performance matters later, migrate to Option B.
+### Registration
+
+The extension auto-registers when its npm package is present in `node_modules/@aegis/`. OpenClaw discovers extensions at gateway startup via `package.json` metadata. No manual config needed — the bridge writes a minimal channel config section:
+
+```json
+{
+  "channels": {
+    "aegis": {
+      "enabled": true
+    }
+  }
+}
+```
+
+### What the channel monitor does
+
+1. **Startup:** Opens HTTP server on `:7778` (tether recv endpoint)
+2. **Ingress:** Receives tether `user.message` → normalizes to `InboundContext` → dispatches to OpenClaw auto-reply
+3. **Egress:** Receives OpenClaw response via channel delivery callback → emits tether `assistant.delta` / `assistant.done` frames
+4. **Media:** Reads image blobs from workspace for ingress, writes blobs for egress
+5. **Health:** Sends `status.ready` tether frame once OpenClaw gateway is fully initialized
 
 ---
 
@@ -433,20 +545,30 @@ OpenClaw's built-in `exec` and `bash` tools run inside the OpenClaw VM. For isol
 
 ## 11. Lifecycle & Power Model
 
-The gateway-on-host architecture enables proper power management that OpenClaw standalone cannot achieve:
+The gateway-on-host architecture enables proper power management that OpenClaw standalone cannot achieve.
 
-| VM State | Gateway | OpenClaw | Behavior |
-|----------|---------|----------|----------|
-| **Running** | Polling Telegram, forwarding via tether | Processing messages | Normal operation |
-| **Paused** | Polling Telegram, buffering messages | Frozen (zero CPU) | Gateway detects message → tether wake-on-message → VM resumes |
-| **Stopped** | Polling Telegram, buffering messages | Not running | Gateway detects message → tether wake → VM boots → OpenClaw starts |
-| **Crashed** | Polling Telegram | Dead | Gateway buffers → aegisd auto-restarts VM → bridge restarts OpenClaw |
+### State transitions
+
+| VM State | Gateway (host) | OpenClaw (guest) | User experience |
+|----------|---------------|-----------------|-----------------|
+| **Running** | Polling Telegram, forwarding via tether | Processing messages | Normal, instant responses |
+| **Paused** | Polling Telegram, queuing in tether store | Frozen (zero CPU, zero RAM pressure) | Message arrives → wake-on-message → ~100ms resume → response |
+| **Stopped** (Linux only) | Polling Telegram, queuing | Not running (memory snapshot on disk) | Message arrives → wake → ~2s snapshot restore → response |
+| **Crashed** | Polling Telegram, queuing | Dead | aegisd auto-restarts VM → bridge boots → readiness signal → drain queue |
+
+On macOS, instances pause but never fully stop (libkrun limitation — no memory snapshots). Resume from pause is ~100ms. On Linux with Cloud Hypervisor, full stop + memory snapshot restore is ~2s.
+
+### Why the gateway enables this
 
 **Without our gateway (OpenClaw standalone):** VM pauses → Telegram polling stops → no wake trigger → user messages lost until manual restart. The only workaround was `idle_policy: "leases_only"` (never pause), wasting resources.
 
-**With our gateway:** VM safely pauses after idle timeout. Gateway keeps Telegram connection alive. First inbound message wakes the VM. Zero resource usage during idle, zero missed messages.
+**With our gateway:** VM safely pauses after idle timeout. Gateway keeps Telegram connection alive on the host. First inbound message enters tether → aegisd wake-on-message → VM resumes → bridge drains queued frames. Zero resource usage during idle, zero missed messages.
 
-This applies to all future channels (WhatsApp, Slack, Discord) — any channel adapter added to aegis-gateway automatically gets pause/resume/wake-on-message for free.
+This applies to all future channels — any channel adapter added to aegis-gateway automatically gets pause/resume/wake-on-message for free. The agent runtime (OpenClaw, aegis-agent, or anything else) doesn't need to know about power management.
+
+### Message buffering during wake
+
+When the VM is paused/stopped, inbound tether frames accumulate in aegisd's tether store (ring buffer, in-memory on host). The harness buffers up to 100 frames while the agent process starts. Once the bridge sends `status.ready`, the harness drains the buffer in order. No messages are lost.
 
 ---
 
@@ -460,27 +582,32 @@ New artifacts to build:
 
 ---
 
-## 13. Open Questions
+## 13. Decisions Made
 
-1. **Bridge language:** Pure Node.js (natural for OpenClaw ecosystem) or Go shim that spawns Node? Go shim could handle tether HTTP natively and spawn OpenClaw as child.
-
-2. **npm install on first boot:** ~60s cold start. Pre-built OCI image with OpenClaw pre-installed would eliminate this. Could publish `aegis-openclaw:latest` to a registry.
-
-3. **OpenClaw version pinning:** Pin to a known-good version or track latest? Pinning is safer but requires manual updates.
-
-4. **Auth profile sync:** Write once at boot (from env vars) or watch for secret changes? Boot-time is simpler and sufficient for v1.
-
-5. **OpenClaw WebSocket client protocol:** Need to map the exact message format for Option A. The CLI and mobile apps use it — should be documented or reverse-engineerable from the TypeScript source.
-
-6. **Canvas and browser:** These require a display server or headless Chrome. node:22-alpine may need additional packages (chromium, etc.). Memory implications for the 1GB default.
-
-7. **OpenClaw MCP config format:** Need to verify the exact config path and format for registering MCP tool servers in OpenClaw. May be `mcp.json` in the config dir or a section in `openclaw.json`.
-
-8. **Skills pre-loading:** Should the kit ship with any pre-installed OpenClaw skills? Or let the user install from ClawHub on demand?
+| Question | Decision | Rationale |
+|----------|----------|-----------|
+| **Bridge approach** | OpenClaw channel extension (Option B) | Same API surface as bundled channels — documented, versioned, can't break without breaking Telegram/Slack/etc. In-process, no WebSocket hop. |
+| **Version pinning** | Pin to semver range (e.g., `openclaw@0.2.x`) | Breakage looks like "Aegis is flaky." Explicit upgrade path later. |
+| **Pre-built image** | v0.1: npm install at first boot. v0.2: publish pinned image. | First boot only happens once per instance lifetime. Acceptable for v0.1. |
+| **Bridge language** | Node.js (TypeScript) | Natural for OpenClaw ecosystem. Bridge talks WS to OpenClaw, HTTP to harness. |
+| **Auth sync** | Write at boot from env vars | Simple, sufficient. Secrets don't change while VM is running. |
+| **Skills** | None pre-installed | User installs from ClawHub on demand. Skills persist in workspace. |
 
 ---
 
-## 14. Comparison with Previous Specs
+## 14. Open Questions
+
+1. **OpenClaw WebSocket client protocol:** Need to map the exact message format for Option A. The CLI and mobile apps use it — reverse-engineer from TypeScript source (`src/gateway/`) or find documentation.
+
+2. **OpenClaw MCP config format:** Verify the exact config path and format for registering MCP tool servers. May be `mcp.json` in the config dir or a `tools.mcp` section in `openclaw.json`.
+
+3. **Group chat semantics:** Does the bridge need to pass `chatType: "group"` explicitly, or does OpenClaw infer it from the chat ID pattern? Need to test with the auto-reply system's mention gating.
+
+4. **Session reset on VM restart:** When the bridge reconnects to OpenClaw after a VM resume, does OpenClaw pick up the existing session or create a new one? Need to verify session persistence across gateway restarts.
+
+---
+
+## 15. Comparison with Previous Specs
 
 | Aspect | Previous specs (standalone) | This spec (tether bridge) |
 |--------|---------------------------|--------------------------|
