@@ -19,14 +19,18 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/xfeldman/aegisvm/internal/blob"
 )
 
 func main() {
@@ -152,6 +156,7 @@ type Gateway struct {
 	configMtime    time.Time              // last known mtime of config file
 	pollCancel     context.CancelFunc     // cancel current polling+egress
 	reloadCh       chan struct{}           // signal immediate config reload
+	workspacePath  string                 // cached host workspace path (resolved once)
 }
 
 type activeReply struct {
@@ -344,7 +349,7 @@ func (gw *Gateway) pollTelegram(ctx context.Context) {
 			if u.UpdateID >= offset {
 				offset = u.UpdateID + 1
 			}
-			if u.Message != nil && u.Message.Text != "" {
+			if u.Message != nil && (u.Message.Text != "" || len(u.Message.Photo) > 0 || isImageDocument(u.Message.Document)) {
 				go gw.handleTelegramMessage(u.Message)
 			}
 		}
@@ -357,10 +362,13 @@ type telegramUpdate struct {
 }
 
 type telegramMessage struct {
-	MessageID int           `json:"message_id"`
-	Chat      telegramChat  `json:"chat"`
-	Text      string        `json:"text"`
-	From      *telegramUser `json:"from"`
+	MessageID int               `json:"message_id"`
+	Chat      telegramChat      `json:"chat"`
+	Text      string            `json:"text"`
+	Caption   string            `json:"caption"`
+	Photo     []telegramPhoto   `json:"photo"`
+	Document  *telegramDocument `json:"document"`
+	From      *telegramUser     `json:"from"`
 }
 
 type telegramChat struct {
@@ -372,6 +380,19 @@ type telegramUser struct {
 	ID        int64  `json:"id"`
 	FirstName string `json:"first_name"`
 	Username  string `json:"username"`
+}
+
+type telegramPhoto struct {
+	FileID   string `json:"file_id"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+	FileSize int    `json:"file_size"`
+}
+
+type telegramDocument struct {
+	FileID   string `json:"file_id"`
+	MimeType string `json:"mime_type"`
+	FileSize int    `json:"file_size"`
 }
 
 func (gw *Gateway) getUpdates(botToken string, offset, timeout int) ([]telegramUpdate, error) {
@@ -422,6 +443,36 @@ func (gw *Gateway) handleTelegramMessage(msg *telegramMessage) {
 	typingCtx, typingCancel := context.WithCancel(context.Background())
 	go gw.sendTypingLoop(typingCtx, chatID, cfg.BotToken)
 
+	// Handle photo ingress: download, write to blob store, build image ref
+	var imageRef *imageRefPayload
+	if fileID, isImage := gw.extractImageFileID(msg); isImage {
+		workspace := gw.resolveWorkspace()
+		if workspace == "" {
+			typingCancel()
+			gw.sendTelegramMessage(chatID, "Images require workspace mapping on the agent instance.", cfg.BotToken)
+			return
+		}
+
+		photoBytes, mediaType, err := gw.downloadTelegramFile(cfg.BotToken, fileID)
+		if err != nil {
+			log.Printf("download telegram file: %v", err)
+			typingCancel()
+			gw.sendTelegramMessage(chatID, fmt.Sprintf("Failed to download image: %v", err), cfg.BotToken)
+			return
+		}
+
+		blobStore := blob.NewWorkspaceBlobStore(workspace)
+		key, err := blobStore.Put(photoBytes, mediaType)
+		if err != nil {
+			log.Printf("blob store put: %v", err)
+			typingCancel()
+			gw.sendTelegramMessage(chatID, "Failed to process image.", cfg.BotToken)
+			return
+		}
+		imageRef = &imageRefPayload{MediaType: mediaType, Blob: key, Size: int64(len(photoBytes))}
+		log.Printf("photo ingress: %s (%d bytes) → %s", mediaType, len(photoBytes), key)
+	}
+
 	// Build and send tether frame (wake-on-message happens inside aegisd)
 	frame := TetherFrame{
 		V:    1,
@@ -433,7 +484,7 @@ func (gw *Gateway) handleTelegramMessage(msg *telegramMessage) {
 		},
 		MsgID:   fmt.Sprintf("tg-%d-%d", chatID, msg.MessageID),
 		Seq:     int64(msg.MessageID),
-		Payload: mustMarshal(buildUserPayload(msg)),
+		Payload: mustMarshal(buildUserPayload(msg, imageRef)),
 	}
 
 	if err := gw.aegisClient.postTetherFrame(instanceID, frame); err != nil {
@@ -604,7 +655,12 @@ func (gw *Gateway) handleEgressFrame(frame TetherFrame) {
 
 	case "assistant.done":
 		var payload struct {
-			Text string `json:"text"`
+			Text   string `json:"text"`
+			Images []struct {
+				MediaType string `json:"media_type"`
+				Blob      string `json:"blob"`
+				Size      int64  `json:"size"`
+			} `json:"images"`
 		}
 		json.Unmarshal(frame.Payload, &payload)
 
@@ -618,6 +674,46 @@ func (gw *Gateway) handleEgressFrame(frame TetherFrame) {
 		if reply.typingCancel != nil {
 			reply.typingCancel()
 		}
+
+		// Handle images in response
+		if len(payload.Images) > 0 {
+			msgID := reply.messageID
+			delete(gw.activeReplies, chatID)
+			gw.mu.Unlock()
+
+			// If there was a streaming message, finalize it with text (no images inline)
+			if msgID != 0 && payload.Text != "" {
+				gw.editTelegramMessage(chatID, msgID, payload.Text, botToken)
+			}
+
+			// Send images from blob store
+			textUsedAsCaption := false
+			workspace := gw.resolveWorkspace()
+			if workspace != "" {
+				blobStore := blob.NewWorkspaceBlobStore(workspace)
+				for i, img := range payload.Images {
+					imgData, err := blobStore.Get(img.Blob)
+					if err != nil {
+						log.Printf("egress blob read %s: %v", img.Blob, err)
+						continue
+					}
+					caption := ""
+					if i == 0 && msgID == 0 && payload.Text != "" && len(payload.Text) <= 1024 {
+						caption = payload.Text
+						textUsedAsCaption = true
+					}
+					gw.sendTelegramPhoto(chatID, imgData, caption, botToken)
+				}
+			}
+
+			// Send text separately if it wasn't used as caption and wasn't already streamed
+			if !textUsedAsCaption && msgID == 0 && payload.Text != "" {
+				gw.sendTelegramMessage(chatID, payload.Text, botToken)
+			}
+			return
+		}
+
+		// Text-only response (existing logic)
 		if reply.messageID != 0 {
 			msgID := reply.messageID
 			delete(gw.activeReplies, chatID)
@@ -729,6 +825,24 @@ func (c *aegisClient) getSecret(name string) (string, error) {
 	return result.Value, nil
 }
 
+func (c *aegisClient) getInstanceWorkspace(instanceID string) (string, error) {
+	url := fmt.Sprintf("http://aegis/v1/instances/%s", instanceID)
+	resp, err := c.httpClient.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("get instance: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("get instance %d: %s", resp.StatusCode, string(body))
+	}
+	var result struct {
+		Workspace string `json:"workspace"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+	return result.Workspace, nil
+}
+
 func (c *aegisClient) postTetherFrame(instanceID string, frame interface{}) error {
 	data, _ := json.Marshal(frame)
 	url := fmt.Sprintf("http://aegis/v1/instances/%s/tether", instanceID)
@@ -805,11 +919,186 @@ func defaultSocketPath() string {
 	return filepath.Join(home, ".aegis", "aegisd.sock")
 }
 
+// Image helpers
+
+// isImageDocument returns true if the document has a supported image MIME type.
+func isImageDocument(doc *telegramDocument) bool {
+	if doc == nil {
+		return false
+	}
+	switch doc.MimeType {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+		return true
+	}
+	return false
+}
+
+// resolveWorkspace returns the cached host workspace path, fetching it once from aegisd.
+func (gw *Gateway) resolveWorkspace() string {
+	gw.mu.Lock()
+	if gw.workspacePath != "" {
+		ws := gw.workspacePath
+		gw.mu.Unlock()
+		return ws
+	}
+	gw.mu.Unlock()
+
+	ws, err := gw.aegisClient.getInstanceWorkspace(gw.instanceHandle)
+	if err != nil {
+		log.Printf("resolve workspace: %v", err)
+		return ""
+	}
+
+	gw.mu.Lock()
+	gw.workspacePath = ws
+	gw.mu.Unlock()
+	return ws
+}
+
+// getFilePath calls Telegram getFile API and returns the file_path for download.
+func (gw *Gateway) getFilePath(botToken, fileID string) (string, error) {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/getFile?file_id=%s", botToken, fileID)
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			FilePath string `json:"file_path"`
+			FileSize int    `json:"file_size"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if !result.OK || result.Result.FilePath == "" {
+		return "", fmt.Errorf("getFile failed for %s", fileID)
+	}
+	if result.Result.FileSize > blob.MaxImageBytes {
+		return "", fmt.Errorf("file too large: %d bytes (max %d)", result.Result.FileSize, blob.MaxImageBytes)
+	}
+	return result.Result.FilePath, nil
+}
+
+// downloadTelegramFile downloads a file from Telegram and returns the bytes and guessed media type.
+func (gw *Gateway) downloadTelegramFile(botToken, fileID string) ([]byte, string, error) {
+	filePath, err := gw.getFilePath(botToken, fileID)
+	if err != nil {
+		return nil, "", err
+	}
+
+	url := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", botToken, filePath)
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(blob.MaxImageBytes)+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if len(data) > blob.MaxImageBytes {
+		return nil, "", fmt.Errorf("downloaded file too large: %d bytes", len(data))
+	}
+
+	// Guess media type from file extension
+	mediaType := mediaTypeFromPath(filePath)
+	return data, mediaType, nil
+}
+
+// mediaTypeFromPath guesses the MIME type from a file path extension.
+func mediaTypeFromPath(path string) string {
+	lower := strings.ToLower(path)
+	switch {
+	case strings.HasSuffix(lower, ".png"):
+		return "image/png"
+	case strings.HasSuffix(lower, ".jpg"), strings.HasSuffix(lower, ".jpeg"):
+		return "image/jpeg"
+	case strings.HasSuffix(lower, ".gif"):
+		return "image/gif"
+	case strings.HasSuffix(lower, ".webp"):
+		return "image/webp"
+	default:
+		return "image/jpeg" // Telegram photos are JPEG by default
+	}
+}
+
+// sendTelegramPhoto sends a photo to a Telegram chat via multipart upload.
+// Returns the message_id of the sent message.
+func (gw *Gateway) sendTelegramPhoto(chatID int64, photoBytes []byte, caption, botToken string) int {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendPhoto", botToken)
+
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	w.WriteField("chat_id", fmt.Sprintf("%d", chatID))
+	if caption != "" {
+		if len(caption) > 1024 {
+			caption = caption[:1024]
+		}
+		w.WriteField("caption", caption)
+	}
+	part, err := w.CreateFormFile("photo", "image.jpg")
+	if err != nil {
+		log.Printf("sendPhoto: create form: %v", err)
+		return 0
+	}
+	part.Write(photoBytes)
+	w.Close()
+
+	resp, err := http.Post(url, w.FormDataContentType(), &buf)
+	if err != nil {
+		log.Printf("sendPhoto: %v", err)
+		return 0
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			MessageID int `json:"message_id"`
+		} `json:"result"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+	if !result.OK {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("sendPhoto: API error: %s", string(body))
+	}
+	return result.Result.MessageID
+}
+
 // Helpers
 
-func buildUserPayload(msg *telegramMessage) map[string]interface{} {
+type imageRefPayload struct {
+	MediaType string `json:"media_type"`
+	Blob      string `json:"blob"`
+	Size      int64  `json:"size"`
+}
+
+// extractImageFileID returns the file ID and true if the message contains a photo or image document.
+func (gw *Gateway) extractImageFileID(msg *telegramMessage) (string, bool) {
+	if len(msg.Photo) > 0 {
+		// Take the largest photo (last in array)
+		return msg.Photo[len(msg.Photo)-1].FileID, true
+	}
+	if isImageDocument(msg.Document) {
+		return msg.Document.FileID, true
+	}
+	return "", false
+}
+
+func buildUserPayload(msg *telegramMessage, imageRef *imageRefPayload) map[string]interface{} {
+	// For photo messages, use Caption as text
+	text := msg.Text
+	if len(msg.Photo) > 0 || isImageDocument(msg.Document) {
+		text = msg.Caption
+	}
+
 	p := map[string]interface{}{
-		"text": msg.Text,
+		"text": text,
 	}
 	if msg.From != nil {
 		user := map[string]interface{}{
@@ -822,6 +1111,9 @@ func buildUserPayload(msg *telegramMessage) map[string]interface{} {
 			user["name"] = msg.From.FirstName
 		}
 		p["user"] = user
+	}
+	if imageRef != nil {
+		p["images"] = []imageRefPayload{*imageRef}
 	}
 	return p
 }
