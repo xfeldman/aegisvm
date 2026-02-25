@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -652,6 +653,7 @@ func (v *CloudHypervisorVMM) Capabilities() BackendCaps {
 		PersistentPause: false, // lifecycle manager starts stop-after-idle timer
 		RootFSType:      RootFSBlockImage,
 		Name:            "cloud-hypervisor",
+		GuestArch:       runtime.GOARCH,
 		NetworkBackend:  "tap",
 	}
 }

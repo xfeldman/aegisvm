@@ -444,6 +444,7 @@ func (l *LibkrunVMM) Capabilities() BackendCaps {
 		PersistentPause: true,
 		RootFSType:      RootFSDirectory,
 		Name:            "libkrun",
+		GuestArch:       "arm64",
 		NetworkBackend:  l.cfg.NetworkBackend,
 	}
 }

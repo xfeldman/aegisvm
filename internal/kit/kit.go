@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/xfeldman/aegisvm/internal/config"
 )
 
 // shareDir is set at build time via -ldflags to the Homebrew/system share path.
@@ -113,30 +115,15 @@ func ValidateManifest(m *Manifest, binDir string) []string {
 	var missing []string
 	// Check instance daemon binaries
 	for _, d := range m.InstanceDaemons {
-		if !binaryExists(binDir, d) {
+		if config.FindBinary(d, binDir) == "" {
 			missing = append(missing, d)
 		}
 	}
 	// Check inject binaries
 	for _, b := range m.Image.Inject {
-		if !binaryExists(binDir, b) {
+		if config.FindBinary(b, binDir) == "" {
 			missing = append(missing, b)
 		}
 	}
 	return missing
-}
-
-// binaryExists checks whether a binary exists in binDir or known system paths.
-func binaryExists(binDir, name string) bool {
-	if binDir != "" {
-		if _, err := os.Stat(filepath.Join(binDir, name)); err == nil {
-			return true
-		}
-	}
-	for _, dir := range []string{"/usr/lib/aegisvm"} {
-		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-			return true
-		}
-	}
-	return false
 }

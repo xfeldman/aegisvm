@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/xfeldman/aegisvm/internal/config"
 )
 
 // Cache provides digest-keyed caching for unpacked OCI image rootfs directories.
@@ -17,16 +19,19 @@ import (
 // A local ref→digest index avoids hitting the registry on every boot.
 // The index is populated on first pull and reused for subsequent lookups.
 type Cache struct {
-	mu       sync.Mutex
-	cacheDir string
-	refIndex map[string]string // imageRef → digest (in-memory, rebuilt from disk on miss)
+	mu        sync.Mutex
+	cacheDir  string
+	guestArch string            // CPU architecture for OCI pulls (e.g. "arm64", "amd64")
+	refIndex  map[string]string // imageRef → digest (in-memory, rebuilt from disk on miss)
 }
 
 // NewCache creates a new image cache.
-func NewCache(cacheDir string) *Cache {
+// guestArch is the CPU architecture for OCI image pulls (from BackendCaps.GuestArch).
+func NewCache(cacheDir string, guestArch string) *Cache {
 	return &Cache{
-		cacheDir: cacheDir,
-		refIndex: make(map[string]string),
+		cacheDir:  cacheDir,
+		guestArch: guestArch,
+		refIndex:  make(map[string]string),
 	}
 }
 
@@ -63,7 +68,7 @@ func (c *Cache) GetOrPull(ctx context.Context, imageRef string) (rootfsDir strin
 
 	// Pull to get the digest (remote HEAD + manifest fetch)
 	log.Printf("image: resolving %s (network)", imageRef)
-	result, err := Pull(ctx, imageRef)
+	result, err := Pull(ctx, imageRef, c.guestArch)
 	if err != nil {
 		return "", "", fmt.Errorf("pull %s: %w", imageRef, err)
 	}
@@ -147,33 +152,12 @@ func InjectHarness(rootfsDir, harnessBin string) error {
 	return injectBinary(rootfsDir, harnessBin, "aegis-harness")
 }
 
-// resolveBinary locates an aegis binary by name. Search order:
-//  1. binDir (sibling of aegisd)
-//  2. Known system paths (/usr/lib/aegisvm)
-//
-// Returns the absolute path, or "" if not found.
-func resolveBinary(binDir, name string) string {
-	if binDir != "" {
-		p := filepath.Join(binDir, name)
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	for _, dir := range []string{"/usr/lib/aegisvm"} {
-		p := filepath.Join(dir, name)
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	return ""
-}
-
 // InjectGuestBinaries copies all guest-side aegis binaries into the rootfs.
 // Harness is required; mcp-guest is best-effort (skipped if not found).
 // Kit-specific binaries (e.g. aegis-agent) are injected separately via InjectKitBinaries.
 func InjectGuestBinaries(rootfsDir, binDir string) error {
 	// Harness is mandatory
-	harness := resolveBinary(binDir, "aegis-harness")
+	harness := config.FindBinary("aegis-harness", binDir)
 	if harness == "" {
 		return fmt.Errorf("open aegis-harness: not found in %s or system paths", binDir)
 	}
@@ -183,7 +167,7 @@ func InjectGuestBinaries(rootfsDir, binDir string) error {
 
 	// Optional guest binaries — skip silently if not built
 	for _, name := range []string{"aegis-mcp-guest"} {
-		if src := resolveBinary(binDir, name); src != "" {
+		if src := config.FindBinary(name, binDir); src != "" {
 			if err := injectBinary(rootfsDir, src, name); err != nil {
 				return err
 			}
@@ -197,7 +181,7 @@ func InjectGuestBinaries(rootfsDir, binDir string) error {
 // a kit's binaries are required, not optional.
 func InjectKitBinaries(rootfsDir, binDir string, binaries []string) error {
 	for _, name := range binaries {
-		src := resolveBinary(binDir, name)
+		src := config.FindBinary(name, binDir)
 		if src == "" {
 			return fmt.Errorf("kit binary %q not found in %s or system paths", name, binDir)
 		}

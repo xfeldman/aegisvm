@@ -80,7 +80,7 @@ func main() {
 	log.Printf("registry: %s", cfg.DBPath)
 
 	// Initialize image cache and overlay
-	imgCache := image.NewCache(cfg.ImageCacheDir)
+	imgCache := image.NewCache(cfg.ImageCacheDir, caps.GuestArch)
 	ov := overlay.NewCopyOverlay(cfg.OverlaysDir)
 
 	// Clean up stale overlays from previous crashes

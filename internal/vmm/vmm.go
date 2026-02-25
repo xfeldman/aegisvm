@@ -106,6 +106,9 @@ type BackendCaps struct {
 	// Name is the backend identifier ("libkrun" or "cloud-hypervisor").
 	Name string
 
+	// GuestArch is the CPU architecture of guest VMs (e.g. "arm64", "amd64").
+	GuestArch string
+
 	// NetworkBackend is the active networking mode ("gvproxy" or "tsi").
 	NetworkBackend string
 }

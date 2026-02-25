@@ -131,6 +131,7 @@ func (m *mockVMM) Capabilities() vmm.BackendCaps {
 		Pause:      true,
 		RootFSType: vmm.RootFSDirectory,
 		Name:       "mock",
+		GuestArch:  "amd64",
 	}
 }
 

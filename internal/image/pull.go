@@ -4,7 +4,6 @@ package image
 import (
 	"context"
 	"fmt"
-	"runtime"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -12,30 +11,20 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/types"
 )
 
-// vmArch returns the guest architecture for OCI image pulls.
-// On macOS, VMs are always arm64 (libkrun on Apple Silicon).
-// On Linux, VMs match the host architecture (Cloud Hypervisor runs native).
-func vmArch() string {
-	if runtime.GOOS == "darwin" {
-		return "arm64"
-	}
-	return runtime.GOARCH
-}
-
 // PullResult contains the pulled image and its digest.
 type PullResult struct {
 	Image  v1.Image
 	Digest string // e.g. "sha256:abc123..."
 }
 
-// Pull resolves an image reference and pulls the linux variant matching the VM architecture.
-func Pull(ctx context.Context, imageRef string) (*PullResult, error) {
+// Pull resolves an image reference and pulls the linux variant matching the given architecture.
+// The arch parameter comes from BackendCaps.GuestArch (e.g. "arm64", "amd64").
+func Pull(ctx context.Context, imageRef string, arch string) (*PullResult, error) {
 	ref, err := name.ParseReference(imageRef)
 	if err != nil {
 		return nil, fmt.Errorf("parse image ref %q: %w", imageRef, err)
 	}
 
-	arch := vmArch()
 	platform := &v1.Platform{
 		OS:           "linux",
 		Architecture: arch,
