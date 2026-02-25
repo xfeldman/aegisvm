@@ -245,9 +245,19 @@ func (v *CloudHypervisorVMM) StartVM(h Handle) (ControlChannel, error) {
 		}
 	}
 
-	// 4. Pre-create vsock unix socket listener for harness connection
-	vsockListenPath := fmt.Sprintf("%s_%d", inst.vsockSocket, harnessVsockPort)
+	// 4. Pre-create vsock unix socket listener for harness connection.
+	// On restore, CH reads the vsock socket path from the snapshot's config.json,
+	// so we must listen on that original path (not the new instance's path).
+	vsockBase := inst.vsockSocket
+	if inst.snapshotDir != "" {
+		if origPath := readSnapshotVsockPath(inst.snapshotDir); origPath != "" {
+			vsockBase = origPath
+		}
+	}
+	vsockListenPath := fmt.Sprintf("%s_%d", vsockBase, harnessVsockPort)
 	os.Remove(vsockListenPath) // clean stale
+	// Also clean the base socket (CH binds the non-suffixed path)
+	os.Remove(vsockBase)
 	vsockLn, err := net.Listen("unix", vsockListenPath)
 	if err != nil {
 		v.cleanupInstance(inst)
@@ -755,6 +765,25 @@ func waitForSocket(path string, timeout time.Duration) error {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return fmt.Errorf("socket %s did not appear within %v", path, timeout)
+}
+
+// readSnapshotVsockPath reads the vsock socket path from a snapshot's config.json.
+// CH stores the original vsock config in the snapshot, and on restore binds to that
+// path — so the host-side listener must match.
+func readSnapshotVsockPath(snapshotDir string) string {
+	data, err := os.ReadFile(filepath.Join(snapshotDir, "config.json"))
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		Vsock struct {
+			Socket string `json:"socket"`
+		} `json:"vsock"`
+	}
+	if json.Unmarshal(data, &cfg) != nil {
+		return ""
+	}
+	return cfg.Vsock.Socket
 }
 
 // runCmd runs a command and returns an error if it fails.

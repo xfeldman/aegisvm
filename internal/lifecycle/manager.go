@@ -58,7 +58,8 @@ type Instance struct {
 
 	ID          string
 	State       string
-	Enabled     bool // policy flag: true = wake-on-connect allowed, false = unreachable
+	Enabled     bool   // policy flag: true = wake-on-connect allowed, false = unreachable
+	channelGen  uint64 // monotonic, incremented on each new ControlChannel (for quiesce protocol)
 	Command     []string
 	ExposePorts []vmm.PortExpose
 	Handle      vmm.Handle
@@ -537,7 +538,9 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		return fmt.Errorf("create VM: %w", err)
 	}
 
-	// If a snapshot exists for this instance, tell the VMM to restore from it
+	// If a snapshot exists for this instance, tell the VMM to restore from it.
+	// On restore, the primary process is already running — skip the run RPC.
+	isRestore := false
 	snapshotDir := filepath.Join(m.cfg.SnapshotsDir, inst.ID)
 	if info, err := os.Stat(snapshotDir); err == nil && info.IsDir() {
 		if setter, ok := m.vmm.(interface{ SetSnapshotDir(vmm.Handle, string) error }); ok {
@@ -545,6 +548,7 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 				log.Printf("instance %s: set snapshot dir: %v (proceeding with fresh boot)", inst.ID, err)
 			} else {
 				log.Printf("instance %s: will restore from snapshot %s", inst.ID, snapshotDir)
+				isRestore = true
 			}
 		}
 	}
@@ -630,73 +634,76 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		return m.handleGuestRequest(inst, method, params)
 	}
 
-	// Send run RPC via demuxer
-	rpcCtx, rpcCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer rpcCancel()
+	// Send run RPC — only on fresh boot, not on restore (primary process already running).
+	if !isRestore {
+		rpcCtx, rpcCancel := context.WithTimeout(ctx, 30*time.Second)
+		defer rpcCancel()
 
-	rpcParams := map[string]interface{}{
-		"command": inst.Command,
-	}
-	if len(inst.Env) > 0 {
-		rpcParams["env"] = inst.Env
-	}
-	// Send exposed guest ports so the harness can start port proxies.
-	// The proxies forward 0.0.0.0:port → 127.0.0.1:port, making apps
-	// that bind to localhost reachable via gvproxy ingress.
-	if len(inst.ExposePorts) > 0 {
-		var ports []int
-		for _, ep := range inst.ExposePorts {
-			ports = append(ports, ep.GuestPort)
+		rpcParams := map[string]interface{}{
+			"command": inst.Command,
 		}
-		rpcParams["expose_ports"] = ports
-	}
-	log.Printf("instance %s: run RPC params: expose_ports=%v", inst.ID, rpcParams["expose_ports"])
+		if len(inst.Env) > 0 {
+			rpcParams["env"] = inst.Env
+		}
+		if len(inst.ExposePorts) > 0 {
+			var ports []int
+			for _, ep := range inst.ExposePorts {
+				ports = append(ports, ep.GuestPort)
+			}
+			rpcParams["expose_ports"] = ports
+		}
+		log.Printf("instance %s: run RPC params: expose_ports=%v", inst.ID, rpcParams["expose_ports"])
 
-	// Inject capability token if this instance has spawn capabilities
-	if inst.Capabilities != nil && m.secretStore != nil {
-		token, err := GenerateToken(m.secretStore, inst.ID, *inst.Capabilities)
+		// Inject capability token if this instance has spawn capabilities
+		if inst.Capabilities != nil && m.secretStore != nil {
+			token, err := GenerateToken(m.secretStore, inst.ID, *inst.Capabilities)
+			if err != nil {
+				log.Printf("instance %s: generate capability token: %v", inst.ID, err)
+			} else {
+				rpcParams["capability_token"] = token
+			}
+		}
+
+		resp, err := demux.Call(rpcCtx, "run", rpcParams, nextRPCID())
 		if err != nil {
-			log.Printf("instance %s: generate capability token: %v", inst.ID, err)
-		} else {
-			rpcParams["capability_token"] = token
+			demux.Stop()
+			ch.Close()
+			m.vmm.StopVM(handle)
+			inst.mu.Lock()
+			inst.State = StateStopped
+			inst.StoppedAt = time.Now()
+			inst.mu.Unlock()
+			m.notifyStateChange(inst.ID, StateStopped)
+			return fmt.Errorf("run RPC: %w", err)
 		}
-	}
 
-	resp, err := demux.Call(rpcCtx, "run", rpcParams, nextRPCID())
-	if err != nil {
-		demux.Stop()
-		ch.Close()
-		m.vmm.StopVM(handle)
-		inst.mu.Lock()
-		inst.State = StateStopped
-		inst.StoppedAt = time.Now()
-		inst.mu.Unlock()
-		m.notifyStateChange(inst.ID, StateStopped)
-		return fmt.Errorf("run RPC: %w", err)
-	}
-
-	// Check for error in run response
-	var respObj struct {
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if json.Unmarshal(resp, &respObj) == nil && respObj.Error != nil {
-		demux.Stop()
-		ch.Close()
-		m.vmm.StopVM(handle)
-		inst.mu.Lock()
-		inst.State = StateStopped
-		inst.StoppedAt = time.Now()
-		inst.mu.Unlock()
-		m.notifyStateChange(inst.ID, StateStopped)
-		return fmt.Errorf("run failed: %s", respObj.Error.Message)
+		var respObj struct {
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(resp, &respObj) == nil && respObj.Error != nil {
+			demux.Stop()
+			ch.Close()
+			m.vmm.StopVM(handle)
+			inst.mu.Lock()
+			inst.State = StateStopped
+			inst.StoppedAt = time.Now()
+			inst.mu.Unlock()
+			m.notifyStateChange(inst.ID, StateStopped)
+			return fmt.Errorf("run failed: %s", respObj.Error.Message)
+		}
+	} else {
+		log.Printf("instance %s: restored from snapshot, skipping run RPC (primary process already running)", inst.ID)
+		// Clean up snapshot after successful restore — it's a one-time use.
+		os.RemoveAll(snapshotDir)
 	}
 
 	// Instance is RUNNING immediately after run RPC succeeds (no readiness wait)
 	inst.mu.Lock()
 	inst.Handle = handle
 	inst.Channel = ch
+	inst.channelGen++
 	inst.Endpoints = endpoints
 	inst.State = StateRunning
 	inst.lastActivity = time.Now()
@@ -1005,9 +1012,36 @@ func (m *Manager) stopIdleInstance(inst *Instance) {
 		return
 	}
 	handle := inst.Handle
-	ch := inst.Channel
 	demux := inst.demuxer
 	instID := inst.ID
+	gen := inst.channelGen
+	inst.mu.Unlock()
+
+	// 1. Resume VM so the harness can respond to quiesce and see the EOF.
+	// The VM is currently paused from the idle timer.
+	if err := m.vmm.ResumeVM(handle); err != nil {
+		log.Printf("instance %s: resume for quiesce failed: %v", instID, err)
+	}
+
+	// 2. Tell harness to quiesce — it will stop optional traffic and ACK.
+	if demux != nil {
+		qctx, qcancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err := demux.Call(qctx, "quiesce.stop", map[string]interface{}{
+			"channel_gen": gen,
+		}, nextRPCID())
+		qcancel()
+		if err != nil {
+			log.Printf("instance %s: quiesce.stop failed (proceeding): %v", instID, err)
+		}
+	}
+
+	// 3. Close the channel — harness sees EOF, enters reconnect-wait loop.
+	if demux != nil {
+		demux.Stop()
+	}
+
+	// 4. Update instance state under lock.
+	inst.mu.Lock()
 	inst.State = StateStopped
 	inst.StoppedAt = time.Now()
 	inst.Channel = nil
@@ -1016,33 +1050,26 @@ func (m *Manager) stopIdleInstance(inst *Instance) {
 	inst.logCapture = false
 	inst.mu.Unlock()
 
-	// Snapshot before stopping if backend supports it.
-	// This enables cold restart from snapshot instead of full reboot.
+	// 5. Pause VM — harness is in reconnect loop, vCPUs frozen.
+	m.vmm.PauseVM(handle)
+
+	// 6. Snapshot if backend supports it — captures harness in reconnect-wait state.
 	if snapshotter, ok := m.vmm.(interface {
 		SnapshotVM(vmm.Handle, string) error
 	}); ok {
 		snapshotDir := filepath.Join(m.cfg.SnapshotsDir, instID)
 		if err := snapshotter.SnapshotVM(handle, snapshotDir); err != nil {
 			log.Printf("instance %s: snapshot before stop failed: %v", instID, err)
-			// Clean up partial snapshot
 			os.RemoveAll(snapshotDir)
 		} else {
 			log.Printf("instance %s: snapshot saved before stop", instID)
 		}
 	}
 
+	// 7. Stop VM — kills CH, cleans tap/NAT.
 	log.Printf("instance %s: stopped (extended idle)", instID)
 	m.notifyStateChange(instID, StateStopped)
-
-	// Stop demuxer (closes channel internally) or close channel directly
-	if demux != nil {
-		demux.Stop()
-	} else if ch != nil {
-		ch.Close()
-	}
 	m.vmm.StopVM(handle)
-	// Note: logs are NOT removed here — terminated instances keep logs
-	// until explicit deletion via StopInstance or Shutdown.
 }
 
 // GetEndpoint returns the host endpoint for a guest port on the given instance.

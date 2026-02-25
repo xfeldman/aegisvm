@@ -44,6 +44,7 @@ func Run() {
 
 	// Create bidirectional RPC client for guest API
 	hrpc := newHarnessRPC(conn)
+	hrpc.tracker = &processTracker{}
 
 	// Start guest API HTTP server (localhost:7777)
 	// Guest processes call this to spawn/manage instances.
@@ -60,6 +61,7 @@ func Run() {
 		select {
 		case <-ctx.Done():
 			log.Println("harness shutting down")
+			hrpc.tracker.killAll()
 			conn.Close()
 			return
 		default:
@@ -69,6 +71,7 @@ func Run() {
 		vsockPort := os.Getenv("AEGIS_VSOCK_PORT")
 		if vsockPort == "" {
 			log.Println("harness shutting down (connection lost, no vsock reconnect)")
+			hrpc.tracker.killAll()
 			conn.Close()
 			return
 		}
@@ -76,16 +79,40 @@ func Run() {
 		log.Println("control channel lost, attempting vsock reconnect...")
 		conn.Close()
 
-		// Reconnect with retries
-		newConn := connectToHost()
+		// Reconnect — retry indefinitely since we're inside a restored VM
+		// and the host may take time to start a new CH process.
+		newConn := reconnectVsock()
 		conn = newConn
 
 		// Re-wire the harnessRPC to use the new connection
 		hrpc.mu.Lock()
 		hrpc.conn = newConn
 		hrpc.mu.Unlock()
+		hrpc.quiesced = false
 
 		log.Println("reconnected to host via vsock")
+	}
+}
+
+// reconnectVsock retries vsock connection indefinitely with backoff.
+// Used after snapshot/restore when the host may take time to start a new VM process.
+func reconnectVsock() net.Conn {
+	vsockPort := os.Getenv("AEGIS_VSOCK_PORT")
+	vsockCID := os.Getenv("AEGIS_VSOCK_CID")
+
+	delay := 500 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		conn, err := dialVsock(vsockPort, vsockCID)
+		if err == nil {
+			return conn
+		}
+		if attempt%20 == 0 {
+			log.Printf("vsock reconnect attempt %d: %v (retrying...)", attempt, err)
+		}
+		time.Sleep(delay)
+		if delay < 5*time.Second {
+			delay = delay * 3 / 2 // backoff up to 5s
+		}
 	}
 }
 
