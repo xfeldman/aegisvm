@@ -6,6 +6,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xfeldman/aegisvm/internal/blob"
 	"github.com/xfeldman/aegisvm/internal/kit"
 	"github.com/xfeldman/aegisvm/internal/version"
 )
@@ -75,8 +77,10 @@ type mcpToolCallParams struct {
 }
 
 type mcpContent struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
 }
 
 type mcpToolResult struct {
@@ -321,6 +325,18 @@ var tools = []mcpTool{
 			"properties": {
 				"instance":   {"type": "string", "description": "Instance handle or ID"},
 				"text":       {"type": "string", "description": "Message text to send to the agent"},
+				"images": {
+					"type": "array",
+					"description": "Images to include with the message. Each image is base64-encoded.",
+					"items": {
+						"type": "object",
+						"properties": {
+							"media_type": {"type": "string", "description": "MIME type (image/png, image/jpeg, image/gif, image/webp)"},
+							"data":       {"type": "string", "description": "Base64-encoded image data"}
+						},
+						"required": ["media_type", "data"]
+					}
+				},
 				"session_id": {"type": "string", "description": "Session identifier for conversation threading. Use a stable ID per conversation (e.g. 'debug-1', 'task-analyze'). Default: 'default'."}
 			},
 			"required": ["instance", "text"]
@@ -778,15 +794,70 @@ func handleTetherSend(args json.RawMessage) *mcpToolResult {
 		Instance  string `json:"instance"`
 		Text      string `json:"text"`
 		SessionID string `json:"session_id"`
+		Images    []struct {
+			MediaType string `json:"media_type"`
+			Data      string `json:"data"`
+		} `json:"images"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return errorResult("invalid arguments: " + err.Error())
 	}
-	if params.Instance == "" || params.Text == "" {
-		return errorResult("instance and text are required")
+	if params.Instance == "" {
+		return errorResult("instance is required")
+	}
+	if params.Text == "" && len(params.Images) == 0 {
+		return errorResult("text or images required")
+	}
+	if len(params.Images) > blob.MaxImagesPerMessage {
+		return errorResult(fmt.Sprintf("too many images: %d (max %d)", len(params.Images), blob.MaxImagesPerMessage))
 	}
 	if params.SessionID == "" {
 		params.SessionID = "default"
+	}
+
+	// Build payload
+	payload := map[string]interface{}{"text": params.Text}
+
+	// If images present, write to blob store
+	if len(params.Images) > 0 {
+		// Look up instance workspace
+		infoStatus, infoData, err := doRequest("GET", "/v1/instances/"+params.Instance, nil)
+		if err != nil {
+			return errorResult(err.Error())
+		}
+		if infoStatus >= 400 {
+			return errorResult(fmt.Sprintf("HTTP %d: %s", infoStatus, string(infoData)))
+		}
+		var instInfo struct {
+			Workspace string `json:"workspace"`
+		}
+		json.Unmarshal(infoData, &instInfo)
+		if instInfo.Workspace == "" {
+			return errorResult("images require workspace mapping")
+		}
+
+		blobStore := blob.NewWorkspaceBlobStore(instInfo.Workspace)
+		var imageRefs []map[string]interface{}
+
+		for _, img := range params.Images {
+			decoded, err := base64.StdEncoding.DecodeString(img.Data)
+			if err != nil {
+				return errorResult("invalid base64 image data: " + err.Error())
+			}
+			if len(decoded) > blob.MaxImageBytes {
+				return errorResult(fmt.Sprintf("image too large: %d bytes (max %d)", len(decoded), blob.MaxImageBytes))
+			}
+			key, err := blobStore.Put(decoded, img.MediaType)
+			if err != nil {
+				return errorResult("blob store put: " + err.Error())
+			}
+			imageRefs = append(imageRefs, map[string]interface{}{
+				"media_type": img.MediaType,
+				"blob":       key,
+				"size":       len(decoded),
+			})
+		}
+		payload["images"] = imageRefs
 	}
 
 	msgID := fmt.Sprintf("host-%d", time.Now().UnixNano())
@@ -799,7 +870,7 @@ func handleTetherSend(args json.RawMessage) *mcpToolResult {
 			"id":      params.SessionID,
 		},
 		"msg_id":  msgID,
-		"payload": map[string]string{"text": params.Text},
+		"payload": payload,
 	}
 
 	status, data, err := doRequest("POST", "/v1/instances/"+params.Instance+"/tether", frame)
@@ -865,7 +936,82 @@ func handleTetherRead(args json.RawMessage) *mcpToolResult {
 		return errorResult(fmt.Sprintf("HTTP %d: %s", status, string(data)))
 	}
 
-	return textResult(string(data))
+	// Check for images in assistant.done frames and return as MCP image content
+	imageContents := extractTetherImages(params.Instance, data)
+
+	result := &mcpToolResult{
+		Content: []mcpContent{{Type: "text", Text: string(data)}},
+	}
+	result.Content = append(result.Content, imageContents...)
+	return result
+}
+
+// extractTetherImages scans tether poll response for assistant.done frames
+// with image refs, reads blobs from the instance workspace, and returns
+// MCP image content blocks.
+func extractTetherImages(instance string, data []byte) []mcpContent {
+	var pollResult struct {
+		Frames []struct {
+			Type    string          `json:"type"`
+			Payload json.RawMessage `json:"payload"`
+		} `json:"frames"`
+	}
+	if json.Unmarshal(data, &pollResult) != nil {
+		return nil
+	}
+
+	// Collect all image refs from assistant.done frames
+	var imageRefs []struct {
+		MediaType string `json:"media_type"`
+		Blob      string `json:"blob"`
+	}
+	for _, f := range pollResult.Frames {
+		if f.Type != "assistant.done" {
+			continue
+		}
+		var payload struct {
+			Images []struct {
+				MediaType string `json:"media_type"`
+				Blob      string `json:"blob"`
+			} `json:"images"`
+		}
+		if json.Unmarshal(f.Payload, &payload) != nil || len(payload.Images) == 0 {
+			continue
+		}
+		imageRefs = append(imageRefs, payload.Images...)
+	}
+
+	if len(imageRefs) == 0 {
+		return nil
+	}
+
+	// Look up instance workspace
+	infoStatus, infoData, err := doRequest("GET", "/v1/instances/"+instance, nil)
+	if err != nil || infoStatus >= 400 {
+		return nil
+	}
+	var instInfo struct {
+		Workspace string `json:"workspace"`
+	}
+	json.Unmarshal(infoData, &instInfo)
+	if instInfo.Workspace == "" {
+		return nil
+	}
+
+	blobStore := blob.NewWorkspaceBlobStore(instInfo.Workspace)
+	var contents []mcpContent
+	for _, ref := range imageRefs {
+		blobData, err := blobStore.Get(ref.Blob)
+		if err != nil {
+			continue // silently skip missing blobs
+		}
+		contents = append(contents, mcpContent{
+			Type:     "image",
+			Data:     base64.StdEncoding.EncodeToString(blobData),
+			MimeType: ref.MediaType,
+		})
+	}
+	return contents
 }
 
 // --- Result helpers ---
@@ -908,8 +1054,8 @@ var toolHandlers = map[string]func(json.RawMessage) *mcpToolResult{
 func main() {
 	enc := json.NewEncoder(os.Stdout)
 	scanner := bufio.NewScanner(os.Stdin)
-	// Allow large messages (16MB)
-	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	// Allow large messages (64MB — tether_send with 4 × 10MB images is ~53MB base64)
+	scanner.Buffer(make([]byte, 0, 64*1024), 64*1024*1024)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()

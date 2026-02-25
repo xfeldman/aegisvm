@@ -344,6 +344,9 @@ func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 			resp["gateway_running"] = s.daemons.IsRunning(inst.ID)
 		}
 	}
+	if inst.WorkspacePath != "" {
+		resp["workspace"] = inst.WorkspacePath
+	}
 	if !inst.StoppedAt.IsZero() {
 		resp["stopped_at"] = inst.StoppedAt.Format(time.RFC3339)
 	}

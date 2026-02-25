@@ -100,14 +100,22 @@ func main() {
 // handleUserMessage processes an incoming user message through the agentic loop.
 func (a *Agent) handleUserMessage(frame TetherFrame) {
 	var payload struct {
-		Text string `json:"text"`
+		Text   string `json:"text"`
+		Images []struct {
+			MediaType string `json:"media_type"`
+			Blob      string `json:"blob"`
+			Size      int64  `json:"size"`
+		} `json:"images"`
 		User *struct {
 			ID       string `json:"id"`
 			Username string `json:"username"`
 			Name     string `json:"name"`
 		} `json:"user"`
 	}
-	if err := json.Unmarshal(frame.Payload, &payload); err != nil || payload.Text == "" {
+	if err := json.Unmarshal(frame.Payload, &payload); err != nil {
+		return
+	}
+	if payload.Text == "" && len(payload.Images) == 0 {
 		return
 	}
 
@@ -126,7 +134,25 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 		}
 	}
 
-	sess.appendTurn(Turn{Role: "user", Content: content, TS: frame.TS, User: userName})
+	// Build turn content: plain string for text-only, content blocks for images
+	var turnContent interface{}
+	if len(payload.Images) > 0 {
+		blocks := []interface{}{
+			map[string]interface{}{"type": "text", "text": content},
+		}
+		for _, img := range payload.Images {
+			blocks = append(blocks, map[string]interface{}{
+				"type":       "image",
+				"media_type": img.MediaType,
+				"blob":       img.Blob,
+			})
+		}
+		turnContent = blocks
+	} else {
+		turnContent = content
+	}
+
+	sess.appendTurn(Turn{Role: "user", Content: turnContent, TS: frame.TS, User: userName})
 	a.sendPresence(frame.Session, "thinking")
 
 	if a.llm == nil {

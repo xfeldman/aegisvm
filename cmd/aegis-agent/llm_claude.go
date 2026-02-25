@@ -39,7 +39,7 @@ func (c *ClaudeLLM) StreamChat(ctx context.Context, messages []Message, tools []
 				msg["content"] = v
 			}
 		default:
-			msg["content"] = v
+			msg["content"] = transformContentForClaude(v)
 		}
 		chatMessages = append(chatMessages, msg)
 	}
@@ -154,4 +154,38 @@ func parseClaudeStream(r io.Reader, onDelta func(string)) (*LLMResponse, error) 
 
 	llmResp.RawContent = contentBlocks
 	return llmResp, scanner.Err()
+}
+
+// transformContentForClaude converts tether-neutral image blocks to Claude API format.
+// Input:  {"type": "image", "media_type": "image/png", "data": "<b64>"}
+// Output: {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "<b64>"}}
+// Text and tool_use blocks pass through unchanged.
+func transformContentForClaude(v interface{}) interface{} {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return v
+	}
+	var blocks []map[string]interface{}
+	if json.Unmarshal(data, &blocks) != nil {
+		return v
+	}
+	var result []map[string]interface{}
+	for _, b := range blocks {
+		blockType, _ := b["type"].(string)
+		if blockType == "image" {
+			mediaType, _ := b["media_type"].(string)
+			imgData, _ := b["data"].(string)
+			result = append(result, map[string]interface{}{
+				"type": "image",
+				"source": map[string]interface{}{
+					"type":       "base64",
+					"media_type": mediaType,
+					"data":       imgData,
+				},
+			})
+		} else {
+			result = append(result, b)
+		}
+	}
+	return result
 }

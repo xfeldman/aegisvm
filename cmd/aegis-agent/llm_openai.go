@@ -33,29 +33,64 @@ func (o *OpenAILLM) StreamChat(ctx context.Context, messages []Message, tools []
 			// Reconstruct OpenAI format from stored content blocks
 			data, _ := json.Marshal(v)
 			var blocks []struct {
-				Type  string          `json:"type"`
-				Text  string          `json:"text,omitempty"`
-				ID    string          `json:"id,omitempty"`
-				Name  string          `json:"name,omitempty"`
-				Input json.RawMessage `json:"input,omitempty"`
+				Type      string          `json:"type"`
+				Text      string          `json:"text,omitempty"`
+				ID        string          `json:"id,omitempty"`
+				Name      string          `json:"name,omitempty"`
+				Input     json.RawMessage `json:"input,omitempty"`
+				MediaType string          `json:"media_type,omitempty"`
+				Data      string          `json:"data,omitempty"`
 			}
 			if json.Unmarshal(data, &blocks) == nil {
-				var text string
-				var tcs []map[string]interface{}
-				for _, b := range blocks {
-					if b.Type == "text" {
-						text += b.Text
-					} else if b.Type == "tool_use" {
-						inputStr, _ := json.Marshal(b.Input)
-						tcs = append(tcs, map[string]interface{}{
-							"id": b.ID, "type": "function",
-							"function": map[string]interface{}{"name": b.Name, "arguments": string(inputStr)},
-						})
+				// Check if this user message has images
+				hasImages := false
+				if m.Role == "user" {
+					for _, b := range blocks {
+						if b.Type == "image" {
+							hasImages = true
+							break
+						}
 					}
 				}
-				msg["content"] = text
-				if len(tcs) > 0 {
-					msg["tool_calls"] = tcs
+
+				if hasImages {
+					// Build OpenAI multi-content array with image_url blocks
+					var parts []map[string]interface{}
+					for _, b := range blocks {
+						if b.Type == "text" {
+							parts = append(parts, map[string]interface{}{
+								"type": "text",
+								"text": b.Text,
+							})
+						} else if b.Type == "image" {
+							parts = append(parts, map[string]interface{}{
+								"type": "image_url",
+								"image_url": map[string]string{
+									"url": "data:" + b.MediaType + ";base64," + b.Data,
+								},
+							})
+						}
+					}
+					msg["content"] = parts
+				} else {
+					// Text + tool_use blocks (assistant turns)
+					var text string
+					var tcs []map[string]interface{}
+					for _, b := range blocks {
+						if b.Type == "text" {
+							text += b.Text
+						} else if b.Type == "tool_use" {
+							inputStr, _ := json.Marshal(b.Input)
+							tcs = append(tcs, map[string]interface{}{
+								"id": b.ID, "type": "function",
+								"function": map[string]interface{}{"name": b.Name, "arguments": string(inputStr)},
+							})
+						}
+					}
+					msg["content"] = text
+					if len(tcs) > 0 {
+						msg["tool_calls"] = tcs
+					}
 				}
 			} else {
 				msg["content"] = fmt.Sprint(v)

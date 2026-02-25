@@ -2,11 +2,14 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"log"
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/xfeldman/aegisvm/internal/blob"
 )
 
 // Session tracks a conversation with a specific channel+ID pair.
@@ -119,11 +122,49 @@ func (s *Session) assembleContext(systemPrompt string) []Message {
 
 	messages := []Message{{Role: "system", Content: systemPrompt}}
 	for _, t := range selected {
+		content := t.Content
+		// For user turns with non-string content, resolve image blob refs to base64
+		if _, isStr := content.(string); !isStr && t.Role == "user" {
+			content = loadImageBlobs(t)
+		}
 		messages = append(messages, Message{
-			Role: t.Role, Content: t.Content, ToolCallID: t.ToolCallID,
+			Role: t.Role, Content: content, ToolCallID: t.ToolCallID,
 		})
 	}
 	return messages
+}
+
+// loadImageBlobs resolves blob refs in image content blocks to base64 data.
+func loadImageBlobs(t Turn) interface{} {
+	blocks, ok := parseContentBlocks(t.Content)
+	if !ok {
+		return t.Content
+	}
+
+	blobStore := blob.NewWorkspaceBlobStore(workspaceRoot)
+	var result []map[string]interface{}
+
+	for _, b := range blocks {
+		if b["type"] == "image" {
+			blobKey, _ := b["blob"].(string)
+			if blobKey == "" {
+				continue // skip malformed
+			}
+			data, err := blobStore.Get(blobKey)
+			if err != nil {
+				continue // silently drop missing blobs
+			}
+			mediaType, _ := b["media_type"].(string)
+			result = append(result, map[string]interface{}{
+				"type":       "image",
+				"media_type": mediaType,
+				"data":       base64.StdEncoding.EncodeToString(data),
+			})
+		} else {
+			result = append(result, b)
+		}
+	}
+	return result
 }
 
 func turnSize(t Turn) int {
@@ -132,6 +173,28 @@ func turnSize(t Turn) int {
 		return len(v)
 	default:
 		data, _ := json.Marshal(v)
-		return len(data)
+		size := len(data)
+		// Add fixed cost per image block for context windowing
+		if blocks, ok := parseContentBlocks(v); ok {
+			for _, b := range blocks {
+				if b["type"] == "image" {
+					size += 2000
+				}
+			}
+		}
+		return size
 	}
+}
+
+// parseContentBlocks attempts to parse content as a slice of map blocks.
+func parseContentBlocks(v interface{}) ([]map[string]interface{}, bool) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, false
+	}
+	var blocks []map[string]interface{}
+	if json.Unmarshal(data, &blocks) != nil {
+		return nil, false
+	}
+	return blocks, true
 }

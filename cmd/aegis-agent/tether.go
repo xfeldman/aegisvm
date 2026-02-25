@@ -59,6 +59,24 @@ func (a *Agent) sendDone(session SessionID, text string) {
 	})
 }
 
+// ImageRef is a reference to a blob in the workspace blob store.
+type ImageRef struct {
+	MediaType string `json:"media_type"`
+	Blob      string `json:"blob"`
+	Size      int64  `json:"size"`
+}
+
+func (a *Agent) sendDoneWithImages(session SessionID, text string, images []ImageRef) {
+	payload := map[string]interface{}{"text": text}
+	if len(images) > 0 {
+		payload["images"] = images
+	}
+	a.sendFrame(TetherFrame{
+		V: 1, Type: "assistant.done", TS: now(), Session: session,
+		Payload: mustMarshal(payload),
+	})
+}
+
 func (a *Agent) sendFrame(frame TetherFrame) {
 	data, _ := json.Marshal(frame)
 	resp, err := http.Post(harnessAPI+"/v1/tether/send", "application/json", bytes.NewReader(data))
