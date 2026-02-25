@@ -6,7 +6,9 @@ if [ ! -e /dev/kvm ]; then
     echo "AegisVM requires KVM for hardware-accelerated VMs."
     echo "Ensure your kernel has KVM support and load the module:"
     echo "  sudo modprobe kvm"
-    echo "  sudo modprobe kvm_intel  # or kvm_amd"
+    echo "  sudo modprobe kvm_intel  # x86 Intel"
+    echo "  sudo modprobe kvm_amd    # x86 AMD"
+    echo "  # arm64: KVM is built into the kernel — no extra module needed"
 fi
 
 exit 0
