@@ -58,15 +58,13 @@ make all
 
 ### Linux
 
-#### .deb package (recommended)
+#### One-liner (recommended)
 
 ```bash
-curl -sSL https://github.com/xfeldman/aegisvm/releases/latest/download/aegisvm.deb -o aegisvm.deb
-sudo dpkg -i aegisvm.deb
-sudo apt-get install -f    # pulls virtiofsd, e2fsprogs, iptables, iproute2
+curl -sSL https://raw.githubusercontent.com/xfeldman/aegisvm/main/install.sh | sh
 ```
 
-This installs `aegis`, `aegisd`, and `aegis-mcp` to `/usr/bin/`, bundles Cloud Hypervisor and a prebuilt microVM kernel, and checks for `/dev/kvm` on install.
+Installs both `aegisvm` and `aegisvm-agent-kit` packages, plus dependencies (`virtiofsd`, `e2fsprogs`, `iptables`, `iproute2`). Binaries go to `/usr/bin/` and `/usr/lib/aegisvm/`, kernel to `/usr/share/aegisvm/kernel/`.
 
 #### From source
 

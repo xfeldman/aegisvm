@@ -27,15 +27,13 @@ brew install aegisvm
 
 Requires Apple Silicon (M1+).
 
-### Linux (apt / .deb)
+### Linux
 
 ```bash
-curl -sSL https://github.com/xfeldman/aegisvm/releases/latest/download/aegisvm.deb -o aegisvm.deb
-sudo dpkg -i aegisvm.deb
-sudo apt-get install -f    # pulls virtiofsd, e2fsprogs
+curl -sSL https://raw.githubusercontent.com/xfeldman/aegisvm/main/install.sh | sh
 ```
 
-Requires x86_64 or arm64 with KVM (`/dev/kvm`).
+Installs `aegisvm` + `aegisvm-agent-kit` and dependencies. Requires x86_64 or arm64 with KVM (`/dev/kvm`).
 
 ## Quick start
 
@@ -56,12 +54,8 @@ Agent Kit adds an LLM agent to AegisVM instances. Each agent runs in its own iso
 **Pair debugging across host + VM.** Run your backend inside a VM while a host-side agent and the in-VM agent collaborate over tether. You get live, interactive debugging with full isolation: the host agent can orchestrate, the VM agent can inspect the sandboxed runtime, and the VM still scale-to-zero when idle.
 
 ```bash
-# macOS
+# macOS (Linux: already included by install.sh)
 brew install aegisvm-agent-kit
-
-# Linux
-curl -sSL https://github.com/xfeldman/aegisvm/releases/latest/download/aegisvm-agent-kit.deb -o aegisvm-agent-kit.deb
-sudo dpkg -i aegisvm-agent-kit.deb
 ```
 
 ```bash
