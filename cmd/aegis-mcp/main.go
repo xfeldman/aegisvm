@@ -990,9 +990,11 @@ Tether conversation pattern:
 Sessions: each tether_send uses a session_id (default: "default"). Use different session_ids for independent conversations with the same agent. Sessions maintain separate conversation histories.
 
 Example — delegate research to an agent:
-  1. instance_start with kit="agent", name="researcher", secrets=["OPENAI_API_KEY"]
-  2. tether_send(instance="researcher", text="Find the top 5 Python libraries for data visualization and explain each")
-  3. tether_read(instance="researcher", after_seq=<ingress_seq>, wait_ms=15000) — repeat until assistant.done
+  1. kit_list — check required_secrets (agent kit needs one of OPENAI_API_KEY or ANTHROPIC_API_KEY)
+  2. secret_list — verify the required secret is available
+  3. instance_start with kit="agent", name="researcher", secrets=["OPENAI_API_KEY"], workspace="/path/to/project"
+  4. tether_send(instance="researcher", text="Find the top 5 Python libraries for data visualization and explain each")
+  5. tether_read(instance="researcher", after_seq=<ingress_seq>, wait_ms=15000) — repeat until assistant.done
 
 Example — run a script directly:
   1. instance_start with workspace="/path/to/project", command=["python3", "/workspace/script.py"], name="myapp"
