@@ -3,6 +3,8 @@
 /aegisd
 /aegis
 /aegis-harness
+/aegis-mcp
+/aegis-vmm-worker
 
 # Base rootfs
 base/*.ext4
