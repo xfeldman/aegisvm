@@ -201,6 +201,8 @@ func (v *CloudHypervisorVMM) CreateVM(cfg VMConfig) (Handle, error) {
 
 // SetSnapshotDir sets the snapshot directory for a VM handle.
 // Called by the lifecycle manager before StartVM to trigger restore path.
+// Reads the snapshot's config.json to override tap, subnet, and vsock paths
+// so the restored CH process finds matching network config.
 func (v *CloudHypervisorVMM) SetSnapshotDir(h Handle, dir string) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -209,6 +211,49 @@ func (v *CloudHypervisorVMM) SetSnapshotDir(h Handle, dir string) error {
 		return fmt.Errorf("vm %s not found", h.ID)
 	}
 	inst.snapshotDir = dir
+
+	// Read the snapshot's config to restore original tap/subnet/vsock paths.
+	// CH's vm.restore uses the config.json from the snapshot — the host-side
+	// resources (tap device, vsock socket) must match.
+	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil {
+		return nil // proceed without overrides
+	}
+	var snapCfg struct {
+		Net []struct {
+			Tap string `json:"tap"`
+		} `json:"net"`
+		Vsock struct {
+			Socket string `json:"socket"`
+		} `json:"vsock"`
+	}
+	if json.Unmarshal(data, &snapCfg) != nil {
+		return nil
+	}
+
+	// Override tap name — must match snapshot so CH finds the device
+	if len(snapCfg.Net) > 0 && snapCfg.Net[0].Tap != "" {
+		oldTap := inst.tapName
+		inst.tapName = snapCfg.Net[0].Tap
+		// Derive subnet from tap index (same scheme as CreateVM)
+		var idx uint32
+		fmt.Sscanf(inst.tapName, "aegis%d", &idx)
+		thirdOctet := idx / 64
+		fourthBase := (idx % 64) * 4
+		inst.hostIP = fmt.Sprintf("172.16.%d.%d", thirdOctet, fourthBase+1)
+		inst.guestIP = fmt.Sprintf("172.16.%d.%d", thirdOctet, fourthBase+2)
+		// Update any pre-allocated endpoints to use the restored guest IP
+		for i := range inst.endpoints {
+			inst.endpoints[i].BackendAddr = inst.guestIP
+		}
+		log.Printf("vmm: restore override tap %s→%s (guest %s)", oldTap, inst.tapName, inst.guestIP)
+	}
+
+	// Override vsock socket path
+	if snapCfg.Vsock.Socket != "" {
+		inst.vsockSocket = snapCfg.Vsock.Socket
+	}
+
 	return nil
 }
 
@@ -246,18 +291,11 @@ func (v *CloudHypervisorVMM) StartVM(h Handle) (ControlChannel, error) {
 	}
 
 	// 4. Pre-create vsock unix socket listener for harness connection.
-	// On restore, CH reads the vsock socket path from the snapshot's config.json,
-	// so we must listen on that original path (not the new instance's path).
-	vsockBase := inst.vsockSocket
-	if inst.snapshotDir != "" {
-		if origPath := readSnapshotVsockPath(inst.snapshotDir); origPath != "" {
-			vsockBase = origPath
-		}
-	}
-	vsockListenPath := fmt.Sprintf("%s_%d", vsockBase, harnessVsockPort)
+	// On restore, inst.vsockSocket was already overridden by SetSnapshotDir
+	// to match the snapshot's original path.
+	vsockListenPath := fmt.Sprintf("%s_%d", inst.vsockSocket, harnessVsockPort)
 	os.Remove(vsockListenPath) // clean stale
-	// Also clean the base socket (CH binds the non-suffixed path)
-	os.Remove(vsockBase)
+	os.Remove(inst.vsockSocket) // clean base socket (CH binds this)
 	vsockLn, err := net.Listen("unix", vsockListenPath)
 	if err != nil {
 		v.cleanupInstance(inst)
@@ -437,7 +475,7 @@ func (v *CloudHypervisorVMM) acceptHarness(ln net.Listener, timeout time.Duratio
 		unixLn.SetDeadline(time.Now().Add(timeout))
 	}
 	conn, err := ln.Accept()
-	ln.Close() // only need one connection
+	ln.Close()
 	if err != nil {
 		return nil, fmt.Errorf("harness did not connect within %v: %w", timeout, err)
 	}
@@ -765,25 +803,6 @@ func waitForSocket(path string, timeout time.Duration) error {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return fmt.Errorf("socket %s did not appear within %v", path, timeout)
-}
-
-// readSnapshotVsockPath reads the vsock socket path from a snapshot's config.json.
-// CH stores the original vsock config in the snapshot, and on restore binds to that
-// path — so the host-side listener must match.
-func readSnapshotVsockPath(snapshotDir string) string {
-	data, err := os.ReadFile(filepath.Join(snapshotDir, "config.json"))
-	if err != nil {
-		return ""
-	}
-	var cfg struct {
-		Vsock struct {
-			Socket string `json:"socket"`
-		} `json:"vsock"`
-	}
-	if json.Unmarshal(data, &cfg) != nil {
-		return ""
-	}
-	return cfg.Vsock.Socket
 }
 
 // runCmd runs a command and returns an error if it fails.
