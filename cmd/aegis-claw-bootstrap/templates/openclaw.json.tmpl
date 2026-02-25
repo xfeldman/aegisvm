@@ -1,0 +1,26 @@
+{
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "loopback"
+  },
+  "agents": {
+    "defaults": {
+      "model": {"primary": "{{.Model}}"},
+      "workspace": "/workspace",
+      "maxConcurrent": 4,
+      "tools": {"allow": ["*"]},
+      "sandbox": {"mode": "off"},
+      "compaction": {"mode": "safeguard"},
+      "canvas": {"outputDir": "/workspace/canvas"}
+    }
+  },
+  "memory": {
+    "dataDir": "/workspace/.openclaw/memory",
+    "embedding": {"provider": "{{.EmbeddingProvider}}"}
+  },
+  "channels": {
+    "aegis": {"enabled": true}
+  },
+  "plugins": {"entries": {}}
+}

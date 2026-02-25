@@ -2,7 +2,8 @@
 #
 # Called from the top-level Makefile:
 #   make deb            → aegisvm_$(VERSION)_$(ARCH).deb
-#   make deb-agent-kit  → aegisvm-agent-kit_$(VERSION)_$(ARCH).deb
+#   make deb-agent-kit    → aegisvm-agent-kit_$(VERSION)_$(ARCH).deb
+#   make deb-openclaw-kit → aegisvm-openclaw-kit_$(VERSION)_$(ARCH).deb
 
 SHELL := /bin/bash
 
@@ -19,15 +20,20 @@ DEB_VERSION := $(patsubst v%,%,$(VERSION))
 # Staging directories
 STAGE_CORE := _build/aegisvm
 STAGE_KIT := _build/aegisvm-agent-kit
+STAGE_CLAW := _build/aegisvm-openclaw-kit
 
 # Output
 OUT_CORE := aegisvm_$(DEB_VERSION)_$(ARCH).deb
 OUT_KIT := aegisvm-agent-kit_$(DEB_VERSION)_$(ARCH).deb
+OUT_CLAW := aegisvm-openclaw-kit_$(DEB_VERSION)_$(ARCH).deb
 
-.PHONY: aegisvm aegisvm-agent-kit clean
+PKGS_DIR ?= ../packages
+
+.PHONY: aegisvm aegisvm-agent-kit aegisvm-openclaw-kit clean
 
 aegisvm: $(OUT_CORE)
 aegisvm-agent-kit: $(OUT_KIT)
+aegisvm-openclaw-kit: $(OUT_CLAW)
 
 $(OUT_CORE):
 	@echo "==> Building $(OUT_CORE)"
@@ -76,6 +82,25 @@ $(OUT_KIT):
 	# Build .deb
 	dpkg-deb --build --root-owner-group $(STAGE_KIT) $(OUT_KIT)
 	@echo "==> Built $(OUT_KIT)"
+
+$(OUT_CLAW):
+	@echo "==> Building $(OUT_CLAW)"
+	rm -rf $(STAGE_CLAW)
+	# DEBIAN metadata
+	mkdir -p $(STAGE_CLAW)/DEBIAN
+	sed -e 's/__VERSION__/$(DEB_VERSION)/g' -e 's/__ARCH__/$(ARCH)/g' \
+		aegisvm-openclaw-kit/DEBIAN/control > $(STAGE_CLAW)/DEBIAN/control
+	# /usr/lib/aegisvm/ — kit binaries
+	mkdir -p $(STAGE_CLAW)/usr/lib/aegisvm
+	cp $(BIN_DIR)/aegis-gateway $(STAGE_CLAW)/usr/lib/aegisvm/
+	cp $(BIN_DIR)/aegis-claw-bootstrap $(STAGE_CLAW)/usr/lib/aegisvm/
+	# /usr/share/aegisvm/kits/ — kit manifest
+	mkdir -p $(STAGE_CLAW)/usr/share/aegisvm/kits
+	sed 's/"version": *"[^"]*"/"version": "$(VERSION)"/' \
+		$(KITS_DIR)/openclaw.json > $(STAGE_CLAW)/usr/share/aegisvm/kits/openclaw.json
+	# Build .deb
+	dpkg-deb --build --root-owner-group $(STAGE_CLAW) $(OUT_CLAW)
+	@echo "==> Built $(OUT_CLAW)"
 
 clean:
 	rm -rf _build *.deb

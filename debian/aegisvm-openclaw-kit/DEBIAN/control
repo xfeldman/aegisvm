@@ -1,0 +1,12 @@
+Package: aegisvm-openclaw-kit
+Version: __VERSION__
+Section: devel
+Priority: optional
+Architecture: __ARCH__
+Depends: aegisvm (>= __VERSION__)
+Maintainer: AegisVM <aegisvm@xfeldman.dev>
+Homepage: https://github.com/xfeldman/aegisvm
+Description: OpenClaw kit for AegisVM — rich agent runtime with tether bridge
+ Adds the OpenClaw kit to AegisVM: OpenClaw-powered agent with rich tools,
+ semantic memory, browser control, canvas, and context compaction, bridged
+ to AegisVM tether protocol via a custom channel extension.

@@ -1,0 +1,31 @@
+{
+  "name": "@aegis/openclaw-channel-aegis",
+  "version": "0.1.0",
+  "description": "AegisVM tether channel extension for OpenClaw — bridges tether protocol to OpenClaw's channel system",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  },
+  "openclaw": {
+    "extensions": ["./dist/index.js"],
+    "channel": {
+      "id": "aegis",
+      "label": "AegisVM Tether",
+      "blurb": "Bridges AegisVM tether protocol to OpenClaw"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts"
+  ],
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^22.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
+}

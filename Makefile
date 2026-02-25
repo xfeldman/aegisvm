@@ -51,7 +51,7 @@ else
 ALL_TARGETS := aegisd aegis harness vmm-worker mcp mcp-guest gateway agent
 endif
 
-.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent base-rootfs clean test test-unit test-m2 test-m3 test-network integration install-kit release-tarball release-kit-tarball cloud-hypervisor kernel kernel-build deb deb-agent-kit release-linux-tarball
+.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent claw-bootstrap claw-channel base-rootfs clean test test-unit test-m2 test-m3 test-network integration install-kit install-openclaw-kit release-tarball release-kit-tarball release-openclaw-kit-tarball cloud-hypervisor kernel kernel-build deb deb-agent-kit deb-openclaw-kit release-linux-tarball
 
 all: $(ALL_TARGETS)
 
@@ -104,6 +104,18 @@ agent:
 	@mkdir -p $(BIN_DIR)
 	GOOS=$(HARNESS_OS) GOARCH=$(HARNESS_ARCH) CGO_ENABLED=0 \
 		$(GO) build $(GOFLAGS) -o $(BIN_DIR)/aegis-agent ./cmd/aegis-agent
+
+# aegis-claw-bootstrap — OpenClaw kit bootstrap (static Linux binary)
+claw-bootstrap: claw-channel
+	@mkdir -p $(BIN_DIR)
+	cp packages/openclaw-channel-aegis/aegis-openclaw-channel-aegis-*.tgz \
+		cmd/aegis-claw-bootstrap/channel-extension.tgz
+	GOOS=$(HARNESS_OS) GOARCH=$(HARNESS_ARCH) CGO_ENABLED=0 \
+		$(GO) build $(GOFLAGS) -o $(BIN_DIR)/aegis-claw-bootstrap ./cmd/aegis-claw-bootstrap
+
+# OpenClaw channel extension — TypeScript npm package
+claw-channel:
+	cd packages/openclaw-channel-aegis && npm install && npm run build && npm pack
 
 # Base rootfs — Alpine with harness baked in
 # Requires: brew install e2fsprogs (for mkfs.ext4)
@@ -317,11 +329,36 @@ release-linux-tarball: $(ALL_TARGETS) gateway agent
 	@rm -rf /tmp/aegisvm-tarball-staging
 	@echo "==> Built aegisvm-$(VERSION)-linux-$(HOST_ARCH).tar.gz"
 
+# Release tarball for OpenClaw kit (macOS)
+release-openclaw-kit-tarball: gateway claw-bootstrap
+	@mkdir -p /tmp/openclaw-kit-staging
+	cp $(BIN_DIR)/aegis-gateway $(BIN_DIR)/aegis-claw-bootstrap /tmp/openclaw-kit-staging/
+	cp packages/openclaw-channel-aegis/aegis-openclaw-channel-aegis-*.tgz /tmp/openclaw-kit-staging/
+	sed 's/"version": *"[^"]*"/"version": "$(VERSION)"/' kits/openclaw.json > /tmp/openclaw-kit-staging/openclaw.json
+	tar czf aegisvm-openclaw-kit-$(VERSION)-darwin-arm64.tar.gz -C /tmp/openclaw-kit-staging .
+	@rm -rf /tmp/openclaw-kit-staging
+
+# Linux .deb for OpenClaw kit
+deb-openclaw-kit: gateway claw-bootstrap
+	@echo "==> Rebuilding OpenClaw kit binaries with system paths for .deb..."
+	CGO_ENABLED=0 $(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis-gateway ./cmd/aegis-gateway
+	cp packages/openclaw-channel-aegis/aegis-openclaw-channel-aegis-*.tgz \
+		cmd/aegis-claw-bootstrap/channel-extension.tgz
+	GOOS=$(HARNESS_OS) GOARCH=$(HARNESS_ARCH) CGO_ENABLED=0 \
+		$(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis-claw-bootstrap ./cmd/aegis-claw-bootstrap
+	$(MAKE) -C debian aegisvm-openclaw-kit \
+		VERSION=$(VERSION) ARCH=$(HOST_ARCH) BIN_DIR=../$(BIN_DIR) KITS_DIR=../kits
+
 # Install kit manifests for development (stamps git version into manifest)
 install-kit:
 	@mkdir -p $(HOME)/.aegis/kits
 	sed 's/"version": *"[^"]*"/"version": "$(VERSION)"/' kits/agent.json > $(HOME)/.aegis/kits/agent.json
 	@echo "Kit manifest installed: $(HOME)/.aegis/kits/agent.json ($(VERSION))"
+
+install-openclaw-kit:
+	@mkdir -p $(HOME)/.aegis/kits
+	sed 's/"version": *"[^"]*"/"version": "$(VERSION)"/' kits/openclaw.json > $(HOME)/.aegis/kits/openclaw.json
+	@echo "Kit manifest installed: $(HOME)/.aegis/kits/openclaw.json ($(VERSION))"
 
 # Clean build artifacts
 clean:
