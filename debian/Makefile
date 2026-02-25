@@ -13,13 +13,16 @@ BIN_DIR ?= ../bin
 KITS_DIR ?= ../kits
 KERNEL_PATH ?= $(HOME)/.aegis/kernel/vmlinux
 
+# Debian version: strip leading 'v' (dpkg requires version starts with a digit)
+DEB_VERSION := $(patsubst v%,%,$(VERSION))
+
 # Staging directories
 STAGE_CORE := _build/aegisvm
 STAGE_KIT := _build/aegisvm-agent-kit
 
 # Output
-OUT_CORE := aegisvm_$(VERSION)_$(ARCH).deb
-OUT_KIT := aegisvm-agent-kit_$(VERSION)_$(ARCH).deb
+OUT_CORE := aegisvm_$(DEB_VERSION)_$(ARCH).deb
+OUT_KIT := aegisvm-agent-kit_$(DEB_VERSION)_$(ARCH).deb
 
 .PHONY: aegisvm aegisvm-agent-kit clean
 
@@ -31,7 +34,7 @@ $(OUT_CORE):
 	rm -rf $(STAGE_CORE)
 	# DEBIAN metadata
 	mkdir -p $(STAGE_CORE)/DEBIAN
-	sed -e 's/__VERSION__/$(VERSION)/g' -e 's/__ARCH__/$(ARCH)/g' \
+	sed -e 's/__VERSION__/$(DEB_VERSION)/g' -e 's/__ARCH__/$(ARCH)/g' \
 		aegisvm/DEBIAN/control > $(STAGE_CORE)/DEBIAN/control
 	cp aegisvm/DEBIAN/postinst $(STAGE_CORE)/DEBIAN/postinst
 	chmod 755 $(STAGE_CORE)/DEBIAN/postinst
@@ -60,7 +63,7 @@ $(OUT_KIT):
 	rm -rf $(STAGE_KIT)
 	# DEBIAN metadata
 	mkdir -p $(STAGE_KIT)/DEBIAN
-	sed -e 's/__VERSION__/$(VERSION)/g' -e 's/__ARCH__/$(ARCH)/g' \
+	sed -e 's/__VERSION__/$(DEB_VERSION)/g' -e 's/__ARCH__/$(ARCH)/g' \
 		aegisvm-agent-kit/DEBIAN/control > $(STAGE_KIT)/DEBIAN/control
 	# /usr/lib/aegisvm/ — kit binaries
 	mkdir -p $(STAGE_KIT)/usr/lib/aegisvm

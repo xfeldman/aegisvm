@@ -103,7 +103,9 @@ jobs:
           cache: false
 
       - name: Set version from tag
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+        run: |
+          echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          echo "DEB_VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
 
       - name: Build all binaries
         run: make all VERSION=${VERSION}
@@ -127,13 +129,13 @@ jobs:
 
       - name: Create unversioned .deb copies (latest)
         run: |
-          cp debian/aegisvm_${VERSION}_amd64.deb aegisvm.deb
-          cp debian/aegisvm-agent-kit_${VERSION}_amd64.deb aegisvm-agent-kit.deb
+          cp debian/aegisvm_${DEB_VERSION}_amd64.deb aegisvm.deb
+          cp debian/aegisvm-agent-kit_${DEB_VERSION}_amd64.deb aegisvm-agent-kit.deb
 
       - name: Generate checksums
         run: |
-          sha256sum debian/aegisvm_${VERSION}_amd64.deb | awk '{print $1}' > debian/aegisvm_${VERSION}_amd64.deb.sha256
-          sha256sum debian/aegisvm-agent-kit_${VERSION}_amd64.deb | awk '{print $1}' > debian/aegisvm-agent-kit_${VERSION}_amd64.deb.sha256
+          sha256sum debian/aegisvm_${DEB_VERSION}_amd64.deb | awk '{print $1}' > debian/aegisvm_${DEB_VERSION}_amd64.deb.sha256
+          sha256sum debian/aegisvm-agent-kit_${DEB_VERSION}_amd64.deb | awk '{print $1}' > debian/aegisvm-agent-kit_${DEB_VERSION}_amd64.deb.sha256
           sha256sum aegisvm.deb | awk '{print $1}' > aegisvm.deb.sha256
           sha256sum aegisvm-agent-kit.deb | awk '{print $1}' > aegisvm-agent-kit.deb.sha256
           sha256sum aegisvm-${VERSION}-linux-amd64.tar.gz | awk '{print $1}' > aegisvm-${VERSION}-linux-amd64.tar.gz.sha256
@@ -143,10 +145,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload "${VERSION}" \
-            debian/aegisvm_${VERSION}_amd64.deb \
-            debian/aegisvm_${VERSION}_amd64.deb.sha256 \
-            debian/aegisvm-agent-kit_${VERSION}_amd64.deb \
-            debian/aegisvm-agent-kit_${VERSION}_amd64.deb.sha256 \
+            debian/aegisvm_${DEB_VERSION}_amd64.deb \
+            debian/aegisvm_${DEB_VERSION}_amd64.deb.sha256 \
+            debian/aegisvm-agent-kit_${DEB_VERSION}_amd64.deb \
+            debian/aegisvm-agent-kit_${DEB_VERSION}_amd64.deb.sha256 \
             aegisvm.deb \
             aegisvm.deb.sha256 \
             aegisvm-agent-kit.deb \
