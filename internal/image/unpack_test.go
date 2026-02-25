@@ -288,9 +288,12 @@ func TestUnpack_OpaqueWhiteout(t *testing.T) {
 func TestUnpack_PathTraversalSkipped(t *testing.T) {
 	dest := t.TempDir()
 
-	// A malicious layer with path traversal should be skipped
+	// A malicious layer with path traversal should be skipped.
+	// Use a unique filename so we don't collide with real system files
+	// (e.g. /etc/passwd exists on Linux, which would cause a false failure).
+	traversalFile := "../../../tmp/aegisvm-traversal-test-" + filepath.Base(dest)
 	layer := buildLayer(t, []tarEntry{
-		{typeflag: tar.TypeReg, name: "../../../etc/passwd", content: "evil", mode: 0644},
+		{typeflag: tar.TypeReg, name: traversalFile, content: "evil", mode: 0644},
 		{typeflag: tar.TypeReg, name: "safe.txt", content: "safe", mode: 0644},
 	})
 	img := buildImage(t, layer)
@@ -300,8 +303,10 @@ func TestUnpack_PathTraversalSkipped(t *testing.T) {
 	}
 
 	// The traversal entry should have been skipped
-	if _, err := os.Stat(filepath.Join(dest, "..", "..", "..", "etc", "passwd")); err == nil {
+	resolved := filepath.Join(dest, traversalFile)
+	if _, err := os.Stat(resolved); err == nil {
 		t.Error("path traversal entry should have been skipped")
+		os.Remove(resolved) // clean up if it was written
 	}
 
 	// The safe file should exist

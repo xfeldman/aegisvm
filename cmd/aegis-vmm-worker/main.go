@@ -1,3 +1,5 @@
+//go:build darwin
+
 // aegis-vmm-worker is a helper process that configures and starts a libkrun microVM.
 //
 // krun_start_enter() takes over the calling process and never returns on success.
