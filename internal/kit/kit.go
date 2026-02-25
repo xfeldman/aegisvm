@@ -107,21 +107,36 @@ func ListManifests() ([]*Manifest, error) {
 	return manifests, nil
 }
 
-// ValidateManifest checks that all required kit binaries exist in binDir.
-// Returns a list of missing binary names (empty if all present).
+// ValidateManifest checks that all required kit binaries exist in binDir
+// or known system paths. Returns a list of missing binary names (empty if all present).
 func ValidateManifest(m *Manifest, binDir string) []string {
 	var missing []string
 	// Check instance daemon binaries
 	for _, d := range m.InstanceDaemons {
-		if _, err := os.Stat(filepath.Join(binDir, d)); err != nil {
+		if !binaryExists(binDir, d) {
 			missing = append(missing, d)
 		}
 	}
 	// Check inject binaries
 	for _, b := range m.Image.Inject {
-		if _, err := os.Stat(filepath.Join(binDir, b)); err != nil {
+		if !binaryExists(binDir, b) {
 			missing = append(missing, b)
 		}
 	}
 	return missing
+}
+
+// binaryExists checks whether a binary exists in binDir or known system paths.
+func binaryExists(binDir, name string) bool {
+	if binDir != "" {
+		if _, err := os.Stat(filepath.Join(binDir, name)); err == nil {
+			return true
+		}
+	}
+	for _, dir := range []string{"/usr/lib/aegisvm"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return true
+		}
+	}
+	return false
 }

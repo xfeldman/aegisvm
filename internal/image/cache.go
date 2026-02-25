@@ -147,19 +147,43 @@ func InjectHarness(rootfsDir, harnessBin string) error {
 	return injectBinary(rootfsDir, harnessBin, "aegis-harness")
 }
 
+// resolveBinary locates an aegis binary by name. Search order:
+//  1. binDir (sibling of aegisd)
+//  2. Known system paths (/usr/lib/aegisvm)
+//
+// Returns the absolute path, or "" if not found.
+func resolveBinary(binDir, name string) string {
+	if binDir != "" {
+		p := filepath.Join(binDir, name)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	for _, dir := range []string{"/usr/lib/aegisvm"} {
+		p := filepath.Join(dir, name)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
 // InjectGuestBinaries copies all guest-side aegis binaries into the rootfs.
 // Harness is required; mcp-guest is best-effort (skipped if not found).
 // Kit-specific binaries (e.g. aegis-agent) are injected separately via InjectKitBinaries.
 func InjectGuestBinaries(rootfsDir, binDir string) error {
 	// Harness is mandatory
-	if err := injectBinary(rootfsDir, filepath.Join(binDir, "aegis-harness"), "aegis-harness"); err != nil {
+	harness := resolveBinary(binDir, "aegis-harness")
+	if harness == "" {
+		return fmt.Errorf("open aegis-harness: not found in %s or system paths", binDir)
+	}
+	if err := injectBinary(rootfsDir, harness, "aegis-harness"); err != nil {
 		return err
 	}
 
 	// Optional guest binaries — skip silently if not built
 	for _, name := range []string{"aegis-mcp-guest"} {
-		src := filepath.Join(binDir, name)
-		if _, err := os.Stat(src); err == nil {
+		if src := resolveBinary(binDir, name); src != "" {
 			if err := injectBinary(rootfsDir, src, name); err != nil {
 				return err
 			}
@@ -173,9 +197,9 @@ func InjectGuestBinaries(rootfsDir, binDir string) error {
 // a kit's binaries are required, not optional.
 func InjectKitBinaries(rootfsDir, binDir string, binaries []string) error {
 	for _, name := range binaries {
-		src := filepath.Join(binDir, name)
-		if _, err := os.Stat(src); err != nil {
-			return fmt.Errorf("kit binary %q not found at %s", name, src)
+		src := resolveBinary(binDir, name)
+		if src == "" {
+			return fmt.Errorf("kit binary %q not found in %s or system paths", name, binDir)
 		}
 		if err := injectBinary(rootfsDir, src, name); err != nil {
 			return err
