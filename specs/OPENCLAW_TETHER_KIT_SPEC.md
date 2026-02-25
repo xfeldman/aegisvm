@@ -598,15 +598,116 @@ When the VM is paused/stopped, inbound tether frames accumulate in aegisd's teth
 
 ## 11. What Changes in AegisVM Core
 
-**Nothing.** The bridge is a guest binary, injected like aegis-agent. The kit manifest uses existing fields. Tether, blob store, gateway, harness — all unchanged.
-
-New artifacts to build:
-- `cmd/aegis-claw-bridge/` — the bridge binary (Node.js wrapper or Go+Node hybrid)
-- `kits/openclaw.json` — kit manifest
+**Nothing.** The bootstrap is a guest binary, injected like aegis-agent. The kit manifest uses existing fields. Tether, blob store, gateway, harness — all unchanged.
 
 ---
 
-## 12. Decisions Made
+## 12. Deliverables
+
+### 12.1 Source artifacts
+
+| Artifact | Language | Location | Description |
+|----------|----------|----------|-------------|
+| `aegis-claw-bootstrap` | Go | `cmd/aegis-claw-bootstrap/` | Bootstrap binary: config generation from embedded templates, npm install, exec into OpenClaw |
+| `@aegis/openclaw-channel-aegis` | TypeScript | `packages/openclaw-channel-aegis/` | OpenClaw channel extension: tether HTTP ↔ InboundContext adapter |
+| `openclaw.json` | JSON | `kits/openclaw.json` | Kit manifest |
+
+### 12.2 Build targets
+
+Follow the existing pattern from the agent kit (`make gateway agent`, `make release-kit-tarball`, `make deb-agent-kit`):
+
+```makefile
+# aegis-claw-bootstrap — guest bootstrap binary (static Linux ARM64)
+claw-bootstrap:
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
+		go build -o bin/aegis-claw-bootstrap ./cmd/aegis-claw-bootstrap
+
+# Channel extension — build TypeScript, pack as npm tarball
+claw-channel:
+	cd packages/openclaw-channel-aegis && npm run build && npm pack
+
+# macOS release tarball
+release-openclaw-kit-tarball: gateway claw-bootstrap claw-channel
+	# aegis-gateway (host daemon, reused from agent kit)
+	# aegis-claw-bootstrap (guest binary)
+	# openclaw-channel-aegis-*.tgz (npm package, installed at first boot)
+	# openclaw.json (kit manifest)
+
+# Linux .deb
+deb-openclaw-kit: gateway claw-bootstrap claw-channel
+	# Same pattern as deb-agent-kit
+```
+
+### 12.3 Installation packages
+
+Each kit is a separate installable package. The OpenClaw kit follows the same pattern as the agent kit:
+
+**Homebrew (macOS):**
+
+Separate cask or formula `aegisvm-openclaw-kit` that depends on `aegisvm`:
+- Installs `aegis-gateway` to bin dir (shared with agent kit — same binary)
+- Installs `aegis-claw-bootstrap` to lib dir
+- Installs `openclaw-channel-aegis-*.tgz` to share dir (npm tarball, installed into VM at first boot)
+- Installs `openclaw.json` to `share/aegisvm/kits/`
+
+```ruby
+# Formula sketch
+class AegisvmOpenclawKit < Formula
+  depends_on "aegisvm"
+
+  def install
+    bin.install "aegis-gateway"         # host daemon (shared)
+    lib.install "aegis-claw-bootstrap"  # guest binary
+    (share/"aegisvm/kits").install "openclaw.json"
+    (share/"aegisvm/packages").install "openclaw-channel-aegis-0.1.0.tgz"
+  end
+end
+```
+
+**Debian/Ubuntu (.deb):**
+
+Package `aegisvm-openclaw-kit` that depends on `aegisvm`:
+
+```
+aegisvm-openclaw-kit_0.1.0_arm64.deb
+  /usr/lib/aegisvm/aegis-gateway              ← host daemon (shared with agent kit)
+  /usr/lib/aegisvm/aegis-claw-bootstrap       ← guest binary
+  /usr/share/aegisvm/kits/openclaw.json       ← kit manifest
+  /usr/share/aegisvm/packages/openclaw-channel-aegis-0.1.0.tgz  ← npm package
+```
+
+**Development (`make install-openclaw-kit`):**
+
+```makefile
+install-openclaw-kit:
+	@mkdir -p $(HOME)/.aegis/kits
+	sed 's/"version": *"[^"]*"/"version": "$(VERSION)"/' kits/openclaw.json \
+		> $(HOME)/.aegis/kits/openclaw.json
+	@echo "Kit manifest installed: $(HOME)/.aegis/kits/openclaw.json ($(VERSION))"
+```
+
+### 12.4 Channel extension distribution
+
+The `@aegis/openclaw-channel-aegis` npm package needs to reach the VM at first boot. Two paths:
+
+**v0.1:** Bootstrap installs from a local tarball shipped with the kit package:
+```sh
+# Bootstrap checks for pre-shipped tarball in a well-known location
+CHANNEL_TGZ=$(find /usr/share/aegisvm/packages -name "openclaw-channel-aegis-*.tgz" 2>/dev/null | head -1)
+if [ -n "$CHANNEL_TGZ" ]; then
+    npm install -g "$CHANNEL_TGZ"  # local install, no network needed
+else
+    npm install -g @aegis/openclaw-channel-aegis  # fallback to registry
+fi
+```
+
+The tarball is baked into the rootfs via `image.inject` or mounted from the host via a well-known path. This avoids requiring npm registry access for the channel extension.
+
+**v0.2:** Pre-built OCI image includes both OpenClaw and the channel extension pre-installed.
+
+---
+
+## 13. Decisions Made
 
 | Question | Decision | Rationale |
 |----------|----------|-----------|
@@ -615,25 +716,26 @@ New artifacts to build:
 | **Workspace** | Required for openclaw kit | Config, npm cache, blobs, memory, canvas, sessions all need persistent writable storage. |
 | **Session authority** | Tether session is source of truth, OpenClaw session derived | Gateway and tether store own session lifecycle; OpenClaw just stores history. |
 | **Pre-built image** | v0.1: npm install at first boot. v0.2: publish pinned image. | First boot only happens once per instance lifetime. Acceptable for v0.1. |
-| **Bridge language** | Node.js (TypeScript) | Natural for OpenClaw ecosystem. Bridge talks WS to OpenClaw, HTTP to harness. |
+| **Channel extension** | TypeScript (npm package) | Natural for OpenClaw ecosystem. Runs in-process, uses channel monitor API. |
+| **Bootstrap binary** | Go | Static binary, no Node dependency for config generation. Matches existing Aegis binary pattern. |
 | **Auth sync** | Write at boot from env vars | Simple, sufficient. Secrets don't change while VM is running. |
 | **Skills** | None pre-installed | User installs from ClawHub on demand. Skills persist in workspace. |
 
 ---
 
-## 13. Open Questions
+## 14. Open Questions
 
-1. **OpenClaw WebSocket client protocol:** Need to map the exact message format for Option A. The CLI and mobile apps use it — reverse-engineer from TypeScript source (`src/gateway/`) or find documentation.
+1. **OpenClaw channel extension API surface:** Map the exact TypeScript interfaces for the channel monitor pattern — `InboundContext` shape, delivery callback signature, media attachment format. Read from OpenClaw's bundled Telegram channel source as reference implementation.
 
 2. **OpenClaw MCP config format:** Verify the exact config path and format for registering MCP tool servers. May be `mcp.json` in the config dir or a `tools.mcp` section in `openclaw.json`.
 
-3. **Group chat semantics:** Does the bridge need to pass `chatType: "group"` explicitly, or does OpenClaw infer it from the chat ID pattern? Need to test with the auto-reply system's mention gating.
+3. **Group chat semantics:** Does the extension need to pass `chatType: "group"` explicitly, or does OpenClaw infer it from the chat ID pattern? Need to test with the auto-reply system's mention gating.
 
-4. **Session reset on VM restart:** When the bridge reconnects to OpenClaw after a VM resume, does OpenClaw pick up the existing session or create a new one? Need to verify session persistence across gateway restarts.
+4. **Session persistence across restarts:** When OpenClaw gateway restarts (VM resume), does it pick up existing sessions from disk or create new ones? Need to verify JSONL session files are loaded on startup.
 
 ---
 
-## 14. Comparison with Previous Specs
+## 15. Comparison with Previous Specs
 
 | Aspect | Previous specs (standalone) | This spec (tether bridge) |
 |--------|---------------------------|--------------------------|
