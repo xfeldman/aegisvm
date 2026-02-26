@@ -176,12 +176,51 @@ Prioritized by impact on agent usefulness.
 
 | Feature | Why it matters |
 |---------|---------------|
-| **Memory / workspace search** | Semantic search over workspace files. Optional tool flag. |
-| **Browser control** | Optional tool flag. Delivered via Chrome DevTools MCP or Playwright MCP. |
+| **Memory / workspace search** | Semantic search over workspace files. Delivered as MCP server, user adds to `agent.json`. |
+| **Browser control** | Web browsing, screenshots, DOM inspection. Delivered via Chrome DevTools MCP or Playwright MCP, user adds to `agent.json`. |
 
 ---
 
 ## 4. Implementation Plan
+
+### Phase 0: `agent.json` + configuration
+
+Implement `/workspace/.aegis/agent.json` loading first — MCP server discovery and configuration depend on it.
+
+Modify `cmd/aegis-agent/main.go` and `cmd/aegis-agent/mcp.go`:
+- Replace `mcp.json` with `agent.json` as the config source
+- Load `agent.json` at startup, merge with env var overrides
+- MCP servers come from `agent.json` `mcp` section (replacing current `mcpConfigPath`)
+
+**`agent.json`** (optional — agent works without it):
+```json
+{
+  "model": "anthropic/claude-sonnet-4-20250514",
+  "max_tokens": 8192,
+  "context_chars": 48000,
+  "context_turns": 100,
+  "system_prompt": "You are a coding assistant...",
+  "mcp": {
+    "aegis": {"command": "aegis-mcp-guest"},
+    "browser": {"command": "npx", "args": ["@anthropic-ai/chrome-devtools-mcp@latest"]},
+    "my-github": {"command": "gh-mcp-server"}
+  }
+}
+```
+
+**Env vars override `agent.json`** (for quick per-instance tweaks):
+
+| Env var | `agent.json` key | Default |
+|---------|-----------------|---------|
+| `AEGIS_MODEL` | `model` | Auto-detect from API key |
+| `AEGIS_MAX_TOKENS` | `max_tokens` | `4096` |
+| `AEGIS_CONTEXT_CHARS` | `context_chars` | `24000` |
+| `AEGIS_CONTEXT_TURNS` | `context_turns` | `50` |
+| `AEGIS_SYSTEM_PROMPT` | `system_prompt` | Built-in default |
+
+Precedence: env var > `agent.json` > default.
+
+Also add `self_restart` to `aegis-mcp-guest` (prerequisite for self-management, see section 2).
 
 ### Phase 1: Core tools
 
@@ -317,38 +356,6 @@ Add to LLM response handling:
 - Append to session JSONL (same file, special role)
 - No budget enforcement — just visibility. Per-session totals available via `self_info` or a future dashboard.
 
-### Phase 4: Configuration + `agent.json`
-
-Implement `/workspace/.aegis/agent.json` loading and env var overrides in `cmd/aegis-agent/main.go`.
-
-**`agent.json`** (optional — agent works without it):
-```json
-{
-  "model": "anthropic/claude-sonnet-4-20250514",
-  "max_tokens": 8192,
-  "context_chars": 48000,
-  "context_turns": 100,
-  "system_prompt": "You are a coding assistant...",
-  "mcp": {
-    "aegis": {"command": "aegis-mcp-guest"},
-    "browser": {"command": "npx", "args": ["@anthropic-ai/chrome-devtools-mcp@latest"]},
-    "my-github": {"command": "gh-mcp-server"}
-  }
-}
-```
-
-**Env vars override `agent.json`** (for quick per-instance tweaks without editing the file):
-
-| Env var | `agent.json` key | Default |
-|---------|-----------------|---------|
-| `AEGIS_MODEL` | `model` | Auto-detect from API key |
-| `AEGIS_MAX_TOKENS` | `max_tokens` | `4096` |
-| `AEGIS_CONTEXT_CHARS` | `context_chars` | `24000` |
-| `AEGIS_CONTEXT_TURNS` | `context_turns` | `50` |
-| `AEGIS_SYSTEM_PROMPT` | `system_prompt` | Built-in default |
-
-Precedence: env var > `agent.json` > default.
-
 ---
 
 ## 5. Tool Limits & Defaults
@@ -379,6 +386,8 @@ Consistent limits across all tools. Configured once, not per-tool.
 | Token tracking | Built-in | Phase 3b | Always on |
 | Image support | Built-in | Done | Always on |
 | VM orchestration | MCP (`aegis-mcp-guest`) | Done | Pre-bundled in `agent.json` |
+| `self_restart` | MCP (`aegis-mcp-guest`) | Phase 0 | Pre-bundled — enables self-management |
+| `agent.json` config | Agent internals | Phase 0 | Replaces `mcp.json` |
 | Browser | MCP (Chrome DevTools / Playwright) | Future | User adds/removes in `agent.json` |
 | Semantic memory | MCP (`aegis-mcp-memory`) | Future | User adds/removes in `agent.json` |
 | GitHub, Slack, Jira, DB, etc. | MCP | User brings | User adds in `agent.json` |
