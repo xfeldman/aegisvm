@@ -141,6 +141,61 @@ var builtinTools = []Tool{
 		},
 	},
 	{
+		Name:        "cron_create",
+		Description: "Create a scheduled task that runs on a cron schedule. The task message is sent as a user message to a dedicated session. Schedule is evaluated in host local time.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"schedule":    map[string]string{"type": "string", "description": "Cron expression, 5 fields: minute hour day-of-month month day-of-week (e.g. '*/5 * * * *', '0 9 * * 1-5')"},
+				"message":     map[string]string{"type": "string", "description": "Task description sent as a user message when the cron fires (max 1000 chars)"},
+				"session":     map[string]string{"type": "string", "description": "Session ID for the cron's conversation (default: 'cron-{id}')"},
+				"on_conflict": map[string]string{"type": "string", "description": "'skip' (default) — drop fire if previous run active. 'queue' — send anyway."},
+			},
+			"required": []string{"schedule", "message"},
+		},
+	},
+	{
+		Name:        "cron_list",
+		Description: "List all scheduled cron tasks.",
+		InputSchema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+	},
+	{
+		Name:        "cron_delete",
+		Description: "Delete a scheduled cron task by ID.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id": map[string]string{"type": "string", "description": "Cron entry ID (e.g. 'cron-0')"},
+			},
+			"required": []string{"id"},
+		},
+	},
+	{
+		Name:        "cron_enable",
+		Description: "Enable a paused cron task.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id": map[string]string{"type": "string", "description": "Cron entry ID"},
+			},
+			"required": []string{"id"},
+		},
+	},
+	{
+		Name:        "cron_disable",
+		Description: "Pause a cron task without deleting it.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id": map[string]string{"type": "string", "description": "Cron entry ID"},
+			},
+			"required": []string{"id"},
+		},
+	},
+	{
 		Name:        "web_fetch",
 		Description: "Fetch a URL and return its text content. HTML is stripped to readable text. Returns up to 10KB of text.",
 		InputSchema: map[string]interface{}{
@@ -176,6 +231,16 @@ func (a *Agent) executeTool(name string, input json.RawMessage) string {
 		return a.toolMemorySearch(input)
 	case "memory_delete":
 		return a.toolMemoryDelete(input)
+	case "cron_create":
+		return a.toolCronCreate(input)
+	case "cron_list":
+		return a.toolCronList(input)
+	case "cron_delete":
+		return a.toolCronDelete(input)
+	case "cron_enable":
+		return a.toolCronEnable(input)
+	case "cron_disable":
+		return a.toolCronDisable(input)
 	case "web_fetch":
 		return toolWebFetch(input)
 	default:
@@ -747,6 +812,88 @@ func stripHTML(s string) string {
 	s = reNewlines.ReplaceAllString(s, "\n\n")
 
 	return strings.TrimSpace(s)
+}
+
+func (a *Agent) toolCronCreate(input json.RawMessage) string {
+	var params struct {
+		Schedule   string `json:"schedule"`
+		Message    string `json:"message"`
+		Session    string `json:"session"`
+		OnConflict string `json:"on_conflict"`
+	}
+	json.Unmarshal(input, &params)
+	if a.cron == nil {
+		return jsonError("cron not initialized")
+	}
+	id, err := a.cron.Create(params.Schedule, params.Message, params.Session, params.OnConflict)
+	if err != nil {
+		return jsonError(err.Error())
+	}
+	tz, _ := time.Now().Zone()
+	return jsonResult(map[string]interface{}{
+		"ok":   true,
+		"id":   id,
+		"note": fmt.Sprintf("schedule evaluated in host local time (%s)", tz),
+	})
+}
+
+func (a *Agent) toolCronList(input json.RawMessage) string {
+	if a.cron == nil {
+		return jsonError("cron not initialized")
+	}
+	entries, err := a.cron.List()
+	if err != nil {
+		return jsonError(err.Error())
+	}
+	return jsonResult(map[string]interface{}{
+		"count":   len(entries),
+		"entries": entries,
+	})
+}
+
+func (a *Agent) toolCronDelete(input json.RawMessage) string {
+	var params struct{ ID string `json:"id"` }
+	json.Unmarshal(input, &params)
+	if a.cron == nil {
+		return jsonError("cron not initialized")
+	}
+	if params.ID == "" {
+		return jsonError("id is required")
+	}
+	if err := a.cron.Delete(params.ID); err != nil {
+		return jsonError(err.Error())
+	}
+	return jsonResult(map[string]interface{}{"ok": true})
+}
+
+func (a *Agent) toolCronEnable(input json.RawMessage) string {
+	var params struct{ ID string `json:"id"` }
+	json.Unmarshal(input, &params)
+	if a.cron == nil {
+		return jsonError("cron not initialized")
+	}
+	if params.ID == "" {
+		return jsonError("id is required")
+	}
+	if err := a.cron.SetEnabled(params.ID, true); err != nil {
+		return jsonError(err.Error())
+	}
+	return jsonResult(map[string]interface{}{"ok": true, "enabled": true})
+}
+
+func (a *Agent) toolCronDisable(input json.RawMessage) string {
+	var params struct{ ID string `json:"id"` }
+	json.Unmarshal(input, &params)
+	if a.cron == nil {
+		return jsonError("cron not initialized")
+	}
+	if params.ID == "" {
+		return jsonError("id is required")
+	}
+	if err := a.cron.SetEnabled(params.ID, false); err != nil {
+		return jsonError(err.Error())
+	}
+	return jsonResult(map[string]interface{}{"ok": true, "enabled": false})
 }
 
 func (a *Agent) toolMemoryStore(input json.RawMessage) string {

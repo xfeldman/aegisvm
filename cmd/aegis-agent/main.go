@@ -49,6 +49,7 @@ type Agent struct {
 	maxContextTurns int
 	maxContextChars int
 	memory          *MemoryStore
+	cron            *CronStore
 }
 
 func main() {
@@ -119,6 +120,8 @@ func main() {
 		filepath.Join(workspaceRoot, ".aegis", "memory"),
 		config.Memory,
 	)
+
+	agent.cron = NewCronStore(filepath.Join(workspaceRoot, ".aegis"))
 
 	agent.initMCPTools(config)
 

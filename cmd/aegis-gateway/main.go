@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/xfeldman/aegisvm/internal/blob"
+	"github.com/xfeldman/aegisvm/internal/cron"
 )
 
 func main() {
@@ -157,6 +158,25 @@ type Gateway struct {
 	pollCancel     context.CancelFunc     // cancel current polling+egress
 	reloadCh       chan struct{}           // signal immediate config reload
 	workspacePath  string                 // cached host workspace path (resolved once)
+
+	// Cron scheduler state
+	cronEntries []gwCronEntry          // parsed cron entries (max 20)
+	cronState   map[string]*cronState  // per-entry runtime state
+	cronMtime   time.Time              // cron.json mtime for change detection
+}
+
+type gwCronEntry struct {
+	ID         string
+	Schedule   *cron.Schedule
+	Message    string
+	Session    string
+	OnConflict string // "skip" or "queue"
+	Enabled    bool
+}
+
+type cronState struct {
+	lastFiredMinute string // "2006-01-02T15:04"
+	active          bool   // run in progress
 }
 
 type activeReply struct {
@@ -170,22 +190,49 @@ type activeReply struct {
 // run is the main loop: watch config, start/stop polling as config appears/disappears.
 func (gw *Gateway) run(ctx context.Context) {
 	gw.reloadCh = make(chan struct{}, 1)
+	gw.cronState = make(map[string]*cronState)
 
 	// Try initial config load
 	gw.reloadConfig()
+	gw.checkCronChange()
 
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
+
+	// Cron ticker: align to next minute boundary, then tick every minute
+	nextMinute := time.Now().Truncate(time.Minute).Add(time.Minute)
+	cronTimer := time.NewTimer(time.Until(nextMinute))
+	defer cronTimer.Stop()
+	var cronTicker *time.Ticker
 
 	for {
 		select {
 		case <-ctx.Done():
 			gw.stopPolling()
+			if cronTicker != nil {
+				cronTicker.Stop()
+			}
 			return
 		case <-gw.reloadCh:
 			gw.applyConfig(ctx)
 		case <-ticker.C:
 			gw.checkConfigChange(ctx)
+			gw.checkCronChange()
+		case <-cronTimer.C:
+			// First aligned tick — start the regular 1-minute ticker
+			gw.evaluateCron()
+			cronTicker = time.NewTicker(time.Minute)
+			cronTimer.Stop()
+			go func() {
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-cronTicker.C:
+						gw.evaluateCron()
+					}
+				}
+			}()
 		}
 	}
 }
@@ -302,6 +349,162 @@ func (gw *Gateway) stopPolling() {
 		gw.pollCancel = nil
 	}
 	gw.mu.Unlock()
+}
+
+// --- Cron scheduler ---
+
+// cronPath returns the workspace cron file path (host-side).
+func (gw *Gateway) cronPath() string {
+	ws := gw.resolveWorkspace()
+	if ws == "" {
+		return ""
+	}
+	return filepath.Join(ws, ".aegis", "cron.json")
+}
+
+// checkCronChange reloads cron.json if its mtime changed.
+func (gw *Gateway) checkCronChange() {
+	path := gw.cronPath()
+	if path == "" {
+		return
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		if len(gw.cronEntries) > 0 {
+			log.Printf("cron: config removed, clearing entries")
+			gw.cronEntries = nil
+		}
+		return
+	}
+
+	if info.ModTime().Equal(gw.cronMtime) {
+		return
+	}
+	gw.cronMtime = info.ModTime()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Printf("cron: read %s: %v", path, err)
+		return
+	}
+
+	var cf struct {
+		Entries []struct {
+			ID         string `json:"id"`
+			Schedule   string `json:"schedule"`
+			Message    string `json:"message"`
+			Session    string `json:"session"`
+			OnConflict string `json:"on_conflict"`
+			Enabled    bool   `json:"enabled"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(data, &cf); err != nil {
+		log.Printf("cron: parse %s: %v", path, err)
+		return
+	}
+
+	var entries []gwCronEntry
+	for _, e := range cf.Entries {
+		if len(entries) >= 20 {
+			log.Printf("cron: max 20 entries, ignoring remainder")
+			break
+		}
+		sched, err := cron.Parse(e.Schedule)
+		if err != nil {
+			log.Printf("cron [%s]: invalid schedule %q: %v (skipped)", e.ID, e.Schedule, err)
+			continue
+		}
+		onConflict := e.OnConflict
+		if onConflict == "" {
+			onConflict = "skip"
+		}
+		entries = append(entries, gwCronEntry{
+			ID:         e.ID,
+			Schedule:   sched,
+			Message:    e.Message,
+			Session:    e.Session,
+			OnConflict: onConflict,
+			Enabled:    e.Enabled,
+		})
+	}
+
+	gw.cronEntries = entries
+	log.Printf("cron: loaded %d entries from %s", len(entries), path)
+}
+
+// evaluateCron checks all cron entries and fires matching ones.
+func (gw *Gateway) evaluateCron() {
+	if len(gw.cronEntries) == 0 {
+		return
+	}
+
+	now := time.Now().Truncate(time.Minute)
+	nowKey := now.Format("2006-01-02T15:04")
+
+	for _, entry := range gw.cronEntries {
+		if !entry.Enabled {
+			continue
+		}
+
+		state := gw.cronState[entry.ID]
+		if state == nil {
+			state = &cronState{}
+			gw.cronState[entry.ID] = state
+		}
+
+		if state.lastFiredMinute == nowKey {
+			continue // dedupe: already fired this minute
+		}
+
+		if !entry.Schedule.Matches(now) {
+			continue
+		}
+
+		if state.active && entry.OnConflict != "queue" {
+			log.Printf("cron [%s]: skipped (previous run still active)", entry.ID)
+			state.lastFiredMinute = nowKey
+			continue
+		}
+
+		state.lastFiredMinute = nowKey
+		state.active = true
+		log.Printf("cron [%s]: firing → session %s", entry.ID, entry.Session)
+		go gw.fireCron(entry)
+	}
+}
+
+// fireCron sends a synthetic user message via tether for a cron entry.
+func (gw *Gateway) fireCron(entry gwCronEntry) {
+	payload, _ := json.Marshal(map[string]interface{}{
+		"text": entry.Message,
+		"user": map[string]string{"id": "cron", "name": "Scheduled Task"},
+	})
+
+	frame := TetherFrame{
+		V:       1,
+		Type:    "user.message",
+		TS:      time.Now().UTC().Format(time.RFC3339Nano),
+		Session: SessionID{Channel: "cron", ID: entry.Session},
+		MsgID:   fmt.Sprintf("cron-%s-%d", entry.ID, time.Now().Unix()),
+		Payload: payload,
+	}
+
+	if err := gw.aegisClient.postTetherFrame(gw.instanceHandle, frame); err != nil {
+		log.Printf("cron [%s]: fire failed: %v", entry.ID, err)
+	}
+}
+
+// markCronIdle marks a cron session as no longer active.
+func (gw *Gateway) markCronIdle(sessionID string) {
+	for _, entry := range gw.cronEntries {
+		if entry.Session == sessionID {
+			if state := gw.cronState[entry.ID]; state != nil {
+				state.active = false
+			}
+			return
+		}
+	}
 }
 
 // TetherFrame for gateway use.
@@ -586,11 +789,16 @@ func (gw *Gateway) processEgressStream(ctx context.Context, r io.Reader) {
 			continue
 		}
 
-		if frame.Session.Channel != "telegram" {
+		switch frame.Session.Channel {
+		case "telegram":
+			gw.handleEgressFrame(frame)
+		case "cron":
+			if frame.Type == "assistant.done" {
+				gw.markCronIdle(frame.Session.ID)
+			}
+		default:
 			continue
 		}
-
-		gw.handleEgressFrame(frame)
 	}
 }
 
