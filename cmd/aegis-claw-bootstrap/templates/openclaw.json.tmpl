@@ -7,17 +7,8 @@
   "agents": {
     "defaults": {
       "model": {"primary": "{{.Model}}"},
-      "workspace": "/workspace",
-      "maxConcurrent": 4,
-      "tools": {"allow": ["*"]},
-      "sandbox": {"mode": "off"},
-      "compaction": {"mode": "safeguard"},
-      "canvas": {"outputDir": "/workspace/canvas"}
+      "workspace": "/workspace"
     }
-  },
-  "memory": {
-    "dataDir": "/workspace/.openclaw/memory",
-    "embedding": {"provider": "{{.EmbeddingProvider}}"}
   },
   "channels": {
     "aegis": {"enabled": true}

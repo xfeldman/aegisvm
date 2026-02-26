@@ -6,7 +6,7 @@
   "usage": "Creates a VM running OpenClaw as the agent brain, bridged to AegisVM tether. Supports all AegisVM messaging channels (Telegram via gateway, MCP via tether_send/tether_read). OpenClaw provides rich tools: file I/O, bash, browser control, semantic memory, canvas, context compaction.\n\nQuick start:\n1. secret_list — check available secrets\n2. instance_start with kit=\"openclaw\", name=\"my-claw\", secrets=[\"ANTHROPIC_API_KEY\"], workspace=\"/path/to/project\"\n3. First boot takes ~60s (OpenClaw npm install, cached after)\n4. Send messages via tether_send, read via tether_read\n\nWith Telegram:\n1. Set secrets: ANTHROPIC_API_KEY + TELEGRAM_BOT_TOKEN\n2. instance_start with kit=\"openclaw\", name=\"my-claw\", secrets=[\"ANTHROPIC_API_KEY\"]\n3. Create gateway config: ~/.aegis/kits/my-claw/gateway.json\n   {\"telegram\":{\"bot_token_secret\":\"TELEGRAM_BOT_TOKEN\",\"allowed_chats\":[\"*\"]}}\n4. Send photos and text — OpenClaw agent analyzes with full tool suite\n\nRequired secrets: ANTHROPIC_API_KEY (or OPENAI_API_KEY as alternative)\nOptional secrets: TELEGRAM_BOT_TOKEN (only for Telegram gateway)\nRequires: --workspace (mandatory for OpenClaw kit)",
   "instance_daemons": ["aegis-gateway"],
   "image": {
-    "base": "node:22-alpine",
+    "base": "node:22",
     "inject": ["aegis-claw-bootstrap"]
   },
   "defaults": {

@@ -31,7 +31,7 @@ const (
 	npmPrefix      = "/workspace/.npm-global"
 	openclawBin    = "/workspace/.npm-global/bin/openclaw"
 	nodeHeapSize   = "384"
-	openclawVersion = "0.2.19"
+	openclawVersion = "2026.2.24"
 )
 
 //go:embed templates/openclaw.json.tmpl
@@ -56,6 +56,18 @@ func main() {
 	// 2. First-boot install
 	if err := ensureInstalled(); err != nil {
 		log.Fatalf("install failed: %v", err)
+	}
+
+	// Debug: log API key availability
+	if os.Getenv("ANTHROPIC_API_KEY") != "" {
+		log.Println("ANTHROPIC_API_KEY: present")
+	} else {
+		log.Println("ANTHROPIC_API_KEY: not set")
+	}
+	if os.Getenv("OPENAI_API_KEY") != "" {
+		log.Println("OPENAI_API_KEY: present")
+	} else {
+		log.Println("OPENAI_API_KEY: not set")
 	}
 
 	// 3. Generate config
