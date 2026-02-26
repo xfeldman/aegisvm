@@ -202,6 +202,16 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		os.MkdirAll(resolved, 0755)
 		req.Workspace = resolved
 		opts = append(opts, lifecycle.WithWorkspace(resolved))
+	} else {
+		// Auto-create workspace under WorkspacesDir/{handle or id}
+		wsName := req.Handle
+		if wsName == "" {
+			wsName = id
+		}
+		autoWs := filepath.Join(s.cfg.WorkspacesDir, wsName)
+		os.MkdirAll(autoWs, 0755)
+		req.Workspace = autoWs
+		opts = append(opts, lifecycle.WithWorkspace(autoWs), lifecycle.WithAutoWorkspace())
 	}
 	if req.MemoryMB > 0 {
 		opts = append(opts, lifecycle.WithMemory(req.MemoryMB))
@@ -746,6 +756,13 @@ func (s *Server) handleDisableInstance(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 	id := pathParam(r, "id")
 
+	// Check if auto-workspace should be cleaned up before deleting the instance.
+	// Must read this before the lifecycle/registry entries are removed.
+	var autoWsPath string
+	if inst := s.lifecycle.GetInstance(id); inst != nil && inst.AutoWorkspace && inst.WorkspacePath != "" {
+		autoWsPath = inst.WorkspacePath
+	}
+
 	// Stop instance daemons
 	if s.daemons != nil {
 		s.daemons.StopDaemons(id)
@@ -763,6 +780,15 @@ func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 
 	if s.registry != nil {
 		s.registry.DeleteInstance(id)
+	}
+
+	// Delete auto-created workspace (user-provided workspaces are kept)
+	if autoWsPath != "" {
+		if err := os.RemoveAll(autoWsPath); err != nil {
+			log.Printf("delete auto-workspace %s: %v", autoWsPath, err)
+		} else {
+			log.Printf("deleted auto-workspace %s", autoWsPath)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})

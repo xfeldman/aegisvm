@@ -25,8 +25,9 @@ type Instance struct {
 	VCPUs       int               `json:"vcpus,omitempty"`
 	ParentID     string            `json:"parent_id,omitempty"`
 	Capabilities string            `json:"capabilities,omitempty"` // JSON-serialized CapabilityToken
-	Kit          string            `json:"kit,omitempty"`
-	StoppedAt   time.Time         `json:"stopped_at,omitempty"`
+	Kit            string            `json:"kit,omitempty"`
+	AutoWorkspace  bool              `json:"auto_workspace,omitempty"`
+	StoppedAt      time.Time         `json:"stopped_at,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`
 }
@@ -49,9 +50,14 @@ func (d *DB) SaveInstance(inst *Instance) error {
 		stoppedAtStr = inst.StoppedAt.Format(time.RFC3339)
 	}
 
+	autoWsInt := 0
+	if inst.AutoWorkspace {
+		autoWsInt = 1
+	}
+
 	_, err := d.db.Exec(`
-		INSERT INTO instances (id, state, command, expose_ports, vm_id, handle, image_ref, workspace, env, secret_keys, public_ports, enabled, memory_mb, vcpus, stopped_at, parent_id, capabilities, kit, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO instances (id, state, command, expose_ports, vm_id, handle, image_ref, workspace, env, secret_keys, public_ports, enabled, memory_mb, vcpus, stopped_at, parent_id, capabilities, kit, auto_workspace, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			state = excluded.state,
 			command = excluded.command,
@@ -70,11 +76,12 @@ func (d *DB) SaveInstance(inst *Instance) error {
 			parent_id = excluded.parent_id,
 			capabilities = excluded.capabilities,
 			kit = excluded.kit,
+			auto_workspace = excluded.auto_workspace,
 			updated_at = excluded.updated_at
 	`, inst.ID, inst.State, string(cmdJSON), string(portsJSON), inst.VMID,
 		inst.Handle, inst.ImageRef, inst.Workspace, string(envJSON), string(secretKeysJSON),
 		string(publicPortsJSON), enabledInt, inst.MemoryMB, inst.VCPUs, stoppedAtStr,
-		inst.ParentID, inst.Capabilities, inst.Kit,
+		inst.ParentID, inst.Capabilities, inst.Kit, autoWsInt,
 		inst.CreatedAt.Format(time.RFC3339), time.Now().Format(time.RFC3339))
 	return err
 }
@@ -82,7 +89,7 @@ func (d *DB) SaveInstance(inst *Instance) error {
 // GetInstance retrieves an instance by ID.
 func (d *DB) GetInstance(id string) (*Instance, error) {
 	row := d.db.QueryRow(`
-		SELECT id, state, command, expose_ports, vm_id, handle, image_ref, workspace, env, secret_keys, public_ports, enabled, memory_mb, vcpus, stopped_at, parent_id, capabilities, kit, created_at, updated_at
+		SELECT id, state, command, expose_ports, vm_id, handle, image_ref, workspace, env, secret_keys, public_ports, enabled, memory_mb, vcpus, stopped_at, parent_id, capabilities, kit, auto_workspace, created_at, updated_at
 		FROM instances WHERE id = ?
 	`, id)
 	return scanInstance(row)
@@ -91,7 +98,7 @@ func (d *DB) GetInstance(id string) (*Instance, error) {
 // GetInstanceByHandle retrieves an instance by handle.
 func (d *DB) GetInstanceByHandle(handle string) (*Instance, error) {
 	row := d.db.QueryRow(`
-		SELECT id, state, command, expose_ports, vm_id, handle, image_ref, workspace, env, secret_keys, public_ports, enabled, memory_mb, vcpus, stopped_at, parent_id, capabilities, kit, created_at, updated_at
+		SELECT id, state, command, expose_ports, vm_id, handle, image_ref, workspace, env, secret_keys, public_ports, enabled, memory_mb, vcpus, stopped_at, parent_id, capabilities, kit, auto_workspace, created_at, updated_at
 		FROM instances WHERE handle = ?
 	`, handle)
 	return scanInstance(row)
@@ -100,7 +107,7 @@ func (d *DB) GetInstanceByHandle(handle string) (*Instance, error) {
 // ListInstances returns all instances.
 func (d *DB) ListInstances() ([]*Instance, error) {
 	rows, err := d.db.Query(`
-		SELECT id, state, command, expose_ports, vm_id, handle, image_ref, workspace, env, secret_keys, public_ports, enabled, memory_mb, vcpus, stopped_at, parent_id, capabilities, kit, created_at, updated_at
+		SELECT id, state, command, expose_ports, vm_id, handle, image_ref, workspace, env, secret_keys, public_ports, enabled, memory_mb, vcpus, stopped_at, parent_id, capabilities, kit, auto_workspace, created_at, updated_at
 		FROM instances ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -201,12 +208,12 @@ func (d *DB) DeleteInstance(id string) error {
 func scanInstance(row *sql.Row) (*Instance, error) {
 	var inst Instance
 	var cmdJSON, portsJSON, envJSON, secretKeysJSON, publicPortsJSON, stoppedAtStr, createdStr, updatedStr string
-	var enabledInt int
+	var enabledInt, autoWsInt int
 
 	err := row.Scan(&inst.ID, &inst.State, &cmdJSON, &portsJSON, &inst.VMID,
 		&inst.Handle, &inst.ImageRef, &inst.Workspace, &envJSON, &secretKeysJSON,
 		&publicPortsJSON, &enabledInt, &inst.MemoryMB, &inst.VCPUs, &stoppedAtStr,
-		&inst.ParentID, &inst.Capabilities, &inst.Kit, &createdStr, &updatedStr)
+		&inst.ParentID, &inst.Capabilities, &inst.Kit, &autoWsInt, &createdStr, &updatedStr)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -220,6 +227,7 @@ func scanInstance(row *sql.Row) (*Instance, error) {
 	json.Unmarshal([]byte(secretKeysJSON), &inst.SecretKeys)
 	json.Unmarshal([]byte(publicPortsJSON), &inst.PublicPorts)
 	inst.Enabled = enabledInt != 0
+	inst.AutoWorkspace = autoWsInt != 0
 	inst.StoppedAt, _ = time.Parse(time.RFC3339, stoppedAtStr)
 	inst.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
 	inst.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr)
@@ -229,12 +237,12 @@ func scanInstance(row *sql.Row) (*Instance, error) {
 func scanInstanceRow(rows *sql.Rows) (*Instance, error) {
 	var inst Instance
 	var cmdJSON, portsJSON, envJSON, secretKeysJSON, publicPortsJSON, stoppedAtStr, createdStr, updatedStr string
-	var enabledInt int
+	var enabledInt, autoWsInt int
 
 	err := rows.Scan(&inst.ID, &inst.State, &cmdJSON, &portsJSON, &inst.VMID,
 		&inst.Handle, &inst.ImageRef, &inst.Workspace, &envJSON, &secretKeysJSON,
 		&publicPortsJSON, &enabledInt, &inst.MemoryMB, &inst.VCPUs, &stoppedAtStr,
-		&inst.ParentID, &inst.Capabilities, &inst.Kit, &createdStr, &updatedStr)
+		&inst.ParentID, &inst.Capabilities, &inst.Kit, &autoWsInt, &createdStr, &updatedStr)
 	if err != nil {
 		return nil, err
 	}
@@ -245,6 +253,7 @@ func scanInstanceRow(rows *sql.Rows) (*Instance, error) {
 	json.Unmarshal([]byte(secretKeysJSON), &inst.SecretKeys)
 	json.Unmarshal([]byte(publicPortsJSON), &inst.PublicPorts)
 	inst.Enabled = enabledInt != 0
+	inst.AutoWorkspace = autoWsInt != 0
 	inst.StoppedAt, _ = time.Parse(time.RFC3339, stoppedAtStr)
 	inst.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
 	inst.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr)

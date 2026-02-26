@@ -74,6 +74,7 @@ type Instance struct {
 
 	RootfsPath    string // if set, used instead of cfg.BaseRootfsPath
 	WorkspacePath string // if set, passed to VMConfig.WorkspacePath
+	AutoWorkspace bool   // true = workspace auto-created, delete on instance delete
 
 	// Resource overrides (0 = use global default)
 	MemoryMB int
@@ -191,9 +192,10 @@ func (m *Manager) saveToRegistry(inst *Instance) {
 		ExposePorts:  portInts,
 		Handle:       inst.HandleAlias,
 		ImageRef:     inst.ImageRef,
-		Workspace:    inst.WorkspacePath,
-		Env:          inst.Env,
-		Enabled:      inst.Enabled,
+		Workspace:      inst.WorkspacePath,
+		AutoWorkspace:  inst.AutoWorkspace,
+		Env:            inst.Env,
+		Enabled:        inst.Enabled,
 		MemoryMB:     inst.MemoryMB,
 		VCPUs:        inst.VCPUs,
 		ParentID:     inst.ParentID,
@@ -303,6 +305,13 @@ func WithRootfs(path string) InstanceOption {
 func WithWorkspace(path string) InstanceOption {
 	return func(inst *Instance) {
 		inst.WorkspacePath = path
+	}
+}
+
+// WithAutoWorkspace marks the workspace as auto-created (deleted on instance delete).
+func WithAutoWorkspace() InstanceOption {
+	return func(inst *Instance) {
+		inst.AutoWorkspace = true
 	}
 }
 
