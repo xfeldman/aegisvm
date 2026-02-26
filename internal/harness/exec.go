@@ -89,31 +89,38 @@ func startPrimaryProcess(ctx context.Context, params runParams, conn net.Conn, t
 				exitCode = -1
 			}
 		}
-		sendNotification(conn, "processExited", map[string]interface{}{
-			"exit_code": exitCode,
-		})
-
-		// Check if restart was requested
+		// Check restart flag BEFORE notifying daemon. If we send processExited
+		// first, aegisd stops the VM and the restart can never happen.
+		shouldRestart := false
 		if tracker != nil {
 			tracker.mu.Lock()
-			shouldRestart := tracker.restartRequested
+			shouldRestart = tracker.restartRequested
 			tracker.restartRequested = false
 			tracker.primary = nil
 			tracker.mu.Unlock()
-
-			if shouldRestart {
-				log.Println("restarting primary process (self_restart)")
-				newCmd, err := startPrimaryProcess(ctx, params, conn, tracker, hrpc)
-				if err != nil {
-					log.Printf("restart primary: %v", err)
-					return
-				}
-				tracker.setPrimary(newCmd)
-				if hrpc != nil {
-					go monitorActivity(ctx, newCmd.Process.Pid, conn, hrpc)
-				}
-			}
 		}
+
+		if shouldRestart {
+			log.Println("restarting primary process (self_restart)")
+			newCmd, err := startPrimaryProcess(ctx, params, conn, tracker, hrpc)
+			if err != nil {
+				log.Printf("restart primary: %v", err)
+				// Restart failed — notify daemon of the exit
+				sendNotification(conn, "processExited", map[string]interface{}{
+					"exit_code": exitCode,
+				})
+				return
+			}
+			tracker.setPrimary(newCmd)
+			if hrpc != nil {
+				go monitorActivity(ctx, newCmd.Process.Pid, conn, hrpc)
+			}
+			return
+		}
+
+		sendNotification(conn, "processExited", map[string]interface{}{
+			"exit_code": exitCode,
+		})
 	}()
 
 	return cmd, nil

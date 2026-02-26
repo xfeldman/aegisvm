@@ -153,8 +153,13 @@ func newMCPClient(name, command string, args []string) (*MCPClient, error) {
 	}
 	c.stdout.Buffer(make([]byte, 1024*1024), 1024*1024)
 
-	// Initialize MCP handshake
+	// Initialize MCP handshake (protocol version + client info required by spec)
 	_, err = c.call("initialize", map[string]interface{}{
+		"protocolVersion": "2024-11-05",
+		"clientInfo": map[string]string{
+			"name":    "aegis-agent",
+			"version": "0.1.0",
+		},
 		"capabilities": map[string]interface{}{},
 	})
 	if err != nil {
