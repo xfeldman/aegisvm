@@ -14,6 +14,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/xfeldman/aegisvm/internal/blob"
 )
 
 // builtinTools are workspace-scoped tools available to every agent.
@@ -206,6 +208,42 @@ var builtinTools = []Tool{
 			"required": []string{"url"},
 		},
 	},
+	{
+		Name:        "respond_with_image",
+		Description: "Attach an image to your response. Download the image first (e.g. with bash + wget), then call this tool with the local file path. The image will be sent alongside your text response to the user (e.g. in Telegram).",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"path": map[string]string{"type": "string", "description": "Path to image file under /workspace/ (must be .png, .jpg, .gif, or .webp)"},
+			},
+			"required": []string{"path"},
+		},
+	},
+	{
+		Name:        "web_search",
+		Description: "Search the web using Brave Search API. Returns titles, URLs, and descriptions. Requires BRAVE_SEARCH_API_KEY env var or secret.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query":     map[string]string{"type": "string", "description": "Search query"},
+				"count":     map[string]string{"type": "integer", "description": "Number of results (1-20, default 5)"},
+				"freshness": map[string]string{"type": "string", "description": "Time filter: 'pd' (24h), 'pw' (7d), 'pm' (31d), 'py' (1yr)"},
+			},
+			"required": []string{"query"},
+		},
+	},
+	{
+		Name:        "image_search",
+		Description: "Search for images using Brave Image Search API. Returns image URLs, thumbnails, titles, and dimensions. Use with respond_with_image: search → download best result with bash/wget → respond_with_image. Requires BRAVE_SEARCH_API_KEY.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]string{"type": "string", "description": "Image search query"},
+				"count": map[string]string{"type": "integer", "description": "Number of results (1-20, default 5)"},
+			},
+			"required": []string{"query"},
+		},
+	},
 }
 
 // executeTool dispatches a tool call to the appropriate handler.
@@ -243,6 +281,12 @@ func (a *Agent) executeTool(name string, input json.RawMessage) string {
 		return a.toolCronDisable(input)
 	case "web_fetch":
 		return toolWebFetch(input)
+	case "respond_with_image":
+		return a.toolRespondWithImage(input)
+	case "web_search":
+		return toolWebSearch(input)
+	case "image_search":
+		return toolImageSearch(input)
 	default:
 		// Try MCP tools
 		for _, mc := range a.mcpClients {
@@ -791,6 +835,175 @@ func toolWebFetch(input json.RawMessage) string {
 	})
 }
 
+func toolWebSearch(input json.RawMessage) string {
+	var params struct {
+		Query     string `json:"query"`
+		Count     int    `json:"count"`
+		Freshness string `json:"freshness"`
+	}
+	json.Unmarshal(input, &params)
+	if params.Query == "" {
+		return jsonError("query is required")
+	}
+
+	apiKey := os.Getenv("BRAVE_SEARCH_API_KEY")
+	if apiKey == "" {
+		return jsonError("BRAVE_SEARCH_API_KEY not set — add it as a secret to enable web search")
+	}
+
+	if params.Count == 0 {
+		params.Count = 5
+	}
+	if params.Count > 20 {
+		params.Count = 20
+	}
+
+	u := fmt.Sprintf("https://api.search.brave.com/res/v1/web/search?q=%s&count=%d",
+		strings.ReplaceAll(params.Query, " ", "+"), params.Count)
+	if params.Freshness != "" {
+		u += "&freshness=" + params.Freshness
+	}
+
+	req, _ := http.NewRequest("GET", u, nil)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Subscription-Token", apiKey)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return jsonError(fmt.Sprintf("search failed: %v", err))
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+
+	if resp.StatusCode != 200 {
+		return jsonError(fmt.Sprintf("search API %d: %s", resp.StatusCode, string(body)))
+	}
+
+	var apiResp struct {
+		Web struct {
+			Results []struct {
+				Title       string   `json:"title"`
+				URL         string   `json:"url"`
+				Description string   `json:"description"`
+				Extra       []string `json:"extra_snippets"`
+			} `json:"results"`
+		} `json:"web"`
+	}
+	json.Unmarshal(body, &apiResp)
+
+	type searchResult struct {
+		Title       string `json:"title"`
+		URL         string `json:"url"`
+		Description string `json:"description"`
+	}
+	var results []searchResult
+	for _, r := range apiResp.Web.Results {
+		results = append(results, searchResult{
+			Title:       r.Title,
+			URL:         r.URL,
+			Description: r.Description,
+		})
+	}
+
+	return jsonResult(map[string]interface{}{
+		"query":   params.Query,
+		"count":   len(results),
+		"results": results,
+	})
+}
+
+func toolImageSearch(input json.RawMessage) string {
+	var params struct {
+		Query string `json:"query"`
+		Count int    `json:"count"`
+	}
+	json.Unmarshal(input, &params)
+	if params.Query == "" {
+		return jsonError("query is required")
+	}
+
+	apiKey := os.Getenv("BRAVE_SEARCH_API_KEY")
+	if apiKey == "" {
+		return jsonError("BRAVE_SEARCH_API_KEY not set — add it as a secret to enable image search")
+	}
+
+	if params.Count == 0 {
+		params.Count = 5
+	}
+	if params.Count > 20 {
+		params.Count = 20
+	}
+
+	u := fmt.Sprintf("https://api.search.brave.com/res/v1/images/search?q=%s&count=%d&safesearch=off",
+		strings.ReplaceAll(params.Query, " ", "+"), params.Count)
+
+	req, _ := http.NewRequest("GET", u, nil)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Subscription-Token", apiKey)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return jsonError(fmt.Sprintf("image search failed: %v", err))
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+
+	if resp.StatusCode != 200 {
+		return jsonError(fmt.Sprintf("image search API %d: %s", resp.StatusCode, string(body)))
+	}
+
+	var apiResp struct {
+		Results []struct {
+			Title     string `json:"title"`
+			URL       string `json:"url"`
+			Source    string `json:"source"`
+			Thumbnail struct {
+				Src string `json:"src"`
+			} `json:"thumbnail"`
+			Properties struct {
+				URL    string `json:"url"`
+				Width  int    `json:"width"`
+				Height int    `json:"height"`
+			} `json:"properties"`
+		} `json:"results"`
+	}
+	json.Unmarshal(body, &apiResp)
+
+	type imageResult struct {
+		Title        string `json:"title"`
+		URL          string `json:"url"`
+		ThumbnailURL string `json:"thumbnail_url"`
+		SourcePage   string `json:"source_page"`
+		Width        int    `json:"width,omitempty"`
+		Height       int    `json:"height,omitempty"`
+	}
+	var results []imageResult
+	for _, r := range apiResp.Results {
+		imgURL := r.Properties.URL
+		if imgURL == "" {
+			imgURL = r.URL
+		}
+		results = append(results, imageResult{
+			Title:        r.Title,
+			URL:          imgURL,
+			ThumbnailURL: r.Thumbnail.Src,
+			SourcePage:   r.Source,
+			Width:        r.Properties.Width,
+			Height:       r.Properties.Height,
+		})
+	}
+
+	return jsonResult(map[string]interface{}{
+		"query":   params.Query,
+		"count":   len(results),
+		"results": results,
+	})
+}
+
 // stripHTML removes HTML tags and extracts readable text.
 func stripHTML(s string) string {
 	s = reScript.ReplaceAllString(s, "")
@@ -812,6 +1025,57 @@ func stripHTML(s string) string {
 	s = reNewlines.ReplaceAllString(s, "\n\n")
 
 	return strings.TrimSpace(s)
+}
+
+func (a *Agent) toolRespondWithImage(input json.RawMessage) string {
+	var params struct {
+		Path string `json:"path"`
+	}
+	json.Unmarshal(input, &params)
+
+	path, err := resolvePath(params.Path)
+	if err != nil {
+		return jsonError(err.Error())
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return jsonError(fmt.Sprintf("read image: %v", err))
+	}
+
+	// Detect media type from extension
+	mediaType := ""
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png":
+		mediaType = "image/png"
+	case ".jpg", ".jpeg":
+		mediaType = "image/jpeg"
+	case ".gif":
+		mediaType = "image/gif"
+	case ".webp":
+		mediaType = "image/webp"
+	default:
+		return jsonError("unsupported image format (use .png, .jpg, .gif, or .webp)")
+	}
+
+	blobStore := blob.NewWorkspaceBlobStore(workspaceRoot)
+	key, err := blobStore.Put(data, mediaType)
+	if err != nil {
+		return jsonError(fmt.Sprintf("store blob: %v", err))
+	}
+
+	a.pendingImages = append(a.pendingImages, ImageRef{
+		MediaType: mediaType,
+		Blob:      key,
+		Size:      int64(len(data)),
+	})
+
+	return jsonResult(map[string]interface{}{
+		"ok":         true,
+		"blob":       key,
+		"media_type": mediaType,
+		"size":       len(data),
+	})
 }
 
 func (a *Agent) toolCronCreate(input json.RawMessage) string {

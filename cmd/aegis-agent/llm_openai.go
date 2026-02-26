@@ -103,7 +103,7 @@ func (o *OpenAILLM) StreamChat(ctx context.Context, messages []Message, tools []
 
 	model := o.model
 	if model == "" {
-		model = "gpt-4o"
+		model = "gpt-5.2"
 	}
 	body := map[string]interface{}{
 		"model":    model,
@@ -111,7 +111,12 @@ func (o *OpenAILLM) StreamChat(ctx context.Context, messages []Message, tools []
 		"messages": chatMessages,
 	}
 	if o.maxTokens > 0 {
-		body["max_tokens"] = o.maxTokens
+		// GPT-5+ uses max_completion_tokens; older models use max_tokens
+		if strings.HasPrefix(model, "gpt-5") || strings.HasPrefix(model, "o") {
+			body["max_completion_tokens"] = o.maxTokens
+		} else {
+			body["max_tokens"] = o.maxTokens
+		}
 	}
 	if len(tools) > 0 {
 		var oaiTools []map[string]interface{}

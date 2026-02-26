@@ -50,6 +50,7 @@ type Agent struct {
 	maxContextChars int
 	memory          *MemoryStore
 	cron            *CronStore
+	pendingImages   []ImageRef // images queued by respond_with_image during current turn
 }
 
 func main() {
@@ -202,6 +203,7 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 	}
 
 	sess.appendTurn(Turn{Role: "user", Content: turnContent, TS: frame.TS, User: userName})
+	a.pendingImages = nil // reset for this message
 	a.sendPresence(frame.Session, "thinking")
 
 	if a.llm == nil {
@@ -240,7 +242,11 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 
 		if len(resp.ToolCalls) == 0 {
 			text := fullText.String()
-			a.sendDone(frame.Session, text)
+			if len(a.pendingImages) > 0 {
+				a.sendDoneWithImages(frame.Session, text, a.pendingImages)
+			} else {
+				a.sendDone(frame.Session, text)
+			}
 			sess.appendTurn(Turn{Role: "assistant", Content: text, TS: now()})
 			return
 		}
@@ -270,7 +276,18 @@ You have persistent memory tools. Use memory_store when:
 - The user explicitly asks you to remember something
 - You learn a stable fact about the user or project that will be useful across sessions
 Do NOT store: transient task context, secrets/tokens, or information already in files.
-Use memory_delete to remove outdated memories. Memories are automatically surfaced in your context when relevant.`
+Use memory_delete to remove outdated memories. Memories are automatically surfaced in your context when relevant.
+
+You have internet access via tools. NEVER say "I can't search" or "I can't send images" — you CAN.
+- web_search: search the web. Use it when the user asks you to find something.
+- image_search: search for images. Returns direct image URLs.
+- web_fetch: fetch any URL and extract text.
+- respond_with_image: attach an image file to your response. The user sees it directly.
+IMPORTANT: When the user asks for an image or photo, you MUST follow this exact pipeline — never just give links:
+1. Call image_search to find image URLs
+2. Call bash with wget to download the first result: wget --user-agent="Mozilla/5.0" -O /workspace/img.jpg "IMAGE_URL"
+3. Call respond_with_image with path /workspace/img.jpg
+This sends the actual image to the user. Giving links instead of downloading is NOT acceptable.`
 
 func now() string {
 	return time.Now().UTC().Format(time.RFC3339Nano)
