@@ -157,6 +157,11 @@ Children are automatically stopped when the parent stops.`,
 		}`),
 	},
 	{
+		Name:        "self_restart",
+		Description: "Restart this agent's main process. Workspace files and session state are preserved. Use after modifying /workspace/.aegis/agent.json to load new configuration (model, tools, system prompt).",
+		InputSchema: rawJSON(`{"type":"object","properties":{}}`),
+	},
+	{
 		Name:        "keepalive_acquire",
 		Description: "Acquire a keepalive lease to prevent this VM from being paused by the idle timer. Use this during long-running work (builds, computations) that doesn't generate network traffic. The lease auto-expires after ttl_ms milliseconds.",
 		InputSchema: rawJSON(`{
@@ -283,11 +288,23 @@ func handleUnexposePort(args json.RawMessage) *mcpToolResult {
 	return textResult("port unexposed")
 }
 
+func handleSelfRestart(args json.RawMessage) *mcpToolResult {
+	status, data, err := doRequest("POST", "/v1/self/restart", nil)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	if status >= 400 {
+		return errorResult(fmt.Sprintf("restart failed (HTTP %d): %s", status, string(data)))
+	}
+	return textResult("restart initiated — agent will restart momentarily")
+}
+
 var toolHandlers = map[string]func(json.RawMessage) *mcpToolResult{
 	"instance_spawn":    handleSpawn,
 	"instance_list":     handleList,
 	"instance_stop":     handleStop,
 	"self_info":         handleSelfInfo,
+	"self_restart":      handleSelfRestart,
 	"expose_port":       handleExposePort,
 	"unexpose_port":     handleUnexposePort,
 	"keepalive_acquire": handleKeepaliveAcquire,

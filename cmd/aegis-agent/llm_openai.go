@@ -13,7 +13,9 @@ import (
 
 // OpenAILLM implements LLM using the OpenAI Chat Completions API with streaming.
 type OpenAILLM struct {
-	apiKey string
+	apiKey    string
+	model     string
+	maxTokens int
 }
 
 func (o *OpenAILLM) StreamChat(ctx context.Context, messages []Message, tools []Tool, onDelta func(string)) (*LLMResponse, error) {
@@ -99,10 +101,17 @@ func (o *OpenAILLM) StreamChat(ctx context.Context, messages []Message, tools []
 		chatMessages = append(chatMessages, msg)
 	}
 
+	model := o.model
+	if model == "" {
+		model = "gpt-4o"
+	}
 	body := map[string]interface{}{
-		"model":    "gpt-4o",
+		"model":    model,
 		"stream":   true,
 		"messages": chatMessages,
+	}
+	if o.maxTokens > 0 {
+		body["max_tokens"] = o.maxTokens
 	}
 	if len(tools) > 0 {
 		var oaiTools []map[string]interface{}

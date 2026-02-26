@@ -9,15 +9,22 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
 
-const mcpConfigPath = "/workspace/.aegis/mcp.json"
+const agentConfigPath = "/workspace/.aegis/agent.json"
 
-// MCPConfig is the workspace MCP server configuration.
-type MCPConfig struct {
-	Servers map[string]MCPServerConfig `json:"servers"`
+// AgentConfig is the workspace agent configuration.
+// Loaded from /workspace/.aegis/agent.json with env var overrides.
+type AgentConfig struct {
+	Model        string                     `json:"model,omitempty"`
+	MaxTokens    int                        `json:"max_tokens,omitempty"`
+	ContextChars int                        `json:"context_chars,omitempty"`
+	ContextTurns int                        `json:"context_turns,omitempty"`
+	SystemPrompt string                     `json:"system_prompt,omitempty"`
+	MCP          map[string]MCPServerConfig `json:"mcp,omitempty"`
 }
 
 // MCPServerConfig describes a single MCP server to spawn.
@@ -39,13 +46,11 @@ type MCPClient struct {
 }
 
 // initMCPTools discovers and starts MCP servers, assembles the full tool list.
-func (a *Agent) initMCPTools() {
+func (a *Agent) initMCPTools(config AgentConfig) {
 	a.allTools = append(a.allTools, builtinTools...)
 	a.mcpClients = make(map[string]*MCPClient)
 
-	config := loadMCPConfig()
-
-	for name, serverCfg := range config.Servers {
+	for name, serverCfg := range config.MCP {
 		client, err := newMCPClient(name, serverCfg.Command, serverCfg.Args)
 		if err != nil {
 			log.Printf("MCP [%s]: failed to start: %v", name, err)
@@ -57,26 +62,52 @@ func (a *Agent) initMCPTools() {
 	}
 }
 
-// loadMCPConfig reads /workspace/.aegis/mcp.json.
-// If no config exists, auto-discovers aegis-mcp-guest from the rootfs.
-func loadMCPConfig() MCPConfig {
-	config := MCPConfig{Servers: make(map[string]MCPServerConfig)}
+// loadAgentConfig reads /workspace/.aegis/agent.json and applies env var overrides.
+// If no config exists, returns defaults with auto-discovered aegis-mcp-guest.
+func loadAgentConfig() AgentConfig {
+	var config AgentConfig
 
-	data, err := os.ReadFile(mcpConfigPath)
+	data, err := os.ReadFile(agentConfigPath)
 	if err == nil {
-		if json.Unmarshal(data, &config) == nil && len(config.Servers) > 0 {
-			log.Printf("MCP: loaded config from %s (%d servers)", mcpConfigPath, len(config.Servers))
-			return config
+		if json.Unmarshal(data, &config) == nil {
+			log.Printf("agent: loaded config from %s", agentConfigPath)
 		}
 	}
 
-	// No config — auto-discover aegis-mcp-guest
-	mcpGuestBin := "/usr/bin/aegis-mcp-guest"
-	if _, err := os.Stat(mcpGuestBin); err == nil {
-		config.Servers["aegis"] = MCPServerConfig{Command: mcpGuestBin}
-		log.Printf("MCP: auto-discovered aegis-mcp-guest")
-	} else {
-		log.Printf("MCP: no config and no aegis-mcp-guest found")
+	// Env var overrides
+	if v := os.Getenv("AEGIS_MODEL"); v != "" {
+		config.Model = v
+	}
+	if v := os.Getenv("AEGIS_MAX_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			config.MaxTokens = n
+		}
+	}
+	if v := os.Getenv("AEGIS_CONTEXT_CHARS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			config.ContextChars = n
+		}
+	}
+	if v := os.Getenv("AEGIS_CONTEXT_TURNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			config.ContextTurns = n
+		}
+	}
+	if v := os.Getenv("AEGIS_SYSTEM_PROMPT"); v != "" {
+		config.SystemPrompt = v
+	}
+
+	// Auto-discover MCP if no servers configured
+	if len(config.MCP) == 0 {
+		mcpGuestBin := "/usr/bin/aegis-mcp-guest"
+		if _, err := os.Stat(mcpGuestBin); err == nil {
+			config.MCP = map[string]MCPServerConfig{
+				"aegis": {Command: mcpGuestBin},
+			}
+			log.Printf("agent: auto-discovered aegis-mcp-guest")
+		} else {
+			log.Printf("agent: no config and no aegis-mcp-guest found")
+		}
 	}
 
 	return config

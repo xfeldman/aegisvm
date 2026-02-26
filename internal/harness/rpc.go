@@ -88,9 +88,10 @@ type execResult struct {
 
 // processTracker tracks running processes for cleanup on shutdown.
 type processTracker struct {
-	mu        sync.Mutex
-	processes []*exec.Cmd
-	primary   *exec.Cmd // primary process started by `run` RPC
+	mu               sync.Mutex
+	processes        []*exec.Cmd
+	primary          *exec.Cmd // primary process started by `run` RPC
+	restartRequested bool      // set by self_restart, checked on process exit
 }
 
 func (pt *processTracker) add(cmd *exec.Cmd) {
@@ -398,7 +399,7 @@ func handleRun(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *pro
 		hrpc.portProxy = pp
 	}
 
-	cmd, err := startPrimaryProcess(ctx, params, conn)
+	cmd, err := startPrimaryProcess(ctx, params, conn, tracker, hrpc)
 	if err != nil {
 		if pp != nil {
 			pp.Stop()

@@ -13,7 +13,9 @@ import (
 
 // ClaudeLLM implements LLM using the Anthropic Messages API with streaming.
 type ClaudeLLM struct {
-	apiKey string
+	apiKey    string
+	model     string
+	maxTokens int
 }
 
 func (c *ClaudeLLM) StreamChat(ctx context.Context, messages []Message, tools []Tool, onDelta func(string)) (*LLMResponse, error) {
@@ -44,9 +46,18 @@ func (c *ClaudeLLM) StreamChat(ctx context.Context, messages []Message, tools []
 		chatMessages = append(chatMessages, msg)
 	}
 
+	model := c.model
+	if model == "" {
+		model = "claude-sonnet-4-20250514"
+	}
+	maxTokens := c.maxTokens
+	if maxTokens == 0 {
+		maxTokens = 4096
+	}
+
 	body := map[string]interface{}{
-		"model":      "claude-sonnet-4-20250514",
-		"max_tokens": 4096,
+		"model":      model,
+		"max_tokens": maxTokens,
 		"stream":     true,
 		"messages":   chatMessages,
 	}

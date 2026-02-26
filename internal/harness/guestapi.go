@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"syscall"
 )
 
 const guestAPIAddr = "127.0.0.1:7777"
@@ -42,6 +43,11 @@ func startGuestAPIServer(hrpc *harnessRPC) {
 	})
 	mux.HandleFunc("DELETE /v1/self/keepalive", func(w http.ResponseWriter, r *http.Request) {
 		handleGuestKeepaliveRelease(w, r, hrpc)
+	})
+
+	// Self-restart (agent config reload)
+	mux.HandleFunc("POST /v1/self/restart", func(w http.ResponseWriter, r *http.Request) {
+		handleGuestRestart(w, r, hrpc)
 	})
 
 	// Runtime port expose/unexpose
@@ -157,6 +163,27 @@ func handleGuestTetherSend(w http.ResponseWriter, r *http.Request, hrpc *harness
 
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"ok":true}`)
+}
+
+// handleGuestRestart sends SIGTERM to the primary process, triggering a restart.
+// The restart is handled by the exit goroutine in startPrimaryProcess.
+func handleGuestRestart(w http.ResponseWriter, r *http.Request, hrpc *harnessRPC) {
+	tracker := hrpc.tracker
+	tracker.mu.Lock()
+	primary := tracker.primary
+	if primary == nil || primary.Process == nil {
+		tracker.mu.Unlock()
+		writeGuestError(w, http.StatusBadRequest, "no primary process to restart")
+		return
+	}
+	tracker.restartRequested = true
+	tracker.mu.Unlock()
+
+	log.Println("self_restart: sending SIGTERM to primary process")
+	primary.Process.Signal(syscall.SIGTERM)
+
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"ok":true,"message":"restart initiated"}`)
 }
 
 // handleGuestExpose exposes a port via the host, then starts a local port proxy.

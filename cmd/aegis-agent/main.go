@@ -9,8 +9,8 @@
 //   - write_file: write file contents
 //   - list_files: list directory contents
 //
-// MCP tools are configured via /workspace/.aegis/mcp.json.
-// If no config exists, aegis-mcp-guest is auto-discovered from the rootfs.
+// Agent configuration is loaded from /workspace/.aegis/agent.json.
+// MCP tools are auto-discovered from aegis-mcp-guest if no config exists.
 //
 // Build: GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o aegis-agent ./cmd/aegis-agent
 package main
@@ -30,23 +30,23 @@ import (
 )
 
 const (
-	listenAddr      = "127.0.0.1:7778"
-	harnessAPI      = "http://127.0.0.1:7777"
-	sessionsDir     = "/workspace/sessions"
-	workspaceRoot   = "/workspace"
-	maxContextTurns = 50
-	maxContextChars = 24000
-	maxToolRounds   = 20
+	listenAddr    = "127.0.0.1:7778"
+	harnessAPI    = "http://127.0.0.1:7777"
+	sessionsDir   = "/workspace/sessions"
+	workspaceRoot = "/workspace"
+	maxToolRounds = 20
 )
 
 // Agent is the main agent runtime.
 type Agent struct {
-	mu           sync.Mutex
-	sessions     map[string]*Session
-	llm          LLM
-	systemPrompt string
-	mcpClients   map[string]*MCPClient
-	allTools     []Tool
+	mu              sync.Mutex
+	sessions        map[string]*Session
+	llm             LLM
+	systemPrompt    string
+	mcpClients      map[string]*MCPClient
+	allTools        []Tool
+	maxContextTurns int
+	maxContextChars int
 }
 
 func main() {
@@ -55,26 +55,65 @@ func main() {
 
 	os.MkdirAll(sessionsDir, 0755)
 
-	agent := &Agent{
-		sessions: make(map[string]*Session),
+	config := loadAgentConfig()
+
+	// Apply defaults for context limits
+	maxTurns := config.ContextTurns
+	if maxTurns == 0 {
+		maxTurns = 50
+	}
+	maxChars := config.ContextChars
+	if maxChars == 0 {
+		maxChars = 24000
+	}
+	maxTokens := config.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = 4096
 	}
 
-	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
-		agent.llm = &ClaudeLLM{apiKey: key}
+	agent := &Agent{
+		sessions:        make(map[string]*Session),
+		maxContextTurns: maxTurns,
+		maxContextChars: maxChars,
+	}
+
+	// Parse model config: "provider/model" or just "model-name"
+	provider, modelName := "", ""
+	if config.Model != "" {
+		if i := strings.Index(config.Model, "/"); i > 0 {
+			provider = config.Model[:i]
+			modelName = config.Model[i+1:]
+		} else {
+			modelName = config.Model
+		}
+	}
+
+	claudeKey := os.Getenv("ANTHROPIC_API_KEY")
+	openaiKey := os.Getenv("OPENAI_API_KEY")
+
+	switch {
+	case provider == "claude" || provider == "anthropic":
+		agent.llm = &ClaudeLLM{apiKey: claudeKey, model: modelName, maxTokens: maxTokens}
+		log.Printf("LLM provider: Claude (model=%s)", modelName)
+	case provider == "openai":
+		agent.llm = &OpenAILLM{apiKey: openaiKey, model: modelName, maxTokens: maxTokens}
+		log.Printf("LLM provider: OpenAI (model=%s)", modelName)
+	case claudeKey != "":
+		agent.llm = &ClaudeLLM{apiKey: claudeKey, model: modelName, maxTokens: maxTokens}
 		log.Println("LLM provider: Claude")
-	} else if key := os.Getenv("OPENAI_API_KEY"); key != "" {
-		agent.llm = &OpenAILLM{apiKey: key}
+	case openaiKey != "":
+		agent.llm = &OpenAILLM{apiKey: openaiKey, model: modelName, maxTokens: maxTokens}
 		log.Println("LLM provider: OpenAI")
-	} else {
+	default:
 		log.Println("WARNING: no LLM API key set (ANTHROPIC_API_KEY or OPENAI_API_KEY)")
 	}
 
-	agent.systemPrompt = os.Getenv("AEGIS_SYSTEM_PROMPT")
+	agent.systemPrompt = config.SystemPrompt
 	if agent.systemPrompt == "" {
 		agent.systemPrompt = defaultSystemPrompt
 	}
 
-	agent.initMCPTools()
+	agent.initMCPTools(config)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/tether/recv", agent.handleTetherRecv)
@@ -164,7 +203,7 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 
 	// Agentic loop: call LLM with streaming, execute tools, repeat
 	for round := 0; round < maxToolRounds; round++ {
-		messages := sess.assembleContext(a.systemPrompt)
+		messages := sess.assembleContext(a.systemPrompt, a.maxContextTurns, a.maxContextChars)
 
 		var fullText strings.Builder
 		onDelta := func(delta string) {

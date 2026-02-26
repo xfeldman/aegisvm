@@ -81,16 +81,16 @@ func (s *Session) loadFromDisk() {
 // assembleContext builds the message list for the LLM: system prompt + last N turns.
 // It ensures tool call chains are never broken — if an assistant turn with tool_use
 // is included, all following tool result turns must also be included.
-func (s *Session) assembleContext(systemPrompt string) []Message {
+func (s *Session) assembleContext(systemPrompt string, maxTurns, maxChars int) []Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var selected []Turn
 	totalChars := 0
-	for i := len(s.turns) - 1; i >= 0 && len(selected) < maxContextTurns; i-- {
+	for i := len(s.turns) - 1; i >= 0 && len(selected) < maxTurns; i-- {
 		t := s.turns[i]
 		size := turnSize(t)
-		if totalChars+size > maxContextChars {
+		if totalChars+size > maxChars {
 			break
 		}
 		totalChars += size

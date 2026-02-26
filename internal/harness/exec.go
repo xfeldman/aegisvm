@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"os/exec"
 	"syscall"
@@ -11,9 +12,10 @@ import (
 
 // startPrimaryProcess starts the primary process and streams its output as log
 // notifications. When the process exits, it sends a processExited notification
-// with the exit code. Unlike exec, there is no exec_id — output is tagged as
+// with the exit code. If tracker.restartRequested is set, restarts the process
+// automatically. Unlike exec, there is no exec_id — output is tagged as
 // primary process output.
-func startPrimaryProcess(ctx context.Context, params runParams, conn net.Conn) (*exec.Cmd, error) {
+func startPrimaryProcess(ctx context.Context, params runParams, conn net.Conn, tracker *processTracker, hrpc *harnessRPC) (*exec.Cmd, error) {
 	if len(params.Command) == 0 {
 		return nil, fmt.Errorf("empty command")
 	}
@@ -69,7 +71,8 @@ func startPrimaryProcess(ctx context.Context, params runParams, conn net.Conn) (
 		}
 	}()
 
-	// Wait for process to finish and send processExited notification
+	// Wait for process to finish and send processExited notification.
+	// If restart was requested (self_restart), start a new process automatically.
 	go func() {
 		<-done
 		<-done
@@ -89,6 +92,28 @@ func startPrimaryProcess(ctx context.Context, params runParams, conn net.Conn) (
 		sendNotification(conn, "processExited", map[string]interface{}{
 			"exit_code": exitCode,
 		})
+
+		// Check if restart was requested
+		if tracker != nil {
+			tracker.mu.Lock()
+			shouldRestart := tracker.restartRequested
+			tracker.restartRequested = false
+			tracker.primary = nil
+			tracker.mu.Unlock()
+
+			if shouldRestart {
+				log.Println("restarting primary process (self_restart)")
+				newCmd, err := startPrimaryProcess(ctx, params, conn, tracker, hrpc)
+				if err != nil {
+					log.Printf("restart primary: %v", err)
+					return
+				}
+				tracker.setPrimary(newCmd)
+				if hrpc != nil {
+					go monitorActivity(ctx, newCmd.Process.Pid, conn, hrpc)
+				}
+			}
+		}
 	}()
 
 	return cmd, nil
