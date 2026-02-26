@@ -128,11 +128,6 @@ Children are automatically stopped when the parent stops.`,
 		}`),
 	},
 	{
-		Name:        "self_info",
-		Description: "Get information about this VM instance — its ID, handle, state, image, parent ID, and endpoints.",
-		InputSchema: rawJSON(`{"type": "object", "properties": {}}`),
-	},
-	{
 		Name:        "expose_port",
 		Description: "Expose a guest port on the host. Returns the allocated public port. Can be called at any time while the VM is running. Idempotent: re-exposing returns the existing mapping.",
 		InputSchema: rawJSON(`{
@@ -155,11 +150,6 @@ Children are automatically stopped when the parent stops.`,
 			},
 			"required": ["guest_port"]
 		}`),
-	},
-	{
-		Name:        "self_restart",
-		Description: "Restart this agent's main process. Workspace files and session state are preserved. Use after modifying /workspace/.aegis/agent.json to load new configuration (model, tools, system prompt).",
-		InputSchema: rawJSON(`{"type":"object","properties":{}}`),
 	},
 	{
 		Name:        "keepalive_acquire",
@@ -221,17 +211,6 @@ func handleStop(args json.RawMessage) *mcpToolResult {
 	return textResult(string(data))
 }
 
-func handleSelfInfo(args json.RawMessage) *mcpToolResult {
-	status, data, err := doRequest("GET", "/v1/self", nil)
-	if err != nil {
-		return errorResult(err.Error())
-	}
-	if status >= 400 {
-		return errorResult(fmt.Sprintf("self_info failed (HTTP %d): %s", status, string(data)))
-	}
-	return textResult(string(data))
-}
-
 func handleKeepaliveAcquire(args json.RawMessage) *mcpToolResult {
 	body := args
 	if len(body) == 0 || string(body) == "{}" || string(body) == "null" {
@@ -288,23 +267,10 @@ func handleUnexposePort(args json.RawMessage) *mcpToolResult {
 	return textResult("port unexposed")
 }
 
-func handleSelfRestart(args json.RawMessage) *mcpToolResult {
-	status, data, err := doRequest("POST", "/v1/self/restart", nil)
-	if err != nil {
-		return errorResult(err.Error())
-	}
-	if status >= 400 {
-		return errorResult(fmt.Sprintf("restart failed (HTTP %d): %s", status, string(data)))
-	}
-	return textResult("restart initiated — agent will restart momentarily")
-}
-
 var toolHandlers = map[string]func(json.RawMessage) *mcpToolResult{
 	"instance_spawn":    handleSpawn,
 	"instance_list":     handleList,
 	"instance_stop":     handleStop,
-	"self_info":         handleSelfInfo,
-	"self_restart":      handleSelfRestart,
 	"expose_port":       handleExposePort,
 	"unexpose_port":     handleUnexposePort,
 	"keepalive_acquire": handleKeepaliveAcquire,

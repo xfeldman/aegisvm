@@ -51,6 +51,7 @@ type Agent struct {
 	memory          *MemoryStore
 	cron            *CronStore
 	pendingImages   []ImageRef // images queued by respond_with_image during current turn
+	restartPending  bool       // set by self_restart tool, checked after tool round
 }
 
 func main() {
@@ -124,6 +125,9 @@ func main() {
 
 	agent.cron = NewCronStore(filepath.Join(workspaceRoot, ".aegis"))
 
+	// Build dynamic system prompt additions
+	agent.systemPrompt += "\n\n" + agent.envSummary()
+
 	agent.initMCPTools(config)
 
 	mux := http.NewServeMux()
@@ -136,6 +140,9 @@ func main() {
 			log.Fatalf("agent server: %v", err)
 		}
 	}()
+
+	// Check for pending restart notification
+	go agent.sendRestartNotification()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
@@ -262,6 +269,26 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 			sess.appendTurn(Turn{Role: "tool", Content: result, TS: now(), ToolCallID: tc.ID})
 		}
 
+		// Handle self_restart: all tool results are written, now exit cleanly
+		if a.restartPending {
+			a.restartPending = false
+			msg := "Restarting to apply configuration changes..."
+			a.sendDone(frame.Session, msg)
+			sess.appendTurn(Turn{Role: "assistant", Content: msg, TS: now()})
+			writeRestartMarker(frame.Session)
+			go func() {
+				// Give tether frame time to flush
+				time.Sleep(500 * time.Millisecond)
+				resp, err := http.Post(harnessAPI+"/v1/self/restart", "application/json", nil)
+				if err != nil {
+					log.Printf("self_restart: %v", err)
+					return
+				}
+				resp.Body.Close()
+			}()
+			return
+		}
+
 		a.sendPresence(frame.Session, "thinking")
 	}
 
@@ -270,24 +297,81 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 	sess.appendTurn(Turn{Role: "assistant", Content: msg, TS: now()})
 }
 
-const defaultSystemPrompt = `You are a helpful assistant running inside an Aegis VM. Your persistent workspace is at /workspace/. You have tools for running commands, reading/writing files, and optionally managing child VM instances. Read tool descriptions carefully — they explain parameters and constraints.
+const restartMarkerPath = "/workspace/.aegis/restart-pending.json"
 
-You have persistent memory tools. Use memory_store when:
-- The user explicitly asks you to remember something
-- You learn a stable fact about the user or project that will be useful across sessions
-Do NOT store: transient task context, secrets/tokens, or information already in files.
-Use memory_delete to remove outdated memories. Memories are automatically surfaced in your context when relevant.
+// envSummary returns a system prompt fragment listing available API keys and secrets.
+func (a *Agent) envSummary() string {
+	var keys []string
+	for _, env := range os.Environ() {
+		parts := strings.SplitN(env, "=", 2)
+		name := parts[0]
+		// Only include API-key-like env vars
+		if strings.HasSuffix(name, "_API_KEY") || strings.HasSuffix(name, "_TOKEN") || strings.HasSuffix(name, "_SECRET") {
+			keys = append(keys, name)
+		}
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Available secrets/API keys in your environment: %s. MCP servers you start inherit these automatically.", strings.Join(keys, ", "))
+}
 
-You have internet access via tools. NEVER say "I can't search" or "I can't send images" — you CAN.
-- web_search: search the web. Use it when the user asks you to find something.
-- image_search: search for images. Returns direct image URLs.
-- web_fetch: fetch any URL and extract text.
-- respond_with_image: attach an image file to your response. The user sees it directly.
-IMPORTANT: When the user asks for an image or photo, you MUST follow this exact pipeline — never just give links:
+// writeRestartMarker saves session info so the agent can notify the user after restart.
+func writeRestartMarker(session SessionID) {
+	data, _ := json.Marshal(session)
+	os.MkdirAll(filepath.Dir(restartMarkerPath), 0755)
+	os.WriteFile(restartMarkerPath, data, 0644)
+}
+
+// sendRestartNotification checks for a restart marker and sends "I'm back" to the session.
+func (a *Agent) sendRestartNotification() {
+	data, err := os.ReadFile(restartMarkerPath)
+	if err != nil {
+		return
+	}
+	os.Remove(restartMarkerPath)
+
+	var session SessionID
+	if json.Unmarshal(data, &session) != nil || session.Channel == "" {
+		return
+	}
+
+	// Wait for tether egress to be ready (gateway needs to reconnect after restart)
+	time.Sleep(5 * time.Second)
+
+	log.Printf("sending restart notification to session %s/%s", session.Channel, session.ID)
+	a.sendDone(session, "Restart complete. New configuration loaded.")
+
+	sess := a.getOrCreateSession(session)
+	sess.appendTurn(Turn{Role: "assistant", Content: "Restart complete. New configuration loaded.", TS: now()})
+}
+
+const defaultSystemPrompt = `You are an AI assistant running inside an isolated Aegis microVM. You communicate with the user via a messaging channel (Telegram, tether, etc.). You have root access, full internet, and a persistent workspace at /workspace/.
+
+## Identity
+You ARE the agent running inside the VM. Do not ask the user about "their setup" or "their client" — you are the one executing tools and managing your own environment. Act autonomously. When asked to do something, do it — don't ask clarifying questions unless genuinely ambiguous.
+
+## Environment
+- Alpine Linux VM with root access and internet.
+- Node.js and npm are pre-installed. You can install packages with "apk add" or "npm install -g".
+- Your workspace at /workspace/ persists across restarts.
+
+## Installing MCP servers
+You can extend your capabilities by adding MCP tool servers:
+1. Create or edit /workspace/.aegis/agent.json (core tools are always available — only add new servers)
+2. Call self_restart to reload
+Example: {"mcp":{"my-server":{"command":"npx","args":["package-name@latest"]}}}
+IMPORTANT: Do NOT guess npm package names. Before installing, use web_search to find the correct package name on npmjs.com. Hallucinated package names will fail.
+
+## Image handling
+When the user asks for an image or photo, follow this pipeline — NEVER just give links:
 1. Call image_search to find image URLs
-2. Call bash with wget to download the first result: wget --user-agent="Mozilla/5.0" -O /workspace/img.jpg "IMAGE_URL"
-3. Call respond_with_image with path /workspace/img.jpg
-This sends the actual image to the user. Giving links instead of downloading is NOT acceptable.`
+2. Download the best result: bash with wget --user-agent="Mozilla/5.0" -O /workspace/img.jpg "URL"
+3. Call respond_with_image with the file path
+This sends the actual image to the user.
+
+## Memory
+Use memory_store when the user explicitly asks you to remember something, or when you learn a stable fact useful across sessions. Do NOT store secrets or transient task context. Memories are automatically surfaced in context when relevant.`
 
 func now() string {
 	return time.Now().UTC().Format(time.RFC3339Nano)

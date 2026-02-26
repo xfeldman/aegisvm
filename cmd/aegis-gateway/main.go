@@ -870,8 +870,12 @@ func (gw *Gateway) handleEgressFrame(frame TetherFrame) {
 		gw.mu.Lock()
 		reply, ok := gw.activeReplies[chatID]
 		if !ok {
-			// No active reply — replayed frame from previous session. Ignore.
+			// No active reply — unsolicited message (e.g., restart notification, cron result).
+			// Send as a new Telegram message.
 			gw.mu.Unlock()
+			if payload.Text != "" {
+				gw.sendTelegramMessage(chatID, payload.Text, botToken)
+			}
 			return
 		}
 		if reply.typingCancel != nil {

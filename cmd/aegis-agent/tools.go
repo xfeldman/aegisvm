@@ -209,6 +209,22 @@ var builtinTools = []Tool{
 		},
 	},
 	{
+		Name:        "self_info",
+		Description: "Get information about this VM instance — its ID, handle, state, image, and endpoints.",
+		InputSchema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+	},
+	{
+		Name:        "self_restart",
+		Description: "Restart this agent process. Workspace files, sessions, and memory are preserved. Use after modifying /workspace/.aegis/agent.json to load new MCP servers or configuration. The restart happens after the current response completes — no data is lost.",
+		InputSchema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+	},
+	{
 		Name:        "respond_with_image",
 		Description: "Attach an image to your response. Download the image first (e.g. with bash + wget), then call this tool with the local file path. The image will be sent alongside your text response to the user (e.g. in Telegram).",
 		InputSchema: map[string]interface{}{
@@ -281,6 +297,10 @@ func (a *Agent) executeTool(name string, input json.RawMessage) string {
 		return a.toolCronDisable(input)
 	case "web_fetch":
 		return toolWebFetch(input)
+	case "self_info":
+		return a.toolSelfInfo(input)
+	case "self_restart":
+		return a.toolSelfRestart(input)
 	case "respond_with_image":
 		return a.toolRespondWithImage(input)
 	case "web_search":
@@ -1025,6 +1045,28 @@ func stripHTML(s string) string {
 	s = reNewlines.ReplaceAllString(s, "\n\n")
 
 	return strings.TrimSpace(s)
+}
+
+func (a *Agent) toolSelfInfo(input json.RawMessage) string {
+	// Query harness guest API for instance info
+	resp, err := http.Get(harnessAPI + "/v1/self")
+	if err != nil {
+		return jsonError(fmt.Sprintf("self_info: %v", err))
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return jsonError(fmt.Sprintf("self_info: %s", string(data)))
+	}
+	return string(data)
+}
+
+func (a *Agent) toolSelfRestart(input json.RawMessage) string {
+	a.restartPending = true
+	return jsonResult(map[string]interface{}{
+		"ok":      true,
+		"message": "Restart scheduled. It will happen after this response completes.",
+	})
 }
 
 func (a *Agent) toolRespondWithImage(input json.RawMessage) string {

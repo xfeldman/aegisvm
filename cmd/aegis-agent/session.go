@@ -120,6 +120,19 @@ func (s *Session) assembleContext(systemPrompt string, maxTurns, maxChars int) [
 		break
 	}
 
+	// Trim from the tail: if the last turn is an assistant with tool_use
+	// but no following tool results (crash, OOM, etc.), drop it to avoid API errors.
+	for len(selected) > 0 {
+		last := selected[len(selected)-1]
+		if last.Role == "assistant" {
+			if _, isStr := last.Content.(string); !isStr {
+				selected = selected[:len(selected)-1]
+				continue
+			}
+		}
+		break
+	}
+
 	messages := []Message{{Role: "system", Content: systemPrompt}}
 	for _, t := range selected {
 		content := t.Content

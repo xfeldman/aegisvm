@@ -98,17 +98,14 @@ func loadAgentConfig() AgentConfig {
 		config.SystemPrompt = v
 	}
 
-	// Auto-discover MCP if no servers configured
-	if len(config.MCP) == 0 {
-		mcpGuestBin := "/usr/bin/aegis-mcp-guest"
-		if _, err := os.Stat(mcpGuestBin); err == nil {
-			config.MCP = map[string]MCPServerConfig{
-				"aegis": {Command: mcpGuestBin},
-			}
-			log.Printf("agent: auto-discovered aegis-mcp-guest")
-		} else {
-			log.Printf("agent: no config and no aegis-mcp-guest found")
+	// Always inject aegis-mcp-guest — it's infrastructure, not user-configurable.
+	// User MCP entries from agent.json are merged on top.
+	mcpGuestBin := "/usr/bin/aegis-mcp-guest"
+	if _, err := os.Stat(mcpGuestBin); err == nil {
+		if config.MCP == nil {
+			config.MCP = make(map[string]MCPServerConfig)
 		}
+		config.MCP["aegis"] = MCPServerConfig{Command: mcpGuestBin}
 	}
 
 	return config
@@ -219,10 +216,8 @@ func (c *MCPClient) call(method string, params interface{}) (json.RawMessage, er
 		return nil, fmt.Errorf("write: %w", err)
 	}
 
-	if !c.stdout.Scan() {
-		return nil, fmt.Errorf("no response from MCP server")
-	}
-
+	// Read lines until we get a valid JSON-RPC response.
+	// Some MCP servers print banners/warnings to stdout before the JSON.
 	var resp struct {
 		Result json.RawMessage `json:"result"`
 		Error  *struct {
@@ -230,8 +225,18 @@ func (c *MCPClient) call(method string, params interface{}) (json.RawMessage, er
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(c.stdout.Bytes(), &resp); err != nil {
-		return nil, fmt.Errorf("parse: %w", err)
+	for {
+		if !c.stdout.Scan() {
+			return nil, fmt.Errorf("no response from MCP server")
+		}
+		line := c.stdout.Bytes()
+		if len(line) == 0 || line[0] != '{' {
+			continue // skip non-JSON lines (banners, warnings)
+		}
+		if err := json.Unmarshal(line, &resp); err != nil {
+			continue // skip malformed lines
+		}
+		break
 	}
 	if resp.Error != nil {
 		return nil, fmt.Errorf("MCP error %d: %s", resp.Error.Code, resp.Error.Message)
