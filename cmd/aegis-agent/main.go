@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -47,6 +48,7 @@ type Agent struct {
 	allTools        []Tool
 	maxContextTurns int
 	maxContextChars int
+	memory          *MemoryStore
 }
 
 func main() {
@@ -112,6 +114,11 @@ func main() {
 	if agent.systemPrompt == "" {
 		agent.systemPrompt = defaultSystemPrompt
 	}
+
+	agent.memory = NewMemoryStore(
+		filepath.Join(workspaceRoot, ".aegis", "memory"),
+		config.Memory,
+	)
 
 	agent.initMCPTools(config)
 
@@ -201,9 +208,17 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 		return
 	}
 
+	// Inject relevant memories into system prompt for this message
+	sysPrompt := a.systemPrompt
+	if a.memory != nil {
+		if block := a.memory.InjectBlock(content); block != "" {
+			sysPrompt = a.systemPrompt + "\n\n" + block
+		}
+	}
+
 	// Agentic loop: call LLM with streaming, execute tools, repeat
 	for round := 0; round < maxToolRounds; round++ {
-		messages := sess.assembleContext(a.systemPrompt, a.maxContextTurns, a.maxContextChars)
+		messages := sess.assembleContext(sysPrompt, a.maxContextTurns, a.maxContextChars)
 
 		var fullText strings.Builder
 		onDelta := func(delta string) {
@@ -246,7 +261,13 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 	sess.appendTurn(Turn{Role: "assistant", Content: msg, TS: now()})
 }
 
-const defaultSystemPrompt = `You are a helpful assistant running inside an Aegis VM. Your persistent workspace is at /workspace/. You have tools for running commands, reading/writing files, and optionally managing child VM instances. Read tool descriptions carefully — they explain parameters and constraints.`
+const defaultSystemPrompt = `You are a helpful assistant running inside an Aegis VM. Your persistent workspace is at /workspace/. You have tools for running commands, reading/writing files, and optionally managing child VM instances. Read tool descriptions carefully — they explain parameters and constraints.
+
+You have persistent memory tools. Use memory_store when:
+- The user explicitly asks you to remember something
+- You learn a stable fact about the user or project that will be useful across sessions
+Do NOT store: transient task context, secrets/tokens, or information already in files.
+Use memory_delete to remove outdated memories. Memories are automatically surfaced in your context when relevant.`
 
 func now() string {
 	return time.Now().UTC().Format(time.RFC3339Nano)

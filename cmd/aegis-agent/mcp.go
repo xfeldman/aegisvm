@@ -25,6 +25,7 @@ type AgentConfig struct {
 	ContextTurns int                        `json:"context_turns,omitempty"`
 	SystemPrompt string                     `json:"system_prompt,omitempty"`
 	MCP          map[string]MCPServerConfig `json:"mcp,omitempty"`
+	Memory       MemoryConfig               `json:"memory,omitempty"`
 }
 
 // MCPServerConfig describes a single MCP server to spawn.

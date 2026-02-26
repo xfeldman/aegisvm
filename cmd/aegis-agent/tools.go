@@ -106,6 +106,41 @@ var builtinTools = []Tool{
 		},
 	},
 	{
+		Name:        "memory_store",
+		Description: "Store a fact or note in persistent memory. Memories are automatically surfaced in future conversations when relevant. Do NOT store secrets, tokens, or transient task context.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"text":  map[string]string{"type": "string", "description": "The fact or note to remember (max 500 chars)"},
+				"tags":  map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional classification tags (0-5)"},
+				"scope": map[string]string{"type": "string", "description": "Scope: 'user', 'workspace', or 'session' (default 'workspace')"},
+			},
+			"required": []string{"text"},
+		},
+	},
+	{
+		Name:        "memory_search",
+		Description: "Search stored memories by keyword and/or tag. Returns up to 20 matches, newest first.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]string{"type": "string", "description": "Keyword search across memory text (case-insensitive)"},
+				"tag":   map[string]string{"type": "string", "description": "Filter by tag"},
+			},
+		},
+	},
+	{
+		Name:        "memory_delete",
+		Description: "Delete a memory by its ID (e.g. 'm-1'). Use this to remove outdated or incorrect memories.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id": map[string]string{"type": "string", "description": "Memory ID to delete (e.g. 'm-1')"},
+			},
+			"required": []string{"id"},
+		},
+	},
+	{
 		Name:        "web_fetch",
 		Description: "Fetch a URL and return its text content. HTML is stripped to readable text. Returns up to 10KB of text.",
 		InputSchema: map[string]interface{}{
@@ -135,6 +170,12 @@ func (a *Agent) executeTool(name string, input json.RawMessage) string {
 		return toolGlob(input)
 	case "grep":
 		return toolGrep(input)
+	case "memory_store":
+		return a.toolMemoryStore(input)
+	case "memory_search":
+		return a.toolMemorySearch(input)
+	case "memory_delete":
+		return a.toolMemoryDelete(input)
 	case "web_fetch":
 		return toolWebFetch(input)
 	default:
@@ -706,6 +747,56 @@ func stripHTML(s string) string {
 	s = reNewlines.ReplaceAllString(s, "\n\n")
 
 	return strings.TrimSpace(s)
+}
+
+func (a *Agent) toolMemoryStore(input json.RawMessage) string {
+	var params struct {
+		Text  string   `json:"text"`
+		Tags  []string `json:"tags"`
+		Scope string   `json:"scope"`
+	}
+	json.Unmarshal(input, &params)
+	if a.memory == nil {
+		return jsonError("memory not initialized")
+	}
+	id, err := a.memory.Store(params.Text, params.Tags, params.Scope)
+	if err != nil {
+		return jsonError(err.Error())
+	}
+	return jsonResult(map[string]interface{}{"ok": true, "id": id})
+}
+
+func (a *Agent) toolMemorySearch(input json.RawMessage) string {
+	var params struct {
+		Query string `json:"query"`
+		Tag   string `json:"tag"`
+	}
+	json.Unmarshal(input, &params)
+	if a.memory == nil {
+		return jsonError("memory not initialized")
+	}
+	matches := a.memory.Search(params.Query, params.Tag)
+	return jsonResult(map[string]interface{}{
+		"count":    len(matches),
+		"memories": matches,
+	})
+}
+
+func (a *Agent) toolMemoryDelete(input json.RawMessage) string {
+	var params struct {
+		ID string `json:"id"`
+	}
+	json.Unmarshal(input, &params)
+	if a.memory == nil {
+		return jsonError("memory not initialized")
+	}
+	if params.ID == "" {
+		return jsonError("id is required")
+	}
+	if err := a.memory.Delete(params.ID); err != nil {
+		return jsonError(err.Error())
+	}
+	return jsonResult(map[string]interface{}{"ok": true})
 }
 
 // jsonResult marshals a value to JSON string.
