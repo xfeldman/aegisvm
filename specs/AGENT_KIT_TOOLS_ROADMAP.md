@@ -69,8 +69,7 @@ Kit and tools are orthogonal. Kit = VM packaging (image, command, daemons). Tool
 | Concept | Where it lives | What controls it | Examples |
 |---------|---------------|-----------------|----------|
 | **Built-in tools** | Compiled into `aegis-agent` | Always on | bash, read/write/edit file, glob, grep, web_fetch |
-| **Optional tools** | In `aegis-agent` binary, toggled by config | Feature flags in `agent.json` | browser, memory |
-| **User MCP** | External servers, configured by user | MCP manifest in `agent.json` | Their GitHub, Slack, custom APIs |
+| **MCP tools** | External servers, configured in `agent.json` | User manages | VM orchestration, browser, memory, GitHub, Slack |
 
 ### Agent config: `/workspace/.aegis/agent.json`
 
@@ -78,51 +77,46 @@ One file, one place. The agent reads it at startup.
 
 ```json
 {
-  "tools": {
-    "browser": true,
-    "memory": true
-  },
   "mcp": {
-    "my-github": {"command": "gh-mcp-server"},
-    "my-jira": {"command": "jira-mcp", "args": ["--token", "$JIRA_TOKEN"]}
+    "aegis": {"command": "aegis-mcp-guest"},
+    "browser": {"command": "npx", "args": ["@anthropic-ai/chrome-devtools-mcp@latest"]},
+    "my-github": {"command": "gh-mcp-server"}
   }
 }
 ```
 
-**`tools`** — feature flags for optional capabilities shipped with the agent binary. The agent knows how to set them up (spawn the right MCP server, install dependencies if needed). User just flips the switch.
+All MCP servers are visible and manageable. The user can see what's configured, swap implementations (Chrome DevTools vs Playwright), add their own, or remove what they don't need. No hidden magic.
 
-**`mcp`** — manifest of user-provided MCP servers. User brings their own integrations.
-
-If `agent.json` doesn't exist, the agent runs with built-in tools only + `aegis-mcp-guest` (VM orchestration, always auto-discovered). Zero config needed for the common case.
+If `agent.json` doesn't exist, the agent runs with built-in tools only + `aegis-mcp-guest` (auto-discovered from rootfs). Zero config for the common case.
 
 ### Built-in tools (always on, no config)
 
-Compiled into the agent binary. Fast (no IPC), simple (no server process), reliable (no startup deps). Every agent needs these.
+Compiled into the agent binary. Fast (no IPC), simple (no server process), reliable (no startup deps). Every agent needs these. Should work in an empty VM with no setup.
 
 - `bash`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `web_fetch`
 
-### Optional tools (feature flags)
+### MCP tools (visible, manageable)
 
-Shipped in the agent binary or as companion binaries, but only activated when the user enables them. The agent handles setup — spawning MCP servers, checking for dependencies.
+All MCP servers live in `agent.json` under `mcp`. The user sees and controls all of them.
 
-| Flag | What it does | Delivery | Dependencies |
-|------|-------------|----------|-------------|
-| `browser` | Web browsing via Chrome DevTools or Playwright | Agent spawns MCP server process | Chromium in VM image |
-| `memory` | Semantic search over workspace files | Agent spawns MCP server process | Embedding API (uses same LLM provider) |
+**Pre-bundled** (shipped with the kit, in default `agent.json`):
 
-When `"browser": true`, the agent:
-1. Checks if Chromium is available
-2. Starts [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp) or [Playwright MCP](https://github.com/microsoft/playwright-mcp) as a child process
-3. Registers its tools alongside built-ins
-4. User sees browser tools — never thinks about MCP
+| Server | What it provides | Swappable? |
+|--------|-----------------|-----------|
+| `aegis-mcp-guest` | VM orchestration (spawn, list, stop, expose ports) | No — core infrastructure |
+| Browser MCP | Web browsing, screenshots, DOM inspection | Yes — swap Chrome DevTools ↔ Playwright, or remove |
+| Memory MCP | Semantic search over workspace (future) | Yes — remove if not needed |
 
-Same for memory. The MCP server is an implementation detail. The user sees a feature flag.
+**User-added** (user configures for their workflows):
 
-### User MCP (user's own integrations)
+| Server | Examples |
+|--------|---------|
+| GitHub MCP | PR review, issue management |
+| Slack MCP | Channel messaging |
+| Database MCP | Query Postgres, MySQL |
+| Custom | Anything the user builds or installs |
 
-External MCP servers the user brings. Configured in `agent.json` under `mcp`. These are *their* tools for *their* workflows — not agent infrastructure.
-
-The agent loads them at startup alongside built-ins and optional tools. All tools appear in one flat list to the LLM.
+All MCP tools appear in one flat list to the LLM alongside built-ins. No distinction at runtime.
 
 ### Skills (future)
 
@@ -142,95 +136,166 @@ Prioritized by impact on agent usefulness.
 
 ### Tier 1 — High impact, small effort
 
-| Feature | Why it matters | Effort |
-|---------|---------------|--------|
-| **edit_file** | Agents constantly need to modify existing files without rewriting them entirely. Current workaround (read + write entire file) wastes context and is error-prone for large files. | Small — new tool, ~100 lines |
-| **glob** | Find files by pattern. `list_files` only shows one directory. Agents need to discover project structure. | Small — new tool, ~50 lines |
-| **grep** | Search file contents. Agents need to find code, understand structure, locate definitions. | Small — new tool, ~50 lines |
-| **web_fetch** | Download URLs and extract text. Agents need to read docs, APIs, web pages. No web access currently — `bash` + `curl` works but output is raw HTML, wastes context. | Small — new tool, ~100 lines. Fetch + html-to-text conversion. |
+| Feature | Why it matters |
+|---------|---------------|
+| **edit_file** | Agents constantly need to modify existing files without rewriting them entirely. Current workaround (read + write entire file) wastes context and is error-prone for large files. |
+| **read_file partials** | Current `read_file` returns the whole file (truncated at 50KB). For large files the agent needs to read specific line ranges — especially before editing. |
+| **glob** | Find files by pattern. `list_files` only shows one directory. Agents need to discover project structure. |
+| **grep** | Search file contents. Agents need to find code, understand structure, locate definitions. |
+| **web_fetch** | Download URLs and extract text. `bash` + `curl` works but output is raw HTML, wastes context. |
 
 ### Tier 2 — High impact, medium effort
 
-| Feature | Why it matters | Effort |
-|---------|---------------|--------|
-| **Context compaction** | When the 24K window fills, old turns are silently dropped. The agent loses important early context. Compaction summarizes old turns into a condensed form, preserving key information. | Medium — ~200 lines. On window overflow: summarize dropped turns via LLM call, inject summary as first turn. |
-| **Configurable model** | Hardcoded to claude-sonnet-4 / gpt-4o. Users should be able to pick the model via env var or config. | Small — ~30 lines. Read `AEGIS_MODEL` env var, parse `provider/model` format. |
-| **Configurable max tokens** | Hardcoded to 4096. Some tasks need longer responses. | Tiny — ~5 lines. Read `AEGIS_MAX_TOKENS` env var. |
+| Feature | Why it matters |
+|---------|---------------|
+| **Context compaction** | When the 24K window fills, old turns are silently dropped. The agent loses important early context. Compaction summarizes old turns, preserving key information. |
+| **Token/cost tracking** | Minimal version: count request/response tokens per session, log to session file. No budget enforcement yet — just visibility. |
+| **Configuration** | Hardcoded model, max tokens, context limits. Should be configurable via `agent.json` and env vars. |
 
-### Tier 3 — Medium impact, medium effort
+### Tier 3 — Medium impact, larger effort
 
-| Feature | Why it matters | Effort |
-|---------|---------------|--------|
-| **Memory / workspace search** | Semantic search over workspace files. Lets the agent find relevant context without reading every file. Useful for large projects. | Medium-large — needs embedding API calls + simple vector store (SQLite with cosine similarity, or just BM25 keyword search). |
-| **diff output** | Show what changed after file edits. Useful for the agent to verify its own changes and for the user to review. | Small — generate unified diff in `edit_file` response. |
-| **Multi-file glob+read** | Read multiple files matching a pattern in one tool call. Reduces round trips for common "understand the codebase" patterns. | Small — combine glob + read into a single tool. |
-
-### Tier 4 — Nice to have, larger effort
-
-| Feature | Why it matters | Effort |
-|---------|---------------|--------|
-| **Browser control** | Headless Chrome via CDP. Navigate pages, fill forms, take screenshots. Powerful but heavy (Chromium dependency, ~300MB). | Large — needs Chromium in image, CDP client, screenshot handling. |
-| **Image generation** | Call DALL-E or similar to produce images. Wire into `sendDoneWithImages`. | Medium — new tool + API client + blob store write. |
-| **Cron / scheduled tasks** | Run tasks on a schedule (health checks, reports, etc.). | Medium — needs a scheduler, persistence, and tether notification on completion. |
-| **Cost tracking** | Count tokens, track spend per session. Alert when approaching budget. | Medium — needs token counting per provider, budget config, session-level tracking. |
+| Feature | Why it matters |
+|---------|---------------|
+| **Memory / workspace search** | Semantic search over workspace files. Optional tool flag. |
+| **Browser control** | Optional tool flag. Delivered via Chrome DevTools MCP or Playwright MCP. |
 
 ---
 
 ## 4. Implementation Plan
 
-### Phase 1: Core file tools
+### Phase 1: Core tools
 
-Add to `cmd/aegis-agent/tools.go`:
+Add to `cmd/aegis-agent/tools.go`. All results are structured JSON (not raw text) so the LLM can reason without re-parsing.
 
 **`edit_file`** — Apply a targeted edit to an existing file.
+```json
+{
+  "name": "edit_file",
+  "parameters": {
+    "path":       "string  — file path (under /workspace/)",
+    "old_text":   "string  — exact text to find and replace (optional if using line range)",
+    "new_text":   "string  — replacement text",
+    "start_line": "integer — first line of range to replace (optional, 1-indexed)",
+    "end_line":   "integer — last line of range to replace (optional, inclusive)",
+    "occurrence": "integer — which occurrence to replace when old_text is not unique (optional, default 1)"
+  }
+}
 ```
-Parameters:
-  path: string        — file path (under /workspace/)
-  old_text: string    — exact text to find (must be unique in file)
-  new_text: string    — replacement text
+
+Two modes:
+- **Text match** (`old_text` + `new_text`): find exact text, replace. If not unique and no `occurrence` given, return error listing all occurrences with line numbers so the agent can retry with `occurrence` or `start_line`/`end_line`.
+- **Line range** (`start_line` + `end_line` + `new_text`): replace lines in range. Safe for repeated patterns.
+
+Returns: `{"ok": true, "path": "...", "lines_changed": [12, 13, 14], "diff": "...unified diff snippet..."}`.
+
+Diff output in the response lets the agent verify its own edit.
+
+**`read_file`** — Enhanced with line range support.
+```json
+{
+  "name": "read_file",
+  "parameters": {
+    "path":       "string  — file path",
+    "start_line": "integer — first line to read (optional, 1-indexed)",
+    "end_line":   "integer — last line to read (optional, inclusive)"
+  }
+}
 ```
-Reads file, finds `old_text`, replaces with `new_text`, writes back. Returns confirmation with line numbers. Fails if `old_text` not found or not unique.
+
+When range is specified, returns only those lines (with line numbers). Without range, returns whole file (existing behavior, truncated at 50KB). Returns: `{"path": "...", "total_lines": 150, "content": "...", "truncated": false}`.
 
 **`glob`** — Find files matching a pattern.
+```json
+{
+  "name": "glob",
+  "parameters": {
+    "pattern": "string — glob pattern (e.g. '**/*.go', 'src/**/*.ts')",
+    "path":    "string — base directory (optional, defaults to /workspace/)"
+  }
+}
 ```
-Parameters:
-  pattern: string     — glob pattern (e.g., "**/*.go", "src/**/*.ts")
-  path: string        — base directory (optional, defaults to /workspace/)
-```
-Uses `filepath.Glob` or `doublestar` library for `**` support. Returns list of matching paths.
+
+Returns: `{"pattern": "...", "count": 12, "files": ["src/main.go", "src/lib.go", ...]}`. Sorted by path. Capped at 200 results.
 
 **`grep`** — Search file contents.
+```json
+{
+  "name": "grep",
+  "parameters": {
+    "pattern": "string — search pattern (literal or regex)",
+    "path":    "string — file or directory to search (defaults to /workspace/)",
+    "include": "string — file glob filter (optional, e.g. '*.go')"
+  }
+}
 ```
-Parameters:
-  pattern: string     — search pattern (literal string or regex)
-  path: string        — file or directory to search (defaults to /workspace/)
-  include: string     — file glob filter (optional, e.g., "*.go")
+
+Returns structured results:
+```json
+{
+  "pattern": "...",
+  "count": 5,
+  "matches": [
+    {"file": "src/main.go", "line": 42, "text": "func main() {"},
+    {"file": "src/lib.go", "line": 15, "text": "func helper() {"}
+  ],
+  "truncated": false
+}
 ```
-Walks files, matches pattern, returns filename:line:content for each match. Output truncated at 10KB.
+
+Capped at 50 matches. Each match includes file, line number, matched line text.
 
 ### Phase 2: Web access
 
-**`web_fetch`** — Fetch a URL and return its text content.
+**`web_fetch`** — Fetch a URL and return text content.
+```json
+{
+  "name": "web_fetch",
+  "parameters": {
+    "url": "string — URL to fetch"
+  }
+}
 ```
-Parameters:
-  url: string         — URL to fetch
-  prompt: string      — optional: what to extract (used for summary)
-```
-HTTP GET, convert HTML to plain text (strip tags, extract readable content), truncate to 10KB. For non-HTML content (JSON, plain text), return as-is.
 
-Minimal HTML-to-text: strip `<script>`, `<style>`, `<nav>`, `<footer>`, then extract text content from remaining elements. No headless browser needed.
+Returns:
+```json
+{
+  "url": "...",
+  "status": 200,
+  "content_type": "text/html",
+  "text": "...clean extracted text...",
+  "raw": "...first 2KB of raw response for debugging...",
+  "truncated": false
+}
+```
+
+- HTTP GET with 30s timeout, follow redirects, 1MB max response body
+- HTML: strip `<script>`, `<style>`, `<nav>`, `<footer>`, extract readable text. Return both `text` (clean) and `raw` (truncated) so the agent can debug extraction issues without another round trip.
+- JSON/plain text: return as-is in `text`, `raw` omitted
+- Text output capped at 10KB
+- Network policy: unrestricted egress (VM is already isolated)
 
 ### Phase 3: Context compaction
 
-Modify `cmd/aegis-agent/session.go`:
+Modify `cmd/aegis-agent/session.go`. Key design: **raw JSONL is append-only, never rewritten. Compaction artifacts are separate entries.**
 
 When `assembleContext` drops turns due to window limits:
 1. Collect the dropped turns
-2. If total dropped > 5 turns: generate a summary via LLM call
-3. Inject summary as a `system` message after the system prompt: `"[Context summary from earlier in this conversation: ...]"`
-4. Cache the summary in the session (avoid re-summarizing on every turn)
+2. If total dropped > 5 turns and no cached summary covers them: generate summary via LLM call
+3. Write summary to session JSONL as a special entry: `{"role": "compaction", "content": "...", "covers_through_ts": "...", "source_hash": "..."}`
+4. Inject into assembled context as a system message after the prompt: `"[Context summary from earlier in this conversation: ...]"`
+5. On subsequent calls, reuse cached compaction entry if it covers the same dropped range (compare `covers_through_ts`)
+
+The `source_hash` field hashes the covered turns — if turns change (shouldn't happen in append-only), the compaction is invalidated. This prevents the agent from gaslighting itself with stale summaries.
 
 Compaction LLM call uses a small, cheap prompt: "Summarize the key points from this conversation so far in 2-3 paragraphs. Focus on decisions made, files modified, and current task state."
+
+### Phase 3b: Token tracking (minimal)
+
+Add to LLM response handling:
+- Count input/output tokens from API response headers (both Anthropic and OpenAI return usage)
+- Log per-turn: `{"role": "usage", "input_tokens": 1200, "output_tokens": 450, "model": "...", "ts": "..."}`
+- Append to session JSONL (same file, special role)
+- No budget enforcement — just visibility. Per-session totals available via `self_info` or a future dashboard.
 
 ### Phase 4: Configuration + `agent.json`
 
@@ -244,11 +309,9 @@ Implement `/workspace/.aegis/agent.json` loading and env var overrides in `cmd/a
   "context_chars": 48000,
   "context_turns": 100,
   "system_prompt": "You are a coding assistant...",
-  "tools": {
-    "browser": true,
-    "memory": true
-  },
   "mcp": {
+    "aegis": {"command": "aegis-mcp-guest"},
+    "browser": {"command": "npx", "args": ["@anthropic-ai/chrome-devtools-mcp@latest"]},
     "my-github": {"command": "gh-mcp-server"}
   }
 }
@@ -268,23 +331,41 @@ Precedence: env var > `agent.json` > default.
 
 ---
 
-## 5. Capability Summary
+## 5. Tool Limits & Defaults
+
+Consistent limits across all tools. Configured once, not per-tool.
+
+| Limit | Default | Applies to |
+|-------|---------|-----------|
+| Tool output max | 10 KB text | bash, grep, web_fetch |
+| File read max | 50 KB | read_file (whole file mode) |
+| Glob results max | 200 files | glob |
+| Grep matches max | 50 matches | grep |
+| Bash timeout | 60 seconds | bash |
+| Web fetch timeout | 30 seconds | web_fetch |
+| Web fetch body max | 1 MB | web_fetch |
+
+---
+
+## 6. Capability Summary
 
 | Capability | Type | Status | Config |
 |-----------|------|--------|--------|
 | bash, read/write file | Built-in | Done | Always on |
-| edit_file, glob, grep | Built-in | Phase 1 | Always on |
+| edit_file (with ranges), read_file partials | Built-in | Phase 1 | Always on |
+| glob, grep (structured results) | Built-in | Phase 1 | Always on |
 | web_fetch | Built-in | Phase 2 | Always on |
 | Context compaction | Built-in | Phase 3 | Always on |
+| Token tracking | Built-in | Phase 3b | Always on |
 | Image support | Built-in | Done | Always on |
-| VM orchestration | Auto MCP (`aegis-mcp-guest`) | Done | Always on |
-| Browser | Optional tool | Future | `"tools": {"browser": true}` |
-| Semantic memory | Optional tool | Future | `"tools": {"memory": true}` |
-| GitHub, Slack, Jira, DB, etc. | User MCP | User brings | `"mcp": {"name": {"command": "..."}}` |
+| VM orchestration | MCP (`aegis-mcp-guest`) | Done | Pre-bundled in `agent.json` |
+| Browser | MCP (Chrome DevTools / Playwright) | Future | User adds/removes in `agent.json` |
+| Semantic memory | MCP (`aegis-mcp-memory`) | Future | User adds/removes in `agent.json` |
+| GitHub, Slack, Jira, DB, etc. | MCP | User brings | User adds in `agent.json` |
 
 ---
 
-## 6. Verification
+## 7. Verification
 
 After each phase:
 
