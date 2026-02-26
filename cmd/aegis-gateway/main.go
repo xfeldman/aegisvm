@@ -67,6 +67,9 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 
+	// Start egress subscription (always on — serves Telegram, cron, and future channels)
+	go gw.subscribeEgress(ctx)
+
 	// Start config watcher + gateway loop
 	go gw.run(ctx)
 
@@ -158,7 +161,6 @@ type Gateway struct {
 	pollCancel     context.CancelFunc     // cancel current polling+egress
 	reloadCh       chan struct{}           // signal immediate config reload
 	workspacePath  string                 // cached host workspace path (resolved once)
-
 	// Cron scheduler state
 	cronEntries []gwCronEntry          // parsed cron entries (max 20)
 	cronState   map[string]*cronState  // per-entry runtime state
@@ -327,21 +329,20 @@ func (gw *Gateway) applyConfig(ctx context.Context) {
 	gw.mu.Unlock()
 
 	if changed {
-		// Restart polling with new config
+		// Restart Telegram polling (egress runs independently in main())
 		gw.stopPolling()
 		pollCtx, pollCancel := context.WithCancel(ctx)
 		gw.mu.Lock()
 		gw.pollCancel = pollCancel
 		gw.mu.Unlock()
 		log.Printf("config loaded, starting Telegram polling")
-		go gw.subscribeEgress(pollCtx)
 		go gw.pollTelegram(pollCtx)
 	} else {
 		log.Printf("config reloaded (no bot token change)")
 	}
 }
 
-// stopPolling stops the current polling and egress subscription.
+// stopPolling stops the current Telegram polling.
 func (gw *Gateway) stopPolling() {
 	gw.mu.Lock()
 	if gw.pollCancel != nil {
@@ -740,13 +741,7 @@ func (gw *Gateway) sendTypingLoop(ctx context.Context, chatID int64, botToken st
 // Egress subscriber
 
 func (gw *Gateway) subscribeEgress(ctx context.Context) {
-	gw.mu.Lock()
-	cfg := gw.currentConfig
-	gw.mu.Unlock()
-	if cfg == nil {
-		return
-	}
-	instanceID := cfg.Instance
+	instanceID := gw.instanceHandle
 
 	for {
 		select {
