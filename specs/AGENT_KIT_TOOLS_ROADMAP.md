@@ -118,6 +118,26 @@ All MCP servers live in `agent.json` under `mcp`. The user sees and controls all
 
 All MCP tools appear in one flat list to the LLM alongside built-ins. No distinction at runtime.
 
+### Self-management: agent installs its own MCP servers
+
+The agent can modify its own configuration at runtime:
+
+1. Agent uses `bash` to install an MCP package: `npm install -g @anthropic-ai/chrome-devtools-mcp`
+2. Agent uses `edit_file` to add the entry to `/workspace/.aegis/agent.json`
+3. Agent calls `self_restart` (via `aegis-mcp-guest`) to restart itself
+4. Harness restarts the main process → new agent loads updated `agent.json` → new MCP tools available
+5. Session JSONL is intact — conversation resumes with new tools
+
+**Prerequisite:** Add `self_restart` to `aegis-mcp-guest`:
+
+```
+self_restart — Restart the main process. Workspace and session state are preserved.
+               Use after modifying /workspace/.aegis/agent.json to load new MCP servers
+               or apply configuration changes.
+```
+
+The harness already restarts the main process on exit. `self_restart` just triggers a clean exit via RPC. No new agent code needed — it's a harness/infrastructure concern, implemented in `aegis-mcp-guest` alongside the existing `self_info`, `keepalive_acquire/release` lifecycle tools.
+
 ### Skills (future)
 
 Claude Code distinguishes between tools (what the agent *can do*) and skills (how the agent *should think*). Tools have strict schemas. Skills are markdown instructions loaded contextually.
