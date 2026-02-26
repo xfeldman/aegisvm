@@ -749,3 +749,39 @@ The tarball is baked into the rootfs via `image.inject` or mounted from the host
 | Multi-messenger | OpenClaw handles each | AegisVM gateway handles each, unified through tether |
 
 The key insight: previous specs tried to use OpenClaw as a complete stack. This spec uses OpenClaw as a brain and AegisVM as the body.
+
+---
+
+## 16. Implementation Friction Log (2026-02-26)
+
+Hands-on implementation attempt revealed significant friction that may make the OpenClaw kit impractical compared to enriching the native agent kit.
+
+### Pain points encountered
+
+| Issue | Severity | Detail |
+|-------|----------|--------|
+| **OOM on startup** | Blocker | OpenClaw needs ~250MB heap just to boot. Default Node.js heap on 1GB VM is too small. Requires 2GB VM + `NODE_OPTIONS=--max-old-space-size=1536`. |
+| **Silent exit on failure** | Blocker | `openclaw gateway` exits with code 1 and produces zero error output to stdout or stderr. No way to diagnose why it fails without wrapping in debug harnesses. |
+| **No inbound plugin API** | High | Channel registration (`api.registerChannel`) handles outbound only. Inbound message dispatch requires importing OpenClaw internals (`dispatchInboundMessageWithDispatcher`, `loadConfig`, `resolveAgentRoute`). Every bundled channel does this — there is no plugin-facing dispatch API. |
+| **Alpine incompatible** | High | `koffi` native module has no prebuilt binary for `linux-arm64-musl`. Falls back to source build requiring cmake + g++ + python3 (~340MB of build tools). Forces `node:22` full Debian image (~350MB) instead of Alpine. |
+| **git required at install** | Medium | One of OpenClaw's transitive deps uses a `git://` URL. `node:22-slim` doesn't include git. Forces full `node:22` image. |
+| **Strict config validation** | Medium | `openclaw.json` rejects all unknown keys with no passthrough. Our opinionated config template had to be stripped to bare minimum. Several keys from OpenClaw docs (`tools.allow`, `canvas.outputDir`, `memory.dataDir`, `memory.embedding`) were rejected as invalid. |
+| **3 min cold boot** | Medium | `npm install -g openclaw@2026.2.24` takes ~3 min on first boot (698 packages). Cached after, but painful for dev iteration. |
+| **~500MB footprint** | Medium | 350MB base image + 150MB npm packages + 2GB RAM requirement. Compared to agent kit: 70MB image + 5MB binary + 64MB RAM. |
+| **Config overwrite behavior** | Low | OpenClaw's doctor auto-rewrites `openclaw.json` on startup (adds `commands`, `meta` sections, modifies auth). Makes it hard to maintain a predictable config. |
+| **Extension discovery** | Low | Extensions are discovered from `{configDir}/extensions/` directory, not from `node_modules`. Required symlink workaround from npm global install location. |
+
+### What worked
+
+- Bootstrap binary (Go) — config generation from templates works cleanly
+- npm install with workspace caching — second boot skips install
+- Kit manifest and `aegis kit list` — shows correctly
+- Auth profile generation from env vars — detected and wrote OpenAI profile
+- Extension symlink discovery — OpenClaw found our channel extension
+- `node:22` (full Debian) image — prebuilt native modules work, git available
+
+### Assessment
+
+The architecture (tether bridge, host gateway, OpenClaw as brain) is sound. The implementation friction is entirely on the OpenClaw side — it's a large, opinionated monolith not designed for embedding. The alternative — enriching our native agent kit with the missing tools (file edit, web fetch, memory search, context compaction) — is likely less total effort and produces a lighter, more debuggable result.
+
+**Recommendation:** Park the OpenClaw kit. Invest in the native agent kit's tool ecosystem instead. Revisit OpenClaw integration if/when they ship a proper plugin dispatch API or a lighter agent-only package.

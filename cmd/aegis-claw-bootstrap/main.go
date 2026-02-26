@@ -19,6 +19,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"syscall"
 	"text/template"
@@ -30,7 +31,7 @@ const (
 	configDir      = "/workspace/.openclaw/.openclaw"
 	npmPrefix      = "/workspace/.npm-global"
 	openclawBin    = "/workspace/.npm-global/bin/openclaw"
-	nodeHeapSize   = "384"
+	nodeHeapSize   = "1536"
 	openclawVersion = "2026.2.24"
 )
 
@@ -75,7 +76,14 @@ func main() {
 		log.Fatalf("config generation failed: %v", err)
 	}
 
-	// 4. Exec into OpenClaw gateway
+	// 4. Exec into OpenClaw gateway (with fallback to sleep for debugging)
+	if os.Getenv("AEGIS_DEBUG_BOOTSTRAP") == "1" {
+		log.Println("DEBUG MODE: sleeping instead of exec (use aegis exec to debug)")
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+		<-sigCh
+		return
+	}
 	execOpenClaw()
 }
 
@@ -131,6 +139,20 @@ func generateConfig() error {
 	os.MkdirAll(configDir, 0755)
 	os.MkdirAll(filepath.Join(configDir, "credentials"), 0755)
 	os.MkdirAll(filepath.Join(workspaceRoot, "canvas"), 0755)
+
+	// Symlink channel extension into OpenClaw's extensions discovery path.
+	// OpenClaw scans {configDir}/extensions/ for plugins — it does NOT scan node_modules.
+	extDir := filepath.Join(configDir, "extensions", "@aegis", "openclaw-channel-aegis")
+	extTarget := filepath.Join(npmPrefix, "lib", "node_modules", "@aegis", "openclaw-channel-aegis")
+	if _, err := os.Stat(extTarget); err == nil {
+		os.MkdirAll(filepath.Dir(extDir), 0755)
+		os.Remove(extDir) // remove stale symlink
+		if err := os.Symlink(extTarget, extDir); err != nil {
+			log.Printf("warning: symlink extension: %v", err)
+		} else {
+			log.Printf("  extension symlinked: %s → %s", extDir, extTarget)
+		}
+	}
 
 	// Detect model from env
 	model, embeddingProvider := detectModel()
