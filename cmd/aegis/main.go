@@ -309,10 +309,12 @@ func cmdDown() {
 		return
 	}
 
-	// Try direct signal first; if EPERM (daemon is root, we're not), use sudo
-	err = proc.Signal(syscall.SIGTERM)
+	// Kill the entire process group (aegisd + all child daemons like gateways).
+	// aegisd runs with Setpgid=true so its pgid == its pid. Negative pid
+	// sends the signal to every process in the group.
+	err = syscall.Kill(-pid, syscall.SIGTERM)
 	if err != nil && errors.Is(err, syscall.EPERM) {
-		sudoKill := exec.Command("sudo", "kill", "-TERM", strconv.Itoa(pid))
+		sudoKill := exec.Command("sudo", "kill", "-TERM", fmt.Sprintf("-%d", pid))
 		sudoKill.Stdin = os.Stdin
 		sudoKill.Stderr = os.Stderr
 		err = sudoKill.Run()
@@ -337,7 +339,6 @@ func cmdDown() {
 	fmt.Fprintln(os.Stderr, "aegisd did not stop within timeout")
 	os.Exit(1)
 }
-
 
 type exposeFlag struct {
 	GuestPort  int

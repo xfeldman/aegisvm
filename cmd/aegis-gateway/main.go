@@ -293,7 +293,13 @@ func (gw *Gateway) applyConfig(ctx context.Context) {
 		return
 	}
 
+	// Update mtime immediately to prevent duplicate applyConfig from ticker
 	info, _ := os.Stat(path)
+	if info != nil {
+		gw.mu.Lock()
+		gw.configMtime = info.ModTime()
+		gw.mu.Unlock()
+	}
 
 	var cfg InstanceGatewayConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
@@ -324,9 +330,6 @@ func (gw *Gateway) applyConfig(ctx context.Context) {
 	gw.mu.Lock()
 	changed := gw.currentConfig == nil || gw.currentConfig.BotToken != tc.BotToken
 	gw.currentConfig = &tc
-	if info != nil {
-		gw.configMtime = info.ModTime()
-	}
 	gw.mu.Unlock()
 
 	if changed {
