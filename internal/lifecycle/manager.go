@@ -122,6 +122,7 @@ type Instance struct {
 	// Timestamps
 	CreatedAt time.Time
 	StoppedAt time.Time // zero if never stopped or currently running
+	UpdatedAt time.Time // last state change or significant mutation
 }
 
 // FirstGuestPort returns the first exposed guest port, or 0 if none.
@@ -378,13 +379,15 @@ func WithKit(name string) InstanceOption {
 
 // CreateInstance creates a new instance definition without starting it.
 func (m *Manager) CreateInstance(id string, command []string, exposePorts []vmm.PortExpose, opts ...InstanceOption) *Instance {
+	now := time.Now()
 	inst := &Instance{
 		ID:          id,
 		State:       StateStopped,
 		Enabled:     true,
 		Command:     command,
 		ExposePorts: exposePorts,
-		CreatedAt:   time.Now(),
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	for _, opt := range opts {
 		opt(inst)
@@ -1815,6 +1818,13 @@ func (m *Manager) UnexposePort(id string, guestPort int) error {
 }
 
 func (m *Manager) notifyStateChange(id, state string) {
+	// Touch UpdatedAt on every state transition
+	m.mu.Lock()
+	if inst, ok := m.instances[id]; ok {
+		inst.UpdatedAt = time.Now()
+	}
+	m.mu.Unlock()
+
 	if m.onStateChange != nil {
 		m.onStateChange(id, state)
 	}

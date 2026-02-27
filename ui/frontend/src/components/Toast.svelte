@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getToasts } from '../lib/store'
+  import { getToasts } from '../lib/store.svelte'
 
   let toasts = $derived(getToasts())
 </script>

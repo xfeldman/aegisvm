@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Instance } from '../lib/api'
   import { startInstance, disableInstance, pauseInstance, resumeInstance, deleteInstance } from '../lib/api'
-  import { addToast, refreshInstances } from '../lib/store'
+  import { addToast, refreshInstances } from '../lib/store.svelte'
 
   interface Props {
     instances: Instance[]

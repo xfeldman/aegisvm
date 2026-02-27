@@ -196,9 +196,12 @@ func main() {
 			// Re-create in lifecycle manager (state = stopped)
 			inst := lm.CreateInstance(ri.ID, ri.Command, exposePorts, opts...)
 
-			// Restore stopped_at from registry
+			// Restore timestamps from registry
 			if !ri.StoppedAt.IsZero() {
 				inst.StoppedAt = ri.StoppedAt
+			}
+			if !ri.UpdatedAt.IsZero() {
+				inst.UpdatedAt = ri.UpdatedAt
 			}
 
 			// Re-allocate public ports via router only if enabled

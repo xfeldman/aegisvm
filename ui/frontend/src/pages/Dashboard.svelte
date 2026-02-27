@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import InstanceList from '../components/InstanceList.svelte'
-  import { getInstances, isLoading, getError, refreshInstances } from '../lib/store'
+  import { getInstances, isLoading, getError, refreshInstances } from '../lib/store.svelte'
   import { getStatus, type DaemonStatus } from '../lib/api'
 
   let instances = $derived(getInstances())

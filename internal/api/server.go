@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -402,8 +403,31 @@ func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// stateOrder returns a sort key for instance states: running < starting < paused < stopped.
+func stateOrder(state string) int {
+	switch state {
+	case "running":
+		return 0
+	case "starting":
+		return 1
+	case "paused":
+		return 2
+	default: // stopped
+		return 3
+	}
+}
+
 func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 	instances := s.lifecycle.ListInstances()
+
+	// Stable sort: running → starting → paused → stopped, then by most recently updated.
+	sort.SliceStable(instances, func(i, j int) bool {
+		si, sj := stateOrder(instances[i].State), stateOrder(instances[j].State)
+		if si != sj {
+			return si < sj
+		}
+		return instances[i].UpdatedAt.After(instances[j].UpdatedAt)
+	})
 
 	// Optional state filter: ?state=stopped or ?state=running
 	stateFilter := r.URL.Query().Get("state")
@@ -419,6 +443,7 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 			"enabled":           inst.Enabled,
 			"command":           inst.Command,
 			"created_at":        inst.CreatedAt.Format(time.RFC3339),
+			"updated_at":        inst.UpdatedAt.Format(time.RFC3339),
 			"last_active_at":    s.lifecycle.LastActivity(inst.ID).Format(time.RFC3339),
 			"active_connections": s.lifecycle.ActiveConns(inst.ID),
 		}
