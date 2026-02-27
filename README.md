@@ -16,54 +16,31 @@ Agent workloads don't fit containers or serverless. They run for minutes or hour
 
 **Kits extend the runtime.** Core AegisVM is a clean sandbox substrate. Kits add opinionated capabilities on top — like turning a VM into a messaging-driven LLM agent with wake-on-message and streaming Telegram responses.
 
-## Install
+| Path | Latency |
+|------|---------|
+| Cold boot (zero to process running) | ~500ms |
+| Resume from pause | ~35ms |
 
-### macOS (Homebrew)
+| Alternative | Limitation |
+|---|---|
+| **Docker / Podman** | Shared host kernel — no real isolation. No scale-to-zero or wake-on-connect. |
+| **E2B** | Cloud-hosted — your data leaves your machine, pay per-second. |
+| **Firecracker / CH directly** | VMMs, not runtimes. No lifecycle, networking, port mapping, or guest agent. |
+| **Lambda / Cloud Functions** | Stateless, second-scale cold starts, no persistent connections or ports. |
+| **LXC / systemd-nspawn** | Shared kernel. No built-in networking or lifecycle for agents. |
+| **Running on host** | No isolation, no resource limits, agents can read your files and credentials. |
 
-```bash
-brew tap xfeldman/aegisvm
-brew install aegisvm
-```
+---
 
-Requires Apple Silicon (M1+).
+# Agent Kit
 
-### Linux
-
-```bash
-curl -sSL https://raw.githubusercontent.com/xfeldman/aegisvm/main/install.sh | sh
-```
-
-Installs `aegisvm` + `aegisvm-agent-kit` and dependencies. Requires x86_64 or arm64 with KVM (`/dev/kvm`).
-
-## Quick start
-
-```bash
-aegis up                                                    # start the daemon
-
-aegis run -- echo "hello from aegisvm"                      # ephemeral VM
-aegis run --expose 8080:80 -- python3 -m http.server 80     # with port mapping
-aegis run --workspace ./myapp -- python3 /workspace/app.py  # with host directory mounted
-
-aegis down                                                  # stop everything
-```
-
-## Agent Kit
+*Turn a VM into an autonomous LLM agent.*
 
 Agent Kit turns an AegisVM instance into a full-featured LLM agent — 19 built-in tools, persistent memory, scheduled tasks, web search, image generation, and multi-agent orchestration. All in a ~40MB idle footprint with scale-to-zero.
 
 Unlike monolithic agent frameworks, Agent Kit is modular Go compiled into a single static binary. No Python/Node runtime overhead for core tools. MCP servers are optional add-ons for specialized capabilities (browser automation, custom integrations).
 
-```bash
-# macOS (Linux: already included by install.sh)
-brew install aegisvm-agent-kit
-```
-
-```bash
-aegis secret set OPENAI_API_KEY sk-...
-aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
-```
-
-### What's included
+## What's included
 
 | Category | Tools |
 |----------|-------|
@@ -77,23 +54,7 @@ aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
 
 All built-in tools are Go — zero runtime overhead. Any tool can be disabled and replaced with a custom MCP server via `agent.json`.
 
-### Profiles
-
-| Profile | Image | Memory | Use case |
-|---------|-------|--------|----------|
-| **Lightweight** (default) | `python:3.12-alpine` | 512MB | Built-in tools + Python apps |
-| **Heavy** | `node:22-alpine` | 2048MB | + Browser MCP, Node MCP servers |
-
-```bash
-# Lightweight (default)
-aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
-
-# Heavy (browser automation)
-aegis instance start --kit agent --name browser-agent \
-  --image node:22-alpine --memory 2048 --secret OPENAI_API_KEY
-```
-
-### Why not OpenClaw?
+## Why not OpenClaw?
 
 | | Agent Kit | OpenClaw |
 |---|---|---|
@@ -110,32 +71,137 @@ aegis instance start --kit agent --name browser-agent \
 
 Agent Kit is the right choice when you want lightweight, isolated agents that scale to zero. OpenClaw is the right choice when you need a batteries-included Python framework with a large plugin ecosystem.
 
-### Messaging
+---
 
-Connect agents to Telegram (more channels planned) with wake-on-message and streaming responses:
+# Getting Started
+
+## Install
+
+### macOS (Homebrew)
+
+```bash
+brew tap xfeldman/aegisvm
+brew install aegisvm                # core runtime
+brew install aegisvm-agent-kit      # agent kit (optional)
+```
+
+Requires Apple Silicon (M1+).
+
+### Linux
+
+```bash
+curl -sSL https://raw.githubusercontent.com/xfeldman/aegisvm/main/install.sh | sh
+```
+
+Installs `aegisvm` + `aegisvm-agent-kit` and dependencies. Requires x86_64 or arm64 with KVM (`/dev/kvm`).
+
+## Usage: Core
+
+```bash
+aegis up                                                    # start the daemon
+
+aegis run -- echo "hello from aegisvm"                      # ephemeral VM
+aegis run --expose 8080:80 -- python3 -m http.server 80     # with port mapping
+aegis run --workspace ./myapp -- python3 /workspace/app.py  # with host directory mounted
+
+# Persistent instances
+aegis instance start --name web --expose 8080:80 -- python3 -m http.server 80
+aegis exec web -- ls /workspace
+aegis logs web --follow
+aegis instance disable web                                  # stop VM
+aegis instance start --name web                             # restart from stored config
+aegis instance delete web                                   # remove entirely
+
+aegis down                                                  # stop everything
+```
+
+**Port mapping.** `--expose 8080:80` maps public 8080 to guest 80. All ports go through the router with wake-on-connect — paused and stopped VMs wake automatically on incoming connections.
+
+**Workspaces.** Host directories mounted at `/workspace` inside the VM. Auto-created if not specified. Named workspaces (`--workspace myapp`) or host paths (`--workspace ./code`).
+
+**Secrets.** AES-256-GCM encrypted store. Explicit injection only (`--secret API_KEY`). Default: inject nothing.
+
+**OCI images.** Use any Docker image as the VM filesystem: `--image python:3.12-alpine`, `--image node:20`. OCI image ENV vars (PATH, GOPATH, etc.) are automatically propagated.
+
+**MCP.** AegisVM ships an MCP server that lets LLMs drive sandboxed VMs directly — start instances, exec commands, read logs, manage secrets, use kits.
+
+```bash
+aegis mcp install     # register with Claude Code
+```
+
+## Usage: Agent Kit
+
+### Start an agent
+
+```bash
+aegis secret set OPENAI_API_KEY sk-...
+aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
+```
+
+### Talk to it (from Claude Code via MCP)
+
+```
+Claude: ⏺ aegis — tether_send (instance="my-agent", text="Research the top 5 ML frameworks")
+        ⏺ aegis — tether_read (instance="my-agent", wait_ms=30000)
+        The agent responded with a detailed comparison...
+```
+
+### Heavy profile (browser MCP, Node MCP servers)
+
+```bash
+aegis instance start --kit agent --name browser-agent \
+  --image node:22-alpine --memory 2048 --secret OPENAI_API_KEY
+```
+
+### Connect to Telegram
 
 ```bash
 aegis secret set TELEGRAM_BOT_TOKEN 123456:ABC-...
+aegis instance start --kit agent --name my-agent \
+  --secret OPENAI_API_KEY --secret TELEGRAM_BOT_TOKEN
+
 mkdir -p ~/.aegis/kits/my-agent
 echo '{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","allowed_chats":["*"]}}' \
   > ~/.aegis/kits/my-agent/gateway.json
 # Gateway picks up config within seconds — send a message to your bot
 ```
 
-### Agent delegation
+### Add web search and image generation
 
-Claude Code delegates tasks to isolated agents via MCP:
-
-```
-Claude: ⏺ aegis — instance_start (kit="agent", name="researcher", secrets=["OPENAI_API_KEY"])
-        ⏺ aegis — tether_send (instance="researcher", text="Research the top 5 ML frameworks for time series")
-        ⏺ aegis — tether_read (instance="researcher", wait_ms=30000)
-        The agent responded with a detailed comparison...
+```bash
+aegis secret set BRAVE_SEARCH_API_KEY BSA...
+aegis instance start --kit agent --name my-agent \
+  --secret OPENAI_API_KEY --secret BRAVE_SEARCH_API_KEY
 ```
 
-### Tether — universal agent transport
+The agent can now search the web, find images, and generate AI images — all built-in.
 
-Tether is the bidirectional message channel between host and VM agents. Everything flows through it — Claude Code delegation, Telegram messages, cron-scheduled tasks, multi-agent orchestration. Wake-on-message is built in: sending a tether frame to a paused VM wakes it in ~35ms.
+## Architecture
+
+```
+Host
+├── aegisd              daemon: API, lifecycle, router, VMM backend
+├── aegis               CLI
+├── aegis-mcp           MCP server for host LLMs (Claude Code integration)
+├── aegis-gateway       per-instance host daemon (Telegram bridge, cron scheduler)
+│
+└── VMM (libkrun / Cloud Hypervisor)
+    ├── VM 1: aegis-harness (PID 1) → user command
+    ├── VM 2: aegis-harness (PID 1) → aegis-agent (Agent Kit)
+    │         ├── 19 built-in tools (Go, compiled in)
+    │         ├── aegis-mcp-guest (VM orchestration)
+    │         ├── memory, cron, sessions (workspace-backed)
+    │         └── LLM API (OpenAI / Anthropic)
+    └── ...
+```
+
+**libkrun** on macOS (Apple Hypervisor.framework), **Cloud Hypervisor** on Linux (KVM). Same daemon, same harness, same CLI.
+
+**Agent Kit fits on top of core** — it's a kit binary (`aegis-agent`) injected into the VM's OCI image overlay. The harness starts it as the primary process. The gateway runs on the host alongside aegisd, bridging messaging apps and cron to the agent via tether. Everything else (VM lifecycle, networking, secrets, port mapping) is core AegisVM.
+
+## Tether
+
+Tether is the bidirectional message channel between host and VM agents. Everything flows through it — Claude Code delegation, Telegram messages, cron-scheduled tasks, multi-agent orchestration.
 
 ```
 Host (Claude Code) ──tether──► Agent VM ──tether──► Child Agent VM
@@ -143,51 +209,15 @@ Telegram ──gateway──► tether ──┘
 Cron     ──gateway──► tether ──┘
 ```
 
-See [Tether docs](docs/TETHER.md) for the protocol reference. See [Agent Kit docs](docs/AGENT_KIT.md) for the full guide. See [Kits](docs/KITS.md) for how kits work.
+**Wake-on-message.** Sending a tether frame to a paused VM wakes it in ~35ms. The gateway stays running while VMs sleep — that's what enables wake-on-message for Telegram and cron.
 
-## MCP (Claude Code integration)
+**Sessions.** Each conversation gets an independent session (`channel:session_id`). A Telegram chat, a Claude delegation task, and a cron job each have their own history. Sessions persist across VM restarts.
 
-AegisVM ships an MCP server that lets LLMs drive sandboxed VMs directly — start instances, exec commands, read logs, manage secrets, use kits.
+**Async.** Send a message and read responses later — no blocking. Long-poll support for real-time streaming.
 
-```bash
-aegis mcp install
-```
+See [Tether docs](docs/TETHER.md) for the full protocol reference, frame types, and API endpoints.
 
-Once registered, Claude can spin up isolated VMs, run code, and tear them down — all through MCP tools.
-
-## How it works
-
-The only runtime object is an **instance** — a VM running a command. No apps, no releases, no deploy lifecycle.
-
-```bash
-# Ephemeral: run, collect output, done
-aegis run -- python analyze.py
-
-# Persistent: named instance with port exposure
-aegis instance start --name web --expose 8080:80 -- python3 -m http.server 80
-aegis exec web -- ls /workspace
-aegis logs web --follow
-
-# Lifecycle
-aegis instance disable web     # stop VM, close listeners, prevent auto-wake
-aegis instance start --name web  # re-enable from stored config
-aegis instance delete web      # remove entirely
-```
-
-| Path | Latency |
-|------|---------|
-| Cold boot (zero to process running) | ~500ms |
-| Resume from pause | ~35ms |
-
-**Port mapping.** `--expose 8080:80` maps public 8080 to guest 80. All ports go through the router with wake-on-connect — paused and stopped VMs wake automatically on incoming connections.
-
-**Workspaces.** Host directories mounted at `/workspace` inside the VM. Durable storage that survives VM termination. Named workspaces (`--workspace myapp`) or host paths (`--workspace ./code`).
-
-**Secrets.** AES-256-GCM encrypted store. Explicit injection only (`--secret API_KEY`). Default: inject nothing.
-
-**OCI images.** Use any Docker image as the VM filesystem: `--image python:3.12-alpine`, `--image node:20`. The VM's ENTRYPOINT/CMD are ignored — AegisVM controls the process.
-
-## CLI
+## CLI Reference
 
 ```bash
 aegis up / down / status / doctor
@@ -202,45 +232,16 @@ aegis kit list                                      # list installed kits
 aegis mcp install / uninstall                       # Claude Code integration
 ```
 
-Common flags: `--name`, `--expose`, `--env K=V`, `--secret KEY`, `--workspace PATH`, `--image REF`, `--kit KIT`.
+Common flags: `--name`, `--expose`, `--env K=V`, `--secret KEY`, `--workspace PATH`, `--image REF`, `--kit KIT`, `--memory MB`.
 
 Full reference: [CLI docs](docs/CLI.md).
-
-## Architecture
-
-```
-Host
-├── aegisd          daemon: API, lifecycle, router, VMM backend
-├── aegis           CLI
-├── aegis-mcp       MCP server for LLMs (host-side)
-└── VMM (libkrun / Cloud Hypervisor)
-    ├── VM 1: aegis-harness (PID 1) → user command
-    ├── VM 2: aegis-harness (PID 1) → user command
-    └── ...
-```
-
-**libkrun** on macOS (Apple Hypervisor.framework), **Cloud Hypervisor** on Linux (KVM). Same daemon, same harness, same CLI.
-
-## Why not...
-
-**Docker / Podman** — Containers share the host kernel. A malicious or buggy agent can escape via kernel exploits, mount the host filesystem, or interfere with other containers. AegisVM runs each workload in its own microVM with a separate kernel — true isolation, not namespace tricks. Docker also has no concept of scale-to-zero, wake-on-connect, or idle hibernation. You manage container lifecycle yourself.
-
-**E2B** — Cloud-hosted sandboxes. Great if you want managed infrastructure, but your code runs on someone else's machines, your data leaves your network, and you pay per-second. AegisVM runs locally on your own hardware — zero latency to your local files, no API keys leaving the machine, no cloud bills. You own the box.
-
-**Cloud Hypervisor / Firecracker directly** — These are VMMs, not runtimes. They give you a VM. You still need to build rootfs images, manage networking, handle lifecycle, implement port mapping, build a control plane, and write a guest agent. AegisVM does all of that and gives you a single CLI.
-
-**AWS Lambda / Cloud Functions** — Designed for stateless request-response, not long-running agents. Cold starts are seconds, not milliseconds. No persistent connections, no exposed ports, no local filesystem. Agent workloads need to maintain state, run for minutes or hours, and wake on various triggers — not just HTTP.
-
-**LXC / systemd-nspawn** — Lightweight, but still container-based (shared kernel). No hardware-level isolation. No built-in networking, port mapping, or lifecycle management for agent workloads. AegisVM provides all of this out of the box with microVM-grade isolation.
-
-**Running agents directly on the host** — Works until it doesn't. No isolation between agents, no resource limits, no cleanup on crash, agents can read your files and credentials. One misbehaving agent affects everything else. AegisVM gives each agent its own isolated VM with explicit secret injection — nothing leaks unless you allow it.
 
 ## Documentation
 
 - [Quickstart](docs/QUICKSTART.md) — zero to running in 5 minutes
+- [Agent Kit](docs/AGENT_KIT.md) — full guide: all tools, config, profiles, sessions
 - [Tether](docs/TETHER.md) — host-to-agent messaging, delegation, long-poll
 - [Kits](docs/KITS.md) — optional add-on bundles, instance daemons
-- [Agent Kit](docs/AGENT_KIT.md) — Telegram bot with wake-on-message
 - [CLI Reference](docs/CLI.md) — complete command reference
 - [Guest API](docs/GUEST_API.md) — spawn and manage instances from inside a VM
 - [Workspaces](docs/WORKSPACES.md) — persistent volumes
