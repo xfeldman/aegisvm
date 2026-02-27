@@ -221,6 +221,9 @@ func startDaemon() {
 	}
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
+	// Own process group so SIGINT on the terminal doesn't kill the daemon
+	// (e.g. Ctrl-C on "aegis ui" must not tear down aegisd).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "start aegisd: %v\n", err)

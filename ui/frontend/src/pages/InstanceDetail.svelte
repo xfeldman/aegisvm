@@ -4,6 +4,7 @@
   import { addToast } from '../lib/store.svelte'
   import LogViewer from '../components/LogViewer.svelte'
   import CommandRunner from '../components/CommandRunner.svelte'
+  import ChatPanel from '../components/ChatPanel.svelte'
 
   interface Props {
     id: string
@@ -12,7 +13,7 @@
   let { id }: Props = $props()
   let instance: Instance | null = $state(null)
   let error: string | null = $state(null)
-  let tab: 'info' | 'logs' | 'exec' = $state('info')
+  let tab: 'info' | 'logs' | 'exec' | 'chat' = $state('info')
   let pollTimer: ReturnType<typeof setInterval>
 
   let canExec = $derived(instance?.enabled !== false)
@@ -100,6 +101,7 @@
       <button class="tab" class:active={tab === 'info'} onclick={() => tab = 'info'}>Info</button>
       <button class="tab" class:active={tab === 'logs'} onclick={() => tab = 'logs'}>Logs</button>
       <button class="tab" class:active={tab === 'exec'} onclick={() => tab = 'exec'}>Exec</button>
+      <button class="tab" class:active={tab === 'chat'} onclick={() => tab = 'chat'}>Chat</button>
     </div>
 
     <div class="tab-content">
@@ -159,6 +161,8 @@
         <LogViewer instanceId={instance.handle || instance.id} />
       {:else if tab === 'exec'}
         <CommandRunner instanceId={instance.handle || instance.id} disabled={!canExec} />
+      {:else if tab === 'chat'}
+        <ChatPanel instanceId={instance.handle || instance.id} disabled={!canExec} />
       {/if}
     </div>
   {/if}

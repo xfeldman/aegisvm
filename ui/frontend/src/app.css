@@ -50,3 +50,32 @@ code, pre {
   font-family: var(--font-mono);
   font-size: 12px;
 }
+
+/* Thin, auto-hiding scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Auto-hide: transparent until hovered */
+*:not(:hover)::-webkit-scrollbar-thumb {
+  background: transparent;
+}

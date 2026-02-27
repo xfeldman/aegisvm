@@ -539,7 +539,7 @@ ui/
     │   │   ├── InstanceList.svelte
     │   │   ├── LogViewer.svelte
     │   │   ├── CommandRunner.svelte
-    │   │   ├── ChatPanel.svelte        (planned)
+    │   │   ├── ChatPanel.svelte
     │   │   ├── ConfigEditor.svelte     (planned)
     │   │   └── Toast.svelte
     │   └── lib/
@@ -563,7 +563,7 @@ Build `aegis ui` (web mode) first — validates the full stack without Wails com
 4. ~~**`aegis ui` command** — HTTP server serving embedded frontend + API proxy to aegisd, auto-starts daemon~~ **DONE**
 5. ~~**Dashboard** — instance list with status, ports, disable/delete actions, 5s polling~~ **DONE**
 6. ~~**Instance detail: Info + Logs + Exec** — tabbed view with metadata, real-time log streaming (NDJSON), command runner with streamed output/exit code/duration/copy~~ **DONE**
-7. **Chat** — tether long-poll, streaming, images, markdown ← **NEXT**
+7. ~~**Chat** — tether long-poll, streaming, images (lightbox preview), chat history persisted to localStorage~~ **DONE**
 8. **New Instance dialog** — creation with kit/secret selection
 9. **Secrets page** — list/add/delete with "used by" count
 10. **Config editor** — agent.json with Save + Restart
@@ -579,7 +579,7 @@ Build `aegis ui` (web mode) first — validates the full stack without Wails com
 - **Instance sort order**: running → starting → paused → stopped, then by `updated_at` (most recent first). Fixed in API layer (benefits CLI + MCP too).
 - **`updated_at`**: added to lifecycle `Instance` struct, touched on every state transition via `notifyStateChange`. Persisted in registry, restored on daemon restart.
 
-Chat is step 7 — the main differentiator, ships early. Wails native app is step 12 — web mode works first.
+Chat shipped in step 7 (tether long-poll, streaming, image lightbox, localStorage persistence). Deferred: image upload, multiple sessions, cancel button, markdown rendering (uses pre-wrap). Wails native app is step 12 — web mode works first.
 
 ## What this does NOT include (v0.1)
 

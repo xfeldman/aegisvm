@@ -104,3 +104,65 @@ export const listSecrets = () =>
 // Status
 export const getStatus = () =>
   request<DaemonStatus>('GET', '/status')
+
+// Tether (Agent Kit messaging)
+
+export interface TetherFrame {
+  v: number
+  type: string
+  ts: string
+  seq: number
+  session: { channel: string; id: string }
+  msg_id?: string
+  payload: Record<string, any>
+}
+
+export interface TetherSendResult {
+  msg_id: string
+  session_id: string
+  ingress_seq: number
+}
+
+export interface TetherPollResult {
+  frames: TetherFrame[]
+  next_seq: number
+  timed_out: boolean
+}
+
+export function tetherSend(id: string, sessionId: string, text: string): Promise<TetherSendResult> {
+  const msgId = `ui-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const frame = {
+    v: 1,
+    type: 'user.message',
+    ts: new Date().toISOString(),
+    session: { channel: 'ui', id: sessionId },
+    msg_id: msgId,
+    payload: { text },
+  }
+  return request<TetherSendResult>('POST', `/instances/${encodeURIComponent(id)}/tether`, frame)
+}
+
+export async function tetherPoll(
+  id: string,
+  sessionId: string,
+  afterSeq: number,
+  waitMs = 5000,
+  signal?: AbortSignal,
+): Promise<TetherPollResult> {
+  const params = new URLSearchParams({
+    channel: 'ui',
+    session_id: sessionId,
+    after_seq: String(afterSeq),
+    wait_ms: String(waitMs),
+  })
+  const res = await fetch(
+    `${BASE}/instances/${encodeURIComponent(id)}/tether/poll?${params}`,
+    { signal },
+  )
+  if (!res.ok) {
+    let msg = res.statusText
+    try { const d = await res.json(); if (d.error) msg = d.error } catch {}
+    throw new APIError(res.status, msg)
+  }
+  return res.json()
+}

@@ -52,6 +52,71 @@ export function pushCmdHistory(id: string, cmd: string) {
   _cmdHistory[id] = [cmd, ...(_cmdHistory[id] || []).slice(0, 49)]
 }
 
+// Chat state — persists across tab switches, keyed by instance ID
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  text: string
+  images?: { media_type: string; blob: string }[]
+  ts: string
+  streaming?: boolean
+}
+
+export interface ChatState {
+  messages: ChatMessage[]
+  cursor: number          // after_seq for next poll
+  thinking: string | null // presence indicator
+}
+
+const CHAT_STORAGE_KEY = 'aegis-chat-'
+
+function loadChatState(id: string): ChatState {
+  try {
+    const raw = localStorage.getItem(CHAT_STORAGE_KEY + id)
+    if (raw) {
+      const saved = JSON.parse(raw)
+      // Clear transient state from previous session
+      saved.thinking = null
+      if (saved.messages) {
+        saved.messages = saved.messages.map((m: ChatMessage) => ({ ...m, streaming: false }))
+      }
+      return saved
+    }
+  } catch {}
+  return { messages: [], cursor: 0, thinking: null }
+}
+
+function saveChatState(id: string, state: ChatState) {
+  try {
+    // Only persist messages and cursor, not transient thinking state
+    localStorage.setItem(CHAT_STORAGE_KEY + id, JSON.stringify({
+      messages: state.messages,
+      cursor: state.cursor,
+    }))
+  } catch {}
+}
+
+let _chatStates: Record<string, ChatState> = $state({})
+const _defaultChat: ChatState = { messages: [], cursor: 0, thinking: null }
+
+// Pure read — safe inside $derived. No side effects.
+export function getChatState(id: string): ChatState {
+  return _chatStates[id] || _defaultChat
+}
+
+// Must be called from onMount / event handlers (not during render).
+export function initChatState(id: string) {
+  if (!_chatStates[id]) {
+    _chatStates[id] = loadChatState(id)
+  }
+}
+
+export function updateChatState(id: string, patch: Partial<ChatState>) {
+  const current = _chatStates[id] || loadChatState(id)
+  const updated = { ...current, ...patch }
+  _chatStates[id] = updated
+  saveChatState(id, updated)
+}
+
 export async function refreshInstances() {
   _loading = true
   _error = null
