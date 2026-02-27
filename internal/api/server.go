@@ -403,8 +403,12 @@ func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// stateOrder returns a sort key for instance states: running < starting < paused < stopped.
-func stateOrder(state string) int {
+// instanceSortKey returns a sort key for instance ordering:
+// running → paused → stopped → disabled, with disabled always last.
+func instanceSortKey(state string, enabled bool) int {
+	if !enabled {
+		return 99 // disabled always last
+	}
 	switch state {
 	case "running":
 		return 0
@@ -420,13 +424,14 @@ func stateOrder(state string) int {
 func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 	instances := s.lifecycle.ListInstances()
 
-	// Stable sort: running → starting → paused → stopped, then by most recently updated.
+	// Stable sort: running → paused → stopped → disabled, then oldest first within each group.
 	sort.SliceStable(instances, func(i, j int) bool {
-		si, sj := stateOrder(instances[i].State), stateOrder(instances[j].State)
+		si := instanceSortKey(instances[i].State, instances[i].Enabled)
+		sj := instanceSortKey(instances[j].State, instances[j].Enabled)
 		if si != sj {
 			return si < sj
 		}
-		return instances[i].UpdatedAt.After(instances[j].UpdatedAt)
+		return instances[i].UpdatedAt.Before(instances[j].UpdatedAt)
 	})
 
 	// Optional state filter: ?state=stopped or ?state=running
@@ -672,7 +677,11 @@ func (s *Server) handleExecInstance(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePauseInstance(w http.ResponseWriter, r *http.Request) {
-	id := pathParam(r, "id")
+	id := s.resolveInstanceID(pathParam(r, "id"))
+	if id == "" {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
 	if err := s.lifecycle.PauseInstance(id); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -681,12 +690,28 @@ func (s *Server) handlePauseInstance(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleResumeInstance(w http.ResponseWriter, r *http.Request) {
-	id := pathParam(r, "id")
+	id := s.resolveInstanceID(pathParam(r, "id"))
+	if id == "" {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
 	if err := s.lifecycle.ResumeInstance(id); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "running"})
+}
+
+// resolveInstanceID resolves an ID-or-handle string to the canonical instance ID.
+// Returns empty string if not found.
+func (s *Server) resolveInstanceID(idOrHandle string) string {
+	if inst := s.lifecycle.GetInstance(idOrHandle); inst != nil {
+		return inst.ID
+	}
+	if inst := s.lifecycle.GetInstanceByHandle(idOrHandle); inst != nil {
+		return inst.ID
+	}
+	return ""
 }
 
 // ensurePortListeners re-allocates port listeners for an instance if they
@@ -800,30 +825,40 @@ func (s *Server) handleDisableInstance(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 	id := pathParam(r, "id")
 
+	// Resolve by ID or handle
+	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+	resolvedID := inst.ID
+
 	// Check if auto-workspace should be cleaned up before deleting the instance.
-	// Must read this before the lifecycle/registry entries are removed.
 	var autoWsPath string
-	if inst := s.lifecycle.GetInstance(id); inst != nil && inst.AutoWorkspace && inst.WorkspacePath != "" {
+	if inst.AutoWorkspace && inst.WorkspacePath != "" {
 		autoWsPath = inst.WorkspacePath
 	}
 
 	// Stop instance daemons
 	if s.daemons != nil {
-		s.daemons.StopDaemons(id)
+		s.daemons.StopDaemons(resolvedID)
 	}
 
 	// Free public port listeners before deleting instance
 	if s.router != nil {
-		s.router.FreeAllPorts(id)
+		s.router.FreeAllPorts(resolvedID)
 	}
 
-	if err := s.lifecycle.DeleteInstance(id); err != nil {
+	if err := s.lifecycle.DeleteInstance(resolvedID); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
 
 	if s.registry != nil {
-		s.registry.DeleteInstance(id)
+		s.registry.DeleteInstance(resolvedID)
 	}
 
 	// Delete auto-created workspace (user-provided workspaces are kept)
