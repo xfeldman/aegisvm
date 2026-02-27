@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -21,7 +20,6 @@ import (
 
 func cmdUI() {
 	port := 7700
-	devMode := false
 
 	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
@@ -31,18 +29,21 @@ func cmdUI() {
 				fmt.Sscanf(args[i+1], "%d", &port)
 				i++
 			}
-		case "--dev":
-			devMode = true
 		case "--help", "-h":
-			fmt.Println(`Usage: aegis ui [--port PORT] [--dev]
+			fmt.Println(`Usage: aegis ui [--port PORT]
 
 Starts the Aegis web UI.
 
 Options:
-  --port PORT   HTTP listen port (default: 7700)
-  --dev         Proxy frontend to Vite dev server (localhost:5173)`)
+  --port PORT   HTTP listen port (default: 7700)`)
 			return
 		}
+	}
+
+	// Ensure aegisd is running
+	if !isDaemonRunning() {
+		log.Println("aegis ui: aegisd not running, starting...")
+		startDaemon()
 	}
 
 	mux := http.NewServeMux()
@@ -50,28 +51,17 @@ Options:
 	// API proxy: /api/v1/* → aegisd unix socket
 	mux.Handle("/api/", newAegisdProxy())
 
-	// Frontend
-	if devMode {
-		// Proxy to Vite dev server for hot reload
-		viteURL, _ := url.Parse("http://127.0.0.1:5173")
-		viteProxy := httputil.NewSingleHostReverseProxy(viteURL)
-		mux.Handle("/", viteProxy)
-		log.Printf("aegis ui: dev mode, proxying frontend to %s", viteURL)
-	} else {
-		// Serve embedded frontend build
-		distFS, err := fs.Sub(uiFS.Frontend, "frontend/dist")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: embedded frontend not found (run 'make ui' first)\n")
-			os.Exit(1)
-		}
-		fileServer := http.FileServer(http.FS(distFS))
-		mux.Handle("/", spaHandler(fileServer, distFS))
+	// Serve embedded frontend
+	distFS, err := fs.Sub(uiFS.Frontend, "frontend/dist")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: embedded frontend not found (run 'make ui' first)\n")
+		os.Exit(1)
 	}
+	mux.Handle("/", spaHandler(http.FileServer(http.FS(distFS)), distFS))
 
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	log.Printf("aegis ui: http://%s", addr)
 
-	// Open browser
 	go func() {
 		time.Sleep(200 * time.Millisecond)
 		openBrowser("http://" + addr)
@@ -90,11 +80,8 @@ func spaHandler(fileServer http.Handler, fsys fs.FS) http.Handler {
 		if path == "" {
 			path = "index.html"
 		}
-
-		// Try to open the requested file
 		f, err := fsys.Open(path)
 		if err != nil {
-			// File not found — serve index.html for SPA routing
 			r.URL.Path = "/"
 			fileServer.ServeHTTP(w, r)
 			return
@@ -113,7 +100,6 @@ func newAegisdProxy() *httputil.ReverseProxy {
 			d.Timeout = 5 * time.Second
 			return d.DialContext(ctx, "unix", socketPath())
 		},
-		// Streaming-friendly: no response buffering limit
 		ResponseHeaderTimeout: 30 * time.Second,
 	}
 
@@ -123,7 +109,7 @@ func newAegisdProxy() *httputil.ReverseProxy {
 		req.URL.Path = strings.TrimPrefix(req.URL.Path, "/api")
 	}
 
-	proxy := &httputil.ReverseProxy{
+	return &httputil.ReverseProxy{
 		Director:      director,
 		Transport:     transport,
 		FlushInterval: -1, // flush immediately for streaming (NDJSON, logs)
@@ -133,8 +119,6 @@ func newAegisdProxy() *httputil.ReverseProxy {
 			io.WriteString(w, `{"error":"aegisd not running"}`)
 		},
 	}
-
-	return proxy
 }
 
 func openBrowser(url string) {
