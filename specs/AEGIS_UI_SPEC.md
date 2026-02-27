@@ -2,21 +2,67 @@
 
 ## Overview
 
-Desktop app for managing AegisVM — instance lifecycle, logs, exec, and agent chat via tether. Built with Wails (Go backend + web frontend + native webview). Not a replacement for the CLI — a visual companion for monitoring and interacting with instances.
+Desktop app for managing AegisVM instances — lifecycle, logs, command execution, and agent chat via tether. Built with Wails (Go backend + web frontend + native webview). Not a replacement for the CLI — a visual companion for monitoring and interacting with instances.
 
 Think Docker Desktop, but for microVMs with an agent chat panel.
+
+**Kit-agnostic.** The UI manages all instances, not just Agent Kit. Tether chat works with any instance that has a guest agent. The Chat tab is one of many interactions — logs, exec, and config work on any VM.
+
+**Daemon-first.** The UI requires a running aegisd. No offline mode, no direct registry access. All state lives in aegisd.
+
+**Security model.** Local user = root of VM. The UI can read/write workspace files and execute commands inside any instance. This matches the CLI and MCP — the local user owns the VMs.
 
 ## Technology
 
 **Wails v2** (stable, production-ready). v3 is alpha — migrate when stable.
 
 - Go backend: talks to aegisd via the existing unix socket API
-- Frontend: Svelte (lightweight, fast, good DX) or React
+- Frontend: Svelte (lightweight, fast, good DX)
 - Native webview: macOS WebKit, Linux WebKitGTK, Windows WebView2
 - System tray: daemon status indicator, quick actions
 - Binary: ~10MB, ~30MB RAM
 
 The Go backend is a thin client over the aegisd API — no business logic duplication. Every operation is an API call to the running daemon.
+
+## Daemon Management
+
+The app auto-starts aegisd on launch if not already running.
+
+- On launch: check daemon status → if not running, attempt `aegis up`
+- If auto-start succeeds: proceed normally
+- If auto-start fails (permissions, missing backend, etc.): show error with the exact command to run manually + "Copy command" button. Do not hide the failure.
+- Header shows daemon status (running/version) at all times
+- If daemon dies unexpectedly, UI shows "Reconnecting to aegisd..." overlay, auto-retries with 2s backoff
+- On app quit: daemon keeps running (background service, not tied to UI lifecycle)
+
+## Error & Loading States
+
+Every async action follows a consistent pattern:
+
+- **Buttons** show busy state: "Starting..." "Disabling..." "Deleting..." (disabled during operation)
+- **Toast notifications** for action results: success (auto-dismiss 3s) or error (persistent until dismissed)
+- **Daemon disconnected**: all polling stops, overlay with "Reconnecting to aegisd...", auto-reconnects
+- **Instance state transitions**: "starting", "pausing", "resuming" shown as intermediate states with spinner
+- **Tether send with no response**: after 60s without `assistant.done`, show inline "Agent still processing..." with cancel button (maps to `control.cancel` tether frame). Pending state persists across UI reconnects.
+
+No silent failures. Every action the user takes gets visible feedback.
+
+## New API: Workspace File Access
+
+Add to aegisd (small, high-impact for UI):
+
+```
+GET /v1/instances/{id}/workspace?path=.aegis/blobs/abc123.png
+```
+
+File access to the instance's workspace. Required for:
+- Chat image rendering (read blob store files)
+- Chat image upload (write to blob store)
+- Config editor (read/write agent.json)
+- Avoids `exec cat` for file reads (slow, binary encoding issues, timeout-prone)
+
+Read: `GET /v1/instances/{id}/workspace?path=...` — returns raw file content, 10MB limit.
+Write: `POST /v1/instances/{id}/workspace?path=...` — request body is file content, 10MB limit.
 
 ## Pages
 
@@ -25,26 +71,27 @@ The Go backend is a thin client over the aegisd API — no business logic duplic
 Overview of all instances.
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  AegisVM                              [●] Running   │
-├─────────────────────────────────────────────────────┤
-│  Instances (5)                        [+ New]       │
-│                                                     │
-│  ● my-agent      agent   running   512MB   0:42:15 │
-│  ● browser-agent agent   paused    2048MB  1:15:03 │
-│  ● web-server    —       running   512MB   0:05:22 │
-│  ◌ test-agent    agent   stopped   512MB   2d ago  │
-│  ◌ old-instance  —       disabled  512MB   5d ago  │
-│                                                     │
-│  Secrets: 4 | Kits: agent            [Settings]     │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  AegisVM v0.4.6                                   [●] Running  │
+├─────────────────────────────────────────────────────────────────┤
+│  Instances (5)                              [↻ Refresh] [+ New]│
+│                                                                 │
+│  ● my-agent      agent  running  http://localhost:54516  42m   │
+│  ● browser-agent agent  paused                           1h    │
+│  ● web-server    —      running  http://localhost:8080   5m    │
+│  ◌ test-agent    agent  stopped                          2d    │
+│  ◌ old-instance  —      disabled                         5d    │
+│                                                                 │
+│  Secrets: 4 | Kits: agent                          [Settings]  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-- Instance list with status, kit, memory, uptime
+- Instance list: status, kit, **public URL** (clickable → opens browser), uptime/age
+- Port display: show only what the user connects to (`http://localhost:54516`), hide internal guest port mapping
 - Color-coded status: green=running, yellow=paused, gray=stopped/disabled
 - Quick actions: start/stop/pause/resume/delete (right-click or action buttons)
-- Daemon status in header (running/stopped, version)
-- "New instance" button → instance creation dialog
+- Daemon status + version in header
+- Manual refresh button (polling is background, refresh forces immediate)
 
 ### 2. Instance Detail
 
@@ -53,191 +100,220 @@ Per-instance view with tabs.
 #### Info tab
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  ← my-agent                          [■ Stop]      │
-├──────┬──────┬───────┬───────┬────────┬──────────────┤
-│ Info │ Logs │ Exec  │ Chat  │ Config │              │
-├──────┴──────┴───────┴───────┴────────┴──────────────┤
-│                                                     │
-│  ID:        inst-1772143240906457000                │
-│  Handle:    my-agent                                │
-│  Kit:       agent                                   │
-│  Image:     python:3.12-alpine                      │
-│  State:     running                                 │
-│  Memory:    512MB (used: 78MB)                      │
-│  Workspace: ~/.aegis/data/workspaces/my-agent       │
-│  Created:   2026-02-27 10:15:00                     │
-│  Uptime:    42m 15s                                 │
-│                                                     │
-│  Ports:                                             │
-│    8080 → localhost:54516 (http)                     │
-│                                                     │
-│  Secrets:                                           │
-│    OPENAI_API_KEY, BRAVE_SEARCH_API_KEY             │
-│                                                     │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  ← my-agent                                       [■ Stop]     │
+├──────┬──────┬──────────────────┬───────┬────────┬───────────────┤
+│ Info │ Logs │ Command Runner   │ Chat  │ Config │               │
+├──────┴──────┴──────────────────┴───────┴────────┴───────────────┤
+│                                                                 │
+│  ID:        inst-1772143240906457000                            │
+│  Handle:    my-agent                                            │
+│  Kit:       agent                                               │
+│  Image:     python:3.12-alpine                                  │
+│  State:     running                                             │
+│  Memory:    512MB (used: 78MB)                                  │
+│  Workspace: ~/.aegis/data/workspaces/my-agent                   │
+│  Created:   2026-02-27 10:15:00                                 │
+│  Uptime:    42m 15s                                             │
+│                                                                 │
+│  Ports:                                                         │
+│    http://localhost:54516 → :80  [open ↗]                       │
+│                                                                 │
+│  Secrets:                                                       │
+│    OPENAI_API_KEY, BRAVE_SEARCH_API_KEY                         │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 #### Logs tab
 
-Real-time log streaming (via `GET /v1/instances/{id}/logs?follow=true`).
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ [stdout ▼] [auto-scroll ✓] [clear]                 [download]  │
+├─────────────────────────────────────────────────────────────────┤
+│ 10:15:01 aegis-agent starting                                  │
+│ 10:15:01 LLM provider: OpenAI                                  │
+│ 10:15:01 MCP [aegis]: loaded 7 tools                           │
+│ 10:15:01 agent listening on 127.0.0.1:7778                     │
+│ 10:15:30 tool bash: 743 bytes result                           │
+│ 10:15:35 tool write_file: 44 bytes result                      │
+│ █                                                              │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-```
-┌─────────────────────────────────────────────────────┐
-│ [stdout ▼] [auto-scroll ✓] [clear]    [download]   │
-├─────────────────────────────────────────────────────┤
-│ 2026/02/27 10:15:01 aegis-agent starting            │
-│ 2026/02/27 10:15:01 LLM provider: OpenAI            │
-│ 2026/02/27 10:15:01 MCP [aegis]: loaded 7 tools     │
-│ 2026/02/27 10:15:01 agent listening on 127.0.0.1:77 │
-│ 2026/02/27 10:15:30 tool bash: 743 bytes result     │
-│ 2026/02/27 10:15:35 tool write_file: 44 bytes resul │
-│ █                                                   │
-└─────────────────────────────────────────────────────┘
-```
+Real-time log streaming via Wails events (Go backend reads log SSE, emits to frontend).
 
 - Stdout/stderr filter toggle
 - Auto-scroll with pause on manual scroll-up
 - Search/filter within logs
 - Download log as file
 
-#### Exec tab
+#### Command Runner tab
 
-Interactive shell-like exec interface.
+Execute commands inside the VM. Not a terminal (no PTY) — a command runner.
 
 ```
-┌─────────────────────────────────────────────────────┐
-│ $ ls /workspace                                     │
-│ sessions/  .aegis/  app.py  requirements.txt        │
-│                                                     │
-│ $ free -m                                           │
-│               total   used   free   shared   avail  │
-│ Mem:           482     78    319        0      393   │
-│                                                     │
-│ $ cat /workspace/.aegis/agent.json                  │
-│ {"mcp":{"dall-e":{"command":"npx",...}}}             │
-│                                                     │
-│ $ █                                                 │
-├─────────────────────────────────────────────────────┤
-│ [Enter command...]                          [Run]   │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│ $ ls /workspace                                    0 ✓  0.1s  │
+│ sessions/  .aegis/  app.py  requirements.txt       [copy]     │
+│                                                                │
+│ $ free -m                                          0 ✓  0.0s  │
+│               total   used   free   shared   avail [copy]     │
+│ Mem:           482     78    319        0      393              │
+│                                                                │
+│ $ █                                                            │
+├─────────────────────────────────────────────────────────────────┤
+│ [Enter command...]                                     [Run]   │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 - Command input with Enter to execute
-- Output displayed inline (like a terminal)
+- Output displayed inline
+- **Exit code + duration** shown per command
+- **Copy output** button per command
 - Command history (up/down arrows)
 - Uses `POST /v1/instances/{id}/exec` API
 
-#### Chat tab (Agent Kit instances only)
+#### Chat tab
 
-Tether-based chat interface. The main UX differentiator.
+Tether-based chat interface. Shown for **all instances** with tether. If no agent runtime: "No agent runtime — messages will be delivered but may not get a response."
 
 ```
-┌─────────────────────────────────────────────────────┐
-│ Session: default ▼        [New session] [Sessions]  │
-├─────────────────────────────────────────────────────┤
-│                                                     │
-│  You: Find me a photo of a Brussels Griffon         │
-│                                                     │
-│  Agent: ● thinking...                               │
-│         ● tool: image_search                        │
-│         ● tool: bash                                │
-│         ● tool: respond_with_image                  │
-│                                                     │
-│  Agent: Here's a Brussels Griffon!                  │
-│         [image: brussels_griffon.jpg]                │
-│                                                     │
-│  You: Generate one with a top hat                   │
-│                                                     │
-│  Agent: ● tool: image_generate                      │
-│         [generated image]                           │
-│         Here's your dapper Brussels Griffon!         │
-│                                                     │
-├─────────────────────────────────────────────────────┤
-│ [Type a message...]                        [Send]   │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│ Session: ui:default ▼              [New session] [Sessions]    │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                │
+│  You: Find me a photo of a Brussels Griffon                    │
+│                                                                │
+│  Agent: ● thinking...                                          │
+│         ● tool: image_search                                   │
+│         ● tool: bash                                           │
+│         ● tool: respond_with_image                             │
+│                                                                │
+│  Agent: Here's a Brussels Griffon!                             │
+│         [image: brussels_griffon.jpg]                          │
+│                                                                │
+│  You: Generate one with a top hat                              │
+│                                                                │
+│  Agent: ● tool: image_generate                                 │
+│         [generated image]                                      │
+│         Here's your dapper Brussels Griffon!                   │
+│                                                                │
+├─────────────────────────────────────────────────────────────────┤
+│ [📎] [Type a message...]                    [Cancel] [Send]    │
+│       Drop or paste images here                                │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-- Real-time streaming via tether poll (long-poll loop)
-- Shows tool calls as they happen (presence frames)
-- Renders images inline (from blob store via workspace path)
-- Session selector (dropdown: default, research-1, telegram_123, cron_health-check)
-- Session history loaded from tether poll with `after_seq=0`
-- Markdown rendering for agent responses
-- File/image upload (drag & drop → write to workspace → include in message)
+**Session ID convention:**
+
+- UI sessions: `ui:default`, `ui:research-1`, etc. (user can rename)
+- Avoids collision with `host:default` (CLI/MCP), `telegram:123` (gateway), `cron:health` (cron)
+
+**Streaming state machine:**
+
+1. User sends message → `tether_send(session_id="ui:default")` → get `ingress_seq`
+2. Start long-poll loop: `tether_poll(after_seq=ingress_seq, wait_ms=5000)`
+3. On `status.presence` → show "● thinking..." / "● tool: X" indicator
+4. On `assistant.delta` → append text to current assistant message (group contiguous deltas into one message)
+5. On `assistant.done` → finalize message, render images inline, clear indicators
+6. If no `assistant.done` after 60s → show inline "Agent still processing..." + [Cancel] button
+7. On poll return → immediately start next poll with `next_seq` (no sleep between polls)
+
+**Cancel:** maps to `control.cancel` tether frame. Pending message state persists across UI restart (stored in local Svelte store, keyed by instance + session + seq).
+
+**Reconnect/resume:**
+
+- On page load or reconnect: poll with `after_seq=0` to load full session history
+- Sequence numbers are stable — no duplicates, no missed frames
+- If poll fails (daemon restart), retry with 2s backoff
+
+**Images (bidirectional — tether supports images in both directions):**
+
+Agent → User:
+- `assistant.done` with `images` field → fetch via workspace file API: `GET /v1/instances/{id}/workspace?path=.aegis/blobs/{key}`
+- Display inline in chat bubble, clickable for full-size view
+- Supports generated images (image_generate), found images (image_search + respond_with_image), and any blob the agent produces
+
+User → Agent:
+- Drag & drop, paste, or 📎 button to attach images
+- UI writes image to workspace blob store via workspace write API, includes image ref in tether `user.message` payload
+- Agent receives it as an image content block (same format as Telegram photo ingress)
+- Supports PNG, JPEG, GIF, WebP
+
+**Markdown:** Agent responses rendered as markdown (code blocks, lists, links, bold/italic).
 
 #### Config tab (Agent Kit instances only)
 
-Editor for `/workspace/.aegis/agent.json` with syntax highlighting.
-
 ```
-┌─────────────────────────────────────────────────────┐
-│ /workspace/.aegis/agent.json          [Save + ↻]    │
-├─────────────────────────────────────────────────────┤
-│ {                                                   │
-│   "model": "openai/gpt-5.2",                       │
-│   "max_tokens": 4096,                               │
-│   "disabled_tools": [],                              │
-│   "mcp": {},                                         │
-│   "memory": {                                        │
-│     "inject_mode": "relevant"                        │
-│   }                                                  │
-│ }                                                    │
-├─────────────────────────────────────────────────────┤
-│ [Save + Restart] applies changes and calls          │
-│ self_restart automatically.                          │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│ /workspace/.aegis/agent.json                     [Save + ↻]    │
+├─────────────────────────────────────────────────────────────────┤
+│ {                                                               │
+│   "model": "openai/gpt-5.2",                                   │
+│   "max_tokens": 4096,                                           │
+│   "disabled_tools": [],                                          │
+│   "mcp": {},                                                     │
+│   "memory": {                                                    │
+│     "inject_mode": "relevant"                                    │
+│   }                                                              │
+│ }                                                                │
+├─────────────────────────────────────────────────────────────────┤
+│ [Save + Restart] writes config and triggers self_restart.       │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-- JSON editor with validation
-- "Save + Restart" button: writes file via exec, sends self_restart via tether
-- Shows current tool list (from agent, via tether query)
+JSON editor for `/workspace/.aegis/agent.json`. Read/write via workspace file API.
+
+- JSON syntax highlighting + validation
+- "Save + Restart": writes file via exec, triggers self_restart via tether
+- Shows validation errors before save
 
 ### 3. Secrets
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  Secrets                                [+ Add]     │
-├─────────────────────────────────────────────────────┤
-│  OPENAI_API_KEY          2026-02-23    [Delete]     │
-│  TELEGRAM_BOT_TOKEN      2026-02-26    [Delete]     │
-│  BRAVE_SEARCH_API_KEY    2026-02-27    [Delete]     │
-│  ANTHROPIC_API_KEY       2026-02-20    [Delete]     │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  Secrets                                            [+ Add]    │
+├─────────────────────────────────────────────────────────────────┤
+│  OPENAI_API_KEY          2 instances    2026-02-23   [Delete]  │
+│  TELEGRAM_BOT_TOKEN      1 instance     2026-02-26   [Delete]  │
+│  BRAVE_SEARCH_API_KEY    2 instances    2026-02-27   [Delete]  │
+│  ANTHROPIC_API_KEY       0 instances    2026-02-20   [Delete]  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-- List/add/delete secrets
-- Values never displayed (write-only)
-- Used when creating new instances (secret picker in creation dialog)
+- List/add/delete secrets (values write-only, never displayed)
+- **"Used by" count** — computed client-side from instance `secret_keys` lists. No new API.
+- Secret picker in New Instance dialog
 
 ### 4. New Instance Dialog
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  New Instance                                       │
-├─────────────────────────────────────────────────────┤
-│  Name:     [my-agent          ]                     │
-│  Kit:      [agent ▼] (none, agent)                  │
-│  Image:    [python:3.12-alpine] (auto from kit)     │
-│  Memory:   [512   ] MB                              │
-│  Command:  [aegis-agent       ] (auto from kit)     │
-│  Workspace:[                  ] (auto if empty)     │
-│                                                     │
-│  Secrets:  [✓] OPENAI_API_KEY                       │
-│            [✓] BRAVE_SEARCH_API_KEY                 │
-│            [ ] TELEGRAM_BOT_TOKEN                   │
-│            [ ] ANTHROPIC_API_KEY                     │
-│                                                     │
-│  Ports:    [8080:80  ] [+ Add]                      │
-│                                                     │
-│            [Cancel]              [Create & Start]   │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  New Instance                                                  │
+├─────────────────────────────────────────────────────────────────┤
+│  Name:     [my-agent          ]                                │
+│  Kit:      [agent ▼] (none, agent)                             │
+│  Image:    [python:3.12-alpine] (auto from kit)                │
+│  Memory:   [512   ] MB                                         │
+│  Command:  [aegis-agent       ] (auto from kit)                │
+│  Workspace:[                  ] (auto if empty)                │
+│                                                                │
+│  Secrets:  [✓] OPENAI_API_KEY                                  │
+│            [✓] BRAVE_SEARCH_API_KEY                            │
+│            [ ] TELEGRAM_BOT_TOKEN                              │
+│            [ ] ANTHROPIC_API_KEY                                │
+│                                                                │
+│  Ports:    [8080:80  ] [+ Add]                                 │
+│                                                                │
+│            [Cancel]                         [Create & Start]   │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 - Kit selection pre-fills image, command, memory
 - Secret checkboxes from available secrets
 - Port mapping fields
-- Workspace path (auto-created if empty)
+- Workspace: if empty, daemon auto-creates. UI shows resolved path after creation.
 
 ## System Tray
 
@@ -250,28 +326,28 @@ Editor for `/workspace/.aegis/agent.json` with syntax highlighting.
   ├── web-server (running)     →  Open | Stop
   ├── ──────────
   ├── Open Dashboard
-  ├── ──────────
-  ├── Start Daemon
-  ├── Stop Daemon
   └── Quit
 ```
 
 - Green/yellow/gray dot for daemon status
 - Quick instance actions without opening the main window
 - "Open" → brings up instance detail in main window
+- No daemon start/stop in tray (auto-managed on app launch)
 
 ## Go Backend
 
-The Wails Go backend is a thin API client. No business logic — all state lives in aegisd.
+Thin API client. No business logic — all state lives in aegisd.
 
 ```go
-// app.go — Wails bound methods
-
 type App struct {
     socketPath string
 }
 
-// Instance management
+// Daemon
+func (a *App) EnsureDaemon() error
+func (a *App) DaemonStatus() (*DaemonStatus, error)
+
+// Instances
 func (a *App) ListInstances() ([]Instance, error)
 func (a *App) GetInstance(id string) (*Instance, error)
 func (a *App) CreateInstance(req CreateRequest) (*Instance, error)
@@ -285,43 +361,39 @@ func (a *App) ResumeInstance(id string) error
 func (a *App) ExecCommand(id string, command []string) (*ExecResult, error)
 
 // Logs
-func (a *App) StreamLogs(id string) // emits events to frontend
+func (a *App) StreamLogs(id string) // emits Wails events to frontend
 
-// Tether (chat)
+// Tether
 func (a *App) TetherSend(id, sessionID, text string) (*TetherSendResult, error)
 func (a *App) TetherPoll(id, sessionID string, afterSeq int64) (*TetherPollResult, error)
+func (a *App) TetherCancel(id, sessionID string) error
+
+// Workspace file access
+func (a *App) ReadWorkspaceFile(id, path string) ([]byte, error)  // GET workspace API
+func (a *App) WriteWorkspaceFile(id, path string, data []byte) error // POST workspace API
 
 // Secrets
 func (a *App) ListSecrets() ([]Secret, error)
 func (a *App) SetSecret(name, value string) error
 func (a *App) DeleteSecret(name string) error
 
-// Daemon
-func (a *App) DaemonStatus() (*DaemonStatus, error)
-func (a *App) DaemonStart() error
-func (a *App) DaemonStop() error
-
 // Kits
 func (a *App) ListKits() ([]Kit, error)
 ```
 
-All methods talk to aegisd via `http+unix://~/.aegis/aegisd.sock`. Same API the CLI and MCP server use. The frontend calls these via Wails bindings (auto-generated TypeScript).
-
 ## Frontend
 
-Svelte recommended (smallest bundle, fastest, simple reactivity). Alternatively React if team preference.
+Svelte with minimal dependencies:
 
-Key libraries:
-- **xterm.js** — for the exec terminal (optional, can start simpler)
-- **marked** / **markdown-it** — markdown rendering in chat
-- **codemirror** or **monaco** — JSON editor for agent config (optional, can start with textarea)
+- **marked** — markdown rendering in chat
+- **codemirror** — JSON editor for config tab (or textarea for v0.1)
 
 ### Polling strategy
 
-- **Dashboard**: poll `ListInstances` every 3s
-- **Logs**: SSE stream via Wails events (Go backend reads log stream, emits to frontend)
-- **Chat**: tether long-poll loop (500ms between polls, `wait_ms=5000`)
-- **Instance detail**: poll `GetInstance` every 5s for state/memory updates
+- **Dashboard**: 5-10s + manual "Refresh" button
+- **Instance detail**: 5-10s for state updates
+- **Logs**: Wails event stream (Go reads SSE, emits to frontend)
+- **Chat**: classic long-poll — immediately next poll on return (`wait_ms=5000`), no sleep
 
 ## Project Structure
 
@@ -329,7 +401,7 @@ Key libraries:
 cmd/aegis-ui/
 ├── main.go              # Wails app entry
 ├── app.go               # bound methods (API client)
-├── client.go            # aegisd unix socket HTTP client (reuse from CLI)
+├── client.go            # aegisd unix socket HTTP client
 ├── frontend/
 │   ├── src/
 │   │   ├── App.svelte
@@ -341,37 +413,40 @@ cmd/aegis-ui/
 │   │   ├── components/
 │   │   │   ├── InstanceList.svelte
 │   │   │   ├── LogViewer.svelte
-│   │   │   ├── ExecTerminal.svelte
+│   │   │   ├── CommandRunner.svelte
 │   │   │   ├── ChatPanel.svelte
 │   │   │   ├── ConfigEditor.svelte
-│   │   │   └── SystemTray.svelte
+│   │   │   └── Toast.svelte
 │   │   └── lib/
 │   │       ├── api.ts    # Wails binding wrappers
-│   │       └── store.ts  # Svelte stores for state
+│   │       └── store.ts  # Svelte stores
 │   ├── index.html
 │   └── package.json
 ├── build/                # Wails build assets (icons, etc.)
-└── wails.json            # Wails project config
+└── wails.json
 ```
 
-## Implementation Order
+## Implementation Order (MVP-first)
 
-1. **Scaffold** — `wails init`, Svelte template, basic window
-2. **API client** — reuse unix socket client from CLI, bind to Wails
-3. **Dashboard** — instance list with status, start/stop actions
-4. **Instance detail: Info** — basic instance info display
-5. **Instance detail: Logs** — log streaming
-6. **Instance detail: Exec** — command execution
-7. **Secrets page** — list/add/delete
-8. **New instance dialog** — creation with kit/secret selection
-9. **Instance detail: Chat** — tether-based agent chat (the big feature)
-10. **Instance detail: Config** — agent.json editor
+1. **Scaffold** — Wails init, Svelte template, basic window
+2. **Daemon auto-start** — `EnsureDaemon()` with error display
+3. **API client** — unix socket HTTP client, bind to Wails
+4. **Dashboard** — instance list with status, ports, actions
+5. **Instance detail: Info + Logs** — metadata + log streaming
+6. **Chat** — tether long-poll, streaming, images, markdown
+7. **New Instance dialog** — creation with kit/secret selection
+8. **Secrets page** — list/add/delete with "used by" count
+9. **Command Runner** — exec with exit code, duration, copy
+10. **Config editor** — agent.json with Save + Restart
 11. **System tray** — status + quick actions
-12. **Polish** — keyboard shortcuts, dark mode, error handling
+12. **Polish** — toast notifications, keyboard shortcuts, dark mode
 
-## What this does NOT include
+Chat is step 6 (not 10) — it's the main differentiator and should ship early.
 
-- **Multi-machine.** This is a local management UI. No remote daemon connections (future).
-- **Real-time metrics.** No CPU/memory graphs. Just current state from `instance info`.
-- **Log search/indexing.** Just streaming display. Use the CLI for complex log queries.
-- **Build/deploy pipelines.** This is a runtime manager, not a CI/CD tool.
+## What this does NOT include (v0.1)
+
+- **Multi-machine.** Local management only.
+- **Real-time metrics.** No CPU/memory graphs.
+- **Full terminal.** Command runner only, no PTY.
+- **Log search/indexing.** Streaming display only.
+- **File browser.** Workspace file access is API-only (chat images, config editor).
