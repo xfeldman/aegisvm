@@ -106,6 +106,7 @@ Standardizes toast messages, error surfaces, and UX language across all actions.
 Aegis manages instance lifecycle non-interactively. The UI does **not** expose start/stop/pause/resume controls. The only user actions are:
 
 - **Disable** — tells aegis "don't auto-wake this instance". Stops the VM, closes port listeners, prevents wake-on-connect/wake-on-message.
+- **Enable** — re-enables a disabled instance. Aegis can auto-wake it again on activity.
 - **Delete** — removes the instance entirely.
 
 All other lifecycle transitions (boot, pause on idle, resume on activity, stop after extended idle) are managed automatically by aegisd. This matches the CLI philosophy.
@@ -117,7 +118,7 @@ All other lifecycle transitions (boot, pause on idle, resume on activity, stop a
 | running | yes | yes | yes | yes | yes |
 | paused | auto-wake | auto-wake | read-only | yes | yes |
 | stopped | auto-wake | auto-wake | no | yes | yes |
-| disabled | no | no | no | — | yes |
+| disabled | no | no | no | enable | yes |
 | starting | wait | wait | read-only | yes | — |
 
 - Exec and Chat on a paused/stopped instance: API auto-wakes, then proceeds
@@ -212,7 +213,7 @@ Overview of all instances.
 - Instance list: status, kit, **public URL** (clickable → opens browser), uptime/age
 - Port display: show only what the user connects to (`http://localhost:54516`), hide internal guest port mapping
 - Color-coded status: green=running, yellow=paused, gray=stopped, red=disabled
-- Quick actions: **Disable** and **Delete** only (no start/stop/pause/resume — aegis manages lifecycle)
+- Quick actions: **Disable**, **Enable** (on disabled instances), and **Delete** (no start/stop/pause/resume — aegis manages lifecycle)
 - Daemon status + backend in header
 - 5s auto-refresh polling
 
@@ -453,7 +454,7 @@ JSON editor for `/workspace/.aegis/agent.json`. Read/write via workspace file AP
 ```
 
 - Green/yellow/gray/red dot for daemon status
-- Quick instance actions: Open (detail view) and Disable only
+- Quick instance actions: Open (detail view), Disable/Enable
 - No start/stop/pause/resume — aegis manages lifecycle
 - No daemon start/stop in tray (auto-managed on app launch)
 - Tray stays shallow — never add instance creation, secret editing, or config editing here

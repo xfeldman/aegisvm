@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Instance } from '../lib/api'
-  import { disableInstance, deleteInstance } from '../lib/api'
+  import { startInstance, disableInstance, deleteInstance } from '../lib/api'
   import { addToast, refreshInstances } from '../lib/store.svelte'
 
   interface Props {
@@ -48,6 +48,7 @@
     try {
       const ref = inst.handle || inst.id
       switch (action) {
+        case 'enable': await startInstance(ref); break
         case 'disable': await disableInstance(ref); break
         case 'delete':
           if (!confirm(`Delete instance "${name}"?`)) return
@@ -107,13 +108,13 @@
       </div>
       <div class="col-actions">
         {#if !inst.enabled}
-          <button class="btn btn-sm btn-danger" onclick={() => doAction('delete', inst)}>Delete</button>
+          <button class="btn btn-sm btn-enable" onclick={() => doAction('enable', inst)}>Enable</button>
         {:else if inst.state === 'starting'}
           <span class="text-muted">starting...</span>
         {:else}
-          <button class="btn btn-sm" onclick={() => doAction('disable', inst)}>Disable</button>
-          <button class="btn btn-sm btn-danger" onclick={() => doAction('delete', inst)}>Delete</button>
+          <button class="btn btn-sm btn-disable" onclick={() => doAction('disable', inst)}>Disable</button>
         {/if}
+        <button class="btn-icon btn-delete" title="Delete" onclick={() => doAction('delete', inst)}>&#x2715;</button>
       </div>
     </div>
   {/each}
@@ -220,17 +221,52 @@
   .btn-sm {
     padding: 2px 8px;
   }
-  .btn-danger {
-    color: var(--red);
-    border-color: rgba(248, 81, 73, 0.3);
+  .btn-enable {
+    color: var(--green);
+    border-color: rgba(63, 185, 80, 0.3);
   }
-  .btn-danger:hover {
+  .btn-enable:hover {
+    background: rgba(63, 185, 80, 0.1);
+    border-color: var(--green);
+  }
+  .btn-disable {
+    color: var(--orange);
+    border-color: rgba(209, 134, 22, 0.3);
+  }
+  .btn-disable:hover {
+    background: rgba(209, 134, 22, 0.1);
+    border-color: var(--orange);
+  }
+  .btn-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border-radius: var(--radius);
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s, border-color 0.1s;
+  }
+  .btn-icon:hover {
+    background: var(--bg-tertiary);
+    color: var(--text);
+    border-color: var(--border);
+  }
+  .btn-delete:hover {
+    color: var(--red);
     background: rgba(248, 81, 73, 0.1);
-    border-color: var(--red);
+    border-color: rgba(248, 81, 73, 0.3);
   }
 
   .col-actions {
     display: flex;
+    align-items: center;
     gap: 4px;
   }
 </style>
