@@ -73,7 +73,7 @@ No AppID. No ReleaseID. No publish lifecycle.
 Run a web server in an isolated VM:
 
 ```
-aegis instance start   --name web   --workspace ./app   --expose 80   --env API_KEY   -- python -m http.server 80
+aegis instance start   --name web   --workspace ./app   --expose 80   --secret API_KEY   -- python -m http.server 80
 ```
 
 ---

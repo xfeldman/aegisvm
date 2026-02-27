@@ -64,7 +64,7 @@ No special Aegis integration required.
 # 4. Startup Example
 
 ```
-aegis instance start   --name claw   --workspace ./clawbot   --expose 3000   --env OPENAI_API_KEY   -- python run_claw.py
+aegis instance start   --name claw   --workspace ./clawbot   --expose 3000   --secret OPENAI_API_KEY   -- python run_claw.py
 ```
 
 Port 3000 is exposed statically at instance creation.

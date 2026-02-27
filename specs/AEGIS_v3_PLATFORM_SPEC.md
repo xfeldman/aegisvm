@@ -134,7 +134,7 @@ Disk is canonical. Memory is ephemeral.
 ## 6.1 Run (Ephemeral)
 
 ```bash
-aegis run --name web --workspace ./myapp --expose 80 --env API_KEY -- python -m http.server 80
+aegis run --name web --workspace ./myapp --expose 80 --secret API_KEY -- python -m http.server 80
 ```
 
 `aegis run` executes a command in an ephemeral instance. It is equivalent to: create instance → start → stream logs → wait → delete instance.
@@ -144,7 +144,7 @@ If `--workspace` is omitted, Aegis allocates a temporary workspace which is dele
 ## 6.2 Start Instance (Persistent)
 
 ```bash
-aegis instance start --name web --workspace ./myapp --expose 80 --env API_KEY -- python -m http.server 80
+aegis instance start --name web --workspace ./myapp --expose 80 --secret API_KEY -- python -m http.server 80
 ```
 
 `instance start` is idempotent on `--name`:
@@ -252,8 +252,8 @@ Flat encrypted store:
 
 Injection is explicit:
 
---env API_KEY
---env '*'
+--secret API_KEY
+--secret '*'
 
 Default: inject nothing.
 
@@ -378,7 +378,7 @@ Belongs to userland inside the VM or external tooling.
 # 17. Example: OpenClaw in Sandbox
 
 ```bash
-aegis run --name claw --workspace ./clawbot --expose 3000 --env OPENAI_API_KEY -- python run_claw.py
+aegis run --name claw --workspace ./clawbot --expose 3000 --secret OPENAI_API_KEY -- python run_claw.py
 ```
 
 Aegis does not know what Claw is.

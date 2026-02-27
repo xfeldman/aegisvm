@@ -151,7 +151,7 @@ No kits installed.
 Creates an instance using a kit's defaults. The kit manifest provides command, image, capabilities. The user provides the name, secrets, and workspace.
 
 ```bash
-aegis instance start --kit agent --name my-agent --env OPENAI_API_KEY
+aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
 ```
 
 Equivalent to:
@@ -160,7 +160,7 @@ Equivalent to:
 aegis instance start \
   --name my-agent \
   --image python:3.12-alpine \
-  --env OPENAI_API_KEY \
+  --secret OPENAI_API_KEY \
   --workspace my-agent \
   --capabilities '{"spawn":true,"spawn_depth":2,...}' \
   -- aegis-agent
@@ -169,7 +169,7 @@ aegis instance start \
 Behavior:
 - `--kit` is a **preset** — it supplies defaults for command, image, and capabilities from the manifest
 - `--name` is required (used as workspace name if `--workspace` not given)
-- `--env` / `--workspace` / `--expose` can be specified and override kit defaults
+- `--secret` / `--workspace` / `--expose` can be specified and override kit defaults
 - `-- <command>` can be specified to override the kit's default command (useful for debugging, e.g. `--kit agent -- sh` to get a shell in a kit-configured VM)
 - Precedence: explicit flags > kit defaults > global defaults
 

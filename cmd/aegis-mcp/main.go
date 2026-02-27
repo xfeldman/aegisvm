@@ -177,7 +177,6 @@ var tools = []mcpTool{
 				"kit":       {"type": "string", "description": "Kit preset name (e.g. 'agent'). Supplies default command, image, and capabilities from the kit manifest. Use kit_list to see available kits. Explicit parameters override kit defaults."},
 				"workspace": {"type": "string", "description": "Absolute host directory path to live-mount inside the VM at /workspace/. Changes on the host are immediately visible inside the VM and vice versa — no restart needed. Example: '/home/user/project' becomes /workspace/ in the VM."},
 				"image":     {"type": "string", "description": "OCI image reference for the VM root filesystem (e.g. 'python:3.12-alpine', 'node:22-alpine'). Default is a minimal Alpine Linux. Kit provides a default if not specified."},
-				"env":       {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment variables to set inside the VM."},
 				"secrets":   {"type": "array", "items": {"type": "string"}, "description": "Secret keys to inject as environment variables (must be set via secret_set first). Use '*' for all."},
 				"memory_mb": {"type": "integer", "description": "VM memory in megabytes. Default: 512."},
 				"vcpus":     {"type": "integer", "description": "Number of virtual CPUs. Default: 1."},

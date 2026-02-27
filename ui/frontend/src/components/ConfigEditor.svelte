@@ -253,7 +253,7 @@
         </div>
       </div>
       <div class="editor-body" class:has-error={!!jsonError}>
-        <pre class="highlight" bind:this={codeEl}><code>{@html highlighted}</code>{'\n'}</pre>
+        <pre class="highlight" bind:this={codeEl}>{@html highlighted}{'\n'}</pre>
         <textarea
           class="input-overlay"
           bind:this={textareaEl}
@@ -380,13 +380,17 @@
     inset: 0;
     margin: 0;
     padding: 12px;
+    border: none;
     font-family: var(--font-mono);
     font-size: 13px;
     line-height: 1.6;
     tab-size: 2;
     white-space: pre-wrap;
-    word-break: break-word;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
     overflow: auto;
+    letter-spacing: normal;
+    text-rendering: auto;
   }
 
   .highlight {

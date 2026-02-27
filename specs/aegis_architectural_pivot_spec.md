@@ -222,7 +222,7 @@ aegis doctor                                  Diagnose environment
 aegis instance start <imageRef> [options]      Start instance
   --name <handle>                               Alias for the instance
   --expose <guest_port>                         Expose a port (repeatable)
-  --env KEY=VALUE                               Set environment variable (repeatable)
+  --secret KEY                                  Inject secret as env var (repeatable)
   --workspace <path>                            Mount workspace volume
   -- <command> [args...]                        Command to run
 
@@ -236,7 +236,7 @@ aegis exec <handle|id> -- <cmd> [args...]      Execute in instance
 aegis logs <handle|id> [--follow]              Stream logs
 
 aegis run [options] -- <cmd> [args...]         Sugar: start + follow + cleanup on exit
-  --expose, --env, --workspace, --name           Same as instance start
+  --expose, --secret, --workspace, --name        Same as instance start
 ```
 
 There is no:

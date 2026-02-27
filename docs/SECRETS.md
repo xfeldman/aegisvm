@@ -28,22 +28,18 @@ aegis run --secret API_KEY --secret DB_URL -- python app.py
 # Inject all secrets
 aegis run --secret '*' -- python agent.py
 
-# Mix secrets and literal env vars
-aegis run --secret API_KEY --env DEBUG=true -- python app.py
-
 # No --secret flag = no secrets injected
 aegis run -- echo hello
 ```
 
-The `--secret` flag injects a secret as an environment variable:
+The `--secret` flag controls which secrets are visible to the instance:
 - `--secret KEY` — inject secret `KEY` as env var `KEY`
 - `--secret '*'` — inject all secrets
-
-The `--env` flag sets literal environment variables:
-- `--env KEY=value` — literal value (no secret lookup)
+- No `--secret` = no secrets injected (default)
 
 At boot time, matching secrets are decrypted on the host and injected as env vars
 via the `run` RPC. The harness passes them to the child process via `execve`.
+Host-side daemons (e.g. gateway) also receive the same env vars.
 
 ## What Aegis Guarantees
 

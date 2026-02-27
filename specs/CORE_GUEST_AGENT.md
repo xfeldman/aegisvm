@@ -123,7 +123,7 @@ $ aegis instance start --kit agent --name bot
 ### Kit with LLM key
 
 ```
-$ aegis instance start --kit agent --name bot --env OPENAI_API_KEY
+$ aegis instance start --kit agent --name bot --secret OPENAI_API_KEY
 # Full agent: LLM responses, streaming, MCP tools.
 ```
 

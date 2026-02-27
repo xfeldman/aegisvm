@@ -16,7 +16,7 @@
 | **Agent runtime** | Done | `cmd/aegis-agent`, OpenAI + Claude streaming, JSONL sessions, context windowing |
 | **Gateway (Telegram)** | Done | `cmd/aegis-gateway`, long-polling, wake-on-message, streaming edits, typing |
 | **Gateway auto-start** | Done | `aegis up` starts gateway if `~/.aegis/gateway.json` exists, `--no-gateway` to suppress |
-| **Secret resolution** | Done | Gateway resolves bot token from instance env (injected via `--env TELEGRAM_BOT_TOKEN`) |
+| **Secret resolution** | Done | Gateway resolves bot token from instance env (injected via `--secret TELEGRAM_BOT_TOKEN`) |
 | **OCI injection** | Done | `aegis-agent` + `aegis-mcp-guest` auto-injected into overlays via `InjectGuestBinaries` |
 | **Version injection** | Done | Build-time `ldflags` from git tag, shared `internal/version/` package |
 | **MCP integration** | Not started | Agent does not invoke MCP tools yet (planned v0.2) |

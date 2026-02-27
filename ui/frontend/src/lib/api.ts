@@ -63,7 +63,6 @@ export interface CreateInstanceRequest {
   workspace?: string
   memory_mb?: number
   secrets?: string[]
-  env?: Record<string, string>
 }
 
 class APIError extends Error {

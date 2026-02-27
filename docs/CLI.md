@@ -132,7 +132,7 @@ the instance. If `--workspace` is omitted, a temporary workspace is allocated
 and deleted after. If `--workspace` is provided, that workspace is preserved.
 
 ```
-aegis run [--expose [PUBLIC:]GUEST[/PROTO]] [--name NAME] [--image IMAGE] [--kit KIT] [--env KEY|K=V|K=secret.name] [--workspace NAME_OR_PATH] -- COMMAND [ARGS...]
+aegis run [--expose [PUBLIC:]GUEST[/PROTO]] [--name NAME] [--image IMAGE] [--kit KIT] [--secret KEY] [--workspace NAME_OR_PATH] -- COMMAND [ARGS...]
 ```
 
 **Flags:**
@@ -143,7 +143,7 @@ aegis run [--expose [PUBLIC:]GUEST[/PROTO]] [--name NAME] [--image IMAGE] [--kit
 | `--expose [PUBLIC:]GUEST[/PROTO]` | Port to expose. `8080:80` maps public 8080 to guest 80. `80` assigns a random public port. Optional `/tcp` or `/http` protocol hint. May be specified multiple times. |
 | `--name NAME` | Handle alias for the instance. |
 | `--kit KIT` | Kit preset name (e.g., `agent`). Supplies defaults for command, image, and capabilities from the kit manifest. Explicit flags override kit defaults. See `aegis kit list`. |
-| `--env KEY\|K=V\|K=secret.name` | Environment variable or secret to inject. `--env KEY` (bare key = secret lookup), `--env K=V` (literal value), `--env K=secret.name` (mapped secret). Use `--env '*'` for all secrets. May be specified multiple times. Default: none. |
+| `--secret KEY` | Secret to inject as env var. Use `--secret '*'` for all secrets. May be specified multiple times. Default: none. |
 | `--workspace NAME_OR_PATH` | Named workspace (e.g., `claw`) or host path (e.g., `./myapp`). Named workspaces resolve to `~/.aegis/data/workspaces/<name>`. |
 
 Creates an instance via `POST /v1/instances`, streams logs, and watches for
@@ -151,7 +151,7 @@ process exit. On Ctrl+C or process exit, sends `DELETE /v1/instances/{id}` to
 clean up.
 
 Secrets are **not injected by default**. You must explicitly name which secrets
-an instance receives via `--env KEY` (bare key = secret lookup). This prevents accidental leakage.
+an instance receives via `--secret KEY`. This prevents accidental leakage.
 
 **Examples:**
 
@@ -167,7 +167,7 @@ $ aegis run --expose 8080:80 -- python3 -m http.server 80
 $ aegis run --expose 80 -- python3 -m http.server 80
 
 # Run with secrets
-$ aegis run --env API_KEY --expose 8080:80 -- python app.py
+$ aegis run --secret API_KEY --expose 8080:80 -- python app.py
 ```
 
 ---
@@ -183,7 +183,7 @@ Run `aegis instance help` to print subcommand usage.
 Start a new instance, or restart a stopped instance by handle.
 
 ```
-aegis instance start [--name NAME] [--expose [PUBLIC:]GUEST[/PROTO]] [--image IMAGE] [--kit KIT] [--env KEY|K=V|K=secret.name] [--workspace NAME_OR_PATH] -- COMMAND [ARGS...]
+aegis instance start [--name NAME] [--expose [PUBLIC:]GUEST[/PROTO]] [--image IMAGE] [--kit KIT] [--secret KEY] [--workspace NAME_OR_PATH] -- COMMAND [ARGS...]
 aegis instance start --name NAME                          (restart stopped instance)
 ```
 
@@ -199,19 +199,19 @@ is RUNNING or STARTING, returns 409. If not found, creates a new instance.
 | `--expose [PUBLIC:]GUEST[/PROTO]` | Port to expose. `8080:80` maps public 8080 to guest 80. `80` assigns random. May be specified multiple times. |
 | `--image IMAGE` | OCI image reference. |
 | `--kit KIT` | Kit preset. Supplies defaults for command, image, and capabilities from the kit manifest. Explicit flags override. |
-| `--env KEY\|K=V\|K=secret.name` | Environment variable or secret to inject. `--env KEY` (bare key = secret lookup), `--env K=V` (literal value), `--env K=secret.name` (mapped secret). Use `--env '*'` for all secrets. May be specified multiple times. Default: none. |
+| `--secret KEY` | Secret to inject as env var. Use `--secret '*'` for all secrets. May be specified multiple times. Default: none. |
 | `--workspace NAME_OR_PATH` | Named workspace or host path. Named workspaces resolve to `~/.aegis/data/workspaces/<name>`. |
 
 **Examples:**
 
 ```
 # Start with a kit (supplies command, image, capabilities from manifest)
-$ aegis instance start --kit agent --name my-agent --env OPENAI_API_KEY
+$ aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
 Instance started: inst-173f...
 Handle: my-agent
 
 # Kit with command override (debug shell in a kit-configured VM)
-$ aegis instance start --kit agent --name debug --env OPENAI_API_KEY -- sh
+$ aegis instance start --kit agent --name debug --secret OPENAI_API_KEY -- sh
 
 # Start without a kit
 $ aegis instance start --name web --expose 8080:80 --workspace myapp -- python3 -m http.server 80
@@ -463,7 +463,7 @@ Serving HTTP on 0.0.0.0 port 80 ...
 
 Manage secrets. Secrets are a flat key-value store with AES-256 encryption at
 rest. Secrets are injected as env vars only when explicitly requested via
-`--env KEY` (bare key = secret lookup) or `--env '*'` (all secrets). Default: none injected. Values are never
+`--secret KEY` or `--secret '*'` (all secrets). Default: none injected. Values are never
 displayed by any list command.
 
 Run `aegis secret help` to print subcommand usage.
