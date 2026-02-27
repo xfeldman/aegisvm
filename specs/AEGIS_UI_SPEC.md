@@ -64,6 +64,90 @@ File access to the instance's workspace. Required for:
 Read: `GET /v1/instances/{id}/workspace?path=...` — returns raw file content, 10MB limit.
 Write: `POST /v1/instances/{id}/workspace?path=...` — request body is file content, 10MB limit.
 
+**Path security:** Server must normalize and validate path against workspace root. Reject `..` traversal, absolute paths, and symlinks escaping the workspace. Paths are always relative to the workspace root.
+
+**Size limit:** 10MB per request. Server returns HTTP 413 with descriptive message if file exceeds limit.
+
+**Blob writes are idempotent** — content-addressed (SHA256 + extension). Safe to retry on failure without creating duplicates.
+
+## Operational Invariants
+
+### OperationResult
+
+Every Go backend method that mutates state returns a consistent shape:
+
+```go
+type OperationResult struct {
+    Success bool   `json:"success"`
+    Message string `json:"message"`
+}
+```
+
+Standardizes toast messages, error surfaces, and UX language across all actions. Frontend never invents error phrasing — it displays `result.Message`.
+
+### Instance state and action availability
+
+| Instance state | Exec | Chat | Config | Start | Stop | Delete |
+|---|---|---|---|---|---|---|
+| running | yes | yes | yes | — | yes | yes |
+| paused | auto-wake | auto-wake | read-only | — | yes | yes |
+| stopped | no | no | no | yes | — | yes |
+| disabled | no | no | no | yes | — | yes |
+| starting | wait | wait | read-only | — | — | — |
+
+- Exec and Chat on a paused instance: UI shows "Waking..." then proceeds
+- Exec and Chat on stopped/disabled: buttons disabled with tooltip "Instance must be running"
+- Starting: buttons show spinner, wait for running state
+
+### Cancel semantics
+
+Cancel is best-effort:
+- Sends `control.cancel` tether frame
+- If `assistant.done` already emitted, cancel is ignored (done is authoritative final state)
+- UI must treat `assistant.done` as the terminal state regardless of cancel timing
+- If cancel arrives before done: agent should stop tool execution and emit a short `assistant.done` with partial results
+
+### Config restart behavior
+
+After "Save + Restart":
+- Config written via workspace API
+- `self_restart` sent via tether — agent exits cleanly after current response
+- UI shows "Restarting..." state on all tabs
+- Chat tab disables input until agent comes back (restart notification frame received)
+- Sessions are preserved — tether replay loads prior history on reconnect
+- If restart fails (bad config, MCP server not found): agent logs the error, UI shows it in Logs tab. Agent still runs with previous config.
+
+### Chat long-poll semantics
+
+- Server blocks up to `wait_ms` milliseconds
+- Returns immediately when new frames arrive (no unnecessary delay)
+- Returns empty `frames: []` with `timed_out: true` on timeout
+- Client starts next poll immediately on return — no sleep between polls
+
+### Exec output limits
+
+- Output capped at 1MB per command. Truncated with `... (truncated)` marker if exceeded.
+- Prevents UI freeze from unbounded output (e.g. `cat /dev/zero`)
+- Exit code and duration always reported regardless of truncation
+
+### Log stream resilience
+
+- If log SSE stream drops (daemon restart, VM pause): auto-reconnect with 2s backoff
+- Show "Log stream reconnected" indicator on reconnect
+- Clear stale stream state on reconnect — don't accumulate zombie listeners
+
+### Chat tab on non-agent instances
+
+- If tether `user.message` is sent but no `status.presence` or `assistant.delta` arrives within 10s: show "No agent runtime detected. This VM does not include an agent that processes messages."
+- Distinguishes "agent is slow" (presence frame received) from "no agent at all" (nothing)
+
+### Chat reconnect invariants
+
+- `tether_poll` returns only frames matching the requested `session_id` — no cross-session pollution
+- Sequence numbers are globally monotonic per instance (not per session), but filtering by session is server-side
+- On reconnect: UI polls with `after_seq=0` and **replaces** local chat history (server is authoritative). No client-side merge.
+- Duplicate frames are impossible given seq-based cursor
+
 ## Pages
 
 ### 1. Dashboard
@@ -74,7 +158,7 @@ Overview of all instances.
 ┌─────────────────────────────────────────────────────────────────┐
 │  AegisVM v0.4.6                                   [●] Running  │
 ├─────────────────────────────────────────────────────────────────┤
-│  Instances (5)                              [↻ Refresh] [+ New]│
+│  Instances (5)  Running: 3 | Paused: 1 | Stopped: 1   [↻] [+]  │
 │                                                                 │
 │  ● my-agent      agent  running  http://localhost:54516  42m   │
 │  ● browser-agent agent  paused                           1h    │
@@ -266,7 +350,7 @@ User → Agent:
 JSON editor for `/workspace/.aegis/agent.json`. Read/write via workspace file API.
 
 - JSON syntax highlighting + validation
-- "Save + Restart": writes file via exec, triggers self_restart via tether
+- "Save + Restart": writes file via workspace API, triggers self_restart via tether
 - Shows validation errors before save
 
 ### 3. Secrets
@@ -333,6 +417,7 @@ JSON editor for `/workspace/.aegis/agent.json`. Read/write via workspace file AP
 - Quick instance actions without opening the main window
 - "Open" → brings up instance detail in main window
 - No daemon start/stop in tray (auto-managed on app launch)
+- Tray stays shallow — never add instance creation, secret editing, or config editing here
 
 ## Go Backend
 
