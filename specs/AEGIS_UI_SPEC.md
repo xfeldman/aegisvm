@@ -499,48 +499,52 @@ Svelte with minimal dependencies:
 ## Project Structure
 
 ```
-cmd/aegis-ui/
-├── main.go              # Wails app entry
-├── app.go               # bound methods (API client)
-├── client.go            # aegisd unix socket HTTP client
-├── frontend/
-│   ├── src/
-│   │   ├── App.svelte
-│   │   ├── pages/
-│   │   │   ├── Dashboard.svelte
-│   │   │   ├── InstanceDetail.svelte
-│   │   │   ├── Secrets.svelte
-│   │   │   └── NewInstance.svelte
-│   │   ├── components/
-│   │   │   ├── InstanceList.svelte
-│   │   │   ├── LogViewer.svelte
-│   │   │   ├── CommandRunner.svelte
-│   │   │   ├── ChatPanel.svelte
-│   │   │   ├── ConfigEditor.svelte
-│   │   │   └── Toast.svelte
-│   │   └── lib/
-│   │       ├── api.ts    # Wails binding wrappers
-│   │       └── store.ts  # Svelte stores
-│   ├── index.html
-│   └── package.json
-├── build/                # Wails build assets (icons, etc.)
-└── wails.json
+internal/client/              # Shared aegisd API client (Go)
+├── client.go                 # HTTP client over unix socket
+└── types.go                  # Request/response types
+
+ui/
+├── embed.go                  # //go:embed frontend/dist for production
+└── frontend/
+    ├── src/
+    │   ├── App.svelte        # Hash-based router (#/, #/instance/foo)
+    │   ├── pages/
+    │   │   ├── Dashboard.svelte
+    │   │   ├── InstanceDetail.svelte
+    │   │   ├── Secrets.svelte          (planned)
+    │   │   └── NewInstance.svelte      (planned)
+    │   ├── components/
+    │   │   ├── InstanceList.svelte
+    │   │   ├── LogViewer.svelte        (planned)
+    │   │   ├── CommandRunner.svelte    (planned)
+    │   │   ├── ChatPanel.svelte        (planned)
+    │   │   ├── ConfigEditor.svelte     (planned)
+    │   │   └── Toast.svelte
+    │   └── lib/
+    │       ├── api.ts                  # fetch() wrappers for /api/v1/...
+    │       └── store.svelte.ts         # Svelte 5 reactive stores
+    ├── index.html
+    └── package.json
+
+cmd/aegis/ui.go               # aegis ui subcommand (HTTP server + API proxy)
 ```
+
+The Wails native app (`cmd/aegis-ui/`) will reuse the same `ui/frontend/` and `internal/client/` when implemented.
 
 ## Implementation Order (MVP-first)
 
 Build `aegis ui` (web mode) first — validates the full stack without Wails complexity. Wrap in native app later.
 
-1. **Shared client library** — `internal/client/` reusable aegisd API client
-2. **Workspace file API** — `GET/POST /v1/instances/{id}/workspace` in aegisd
-3. **Frontend scaffold** — Svelte + Vite in `ui/frontend/`
-4. **`aegis ui` command** — HTTP server serving frontend + Go API handlers
-5. **Dashboard** — instance list with status, ports, actions
-6. **Instance detail: Info + Logs** — metadata + log streaming
-7. **Chat** — tether long-poll, streaming, images, markdown
-8. **New Instance dialog** — creation with kit/secret selection
-9. **Secrets page** — list/add/delete with "used by" count
-10. **Command Runner** — exec with exit code, duration, copy
+1. ~~**Shared client library** — `internal/client/` reusable aegisd API client~~ **DONE**
+2. ~~**Workspace file API** — `GET/POST /v1/instances/{id}/workspace` in aegisd~~ **DONE**
+3. ~~**Frontend scaffold** — Svelte + Vite in `ui/frontend/`~~ **DONE**
+4. ~~**`aegis ui` command** — HTTP server serving embedded frontend + API proxy to aegisd~~ **DONE**
+5. ~~**Dashboard** — instance list with status, ports, actions~~ **DONE** (sort: running→paused→stopped, by updated_at)
+6. **Instance detail: Info + Logs** — metadata + log streaming ← **NEXT**
+7. **Command Runner** — exec with exit code, duration, copy
+8. **Chat** — tether long-poll, streaming, images, markdown
+9. **New Instance dialog** — creation with kit/secret selection
+10. **Secrets page** — list/add/delete with "used by" count
 11. **Config editor** — agent.json with Save + Restart
 12. **Wails wrapper** — `cmd/aegis-ui/` native app using same frontend + backend
 13. **System tray** — when Wails v3 stabilizes or via third-party lib

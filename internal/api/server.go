@@ -517,7 +517,6 @@ func (s *Server) handleInstanceLogs(w http.ResponseWriter, r *http.Request) {
 		ch, existing, unsub := il.Subscribe()
 		defer unsub()
 
-		// Stream existing entries
 		for _, e := range existing {
 			if execIDFilter != "" && e.ExecID != execIDFilter {
 				continue

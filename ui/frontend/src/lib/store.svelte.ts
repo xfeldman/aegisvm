@@ -33,6 +33,25 @@ export function addToast(message: string, type: Toast['type'] = 'info') {
   }, 4000)
 }
 
+// Exec history — persists across tab switches, keyed by instance ID
+export interface ExecEntry {
+  command: string
+  output: string
+  exitCode: number | null
+  duration: string
+  running: boolean
+}
+
+let _execHistory: Record<string, ExecEntry[]> = $state({})
+let _cmdHistory: Record<string, string[]> = $state({})
+
+export function getExecHistory(id: string): ExecEntry[] { return _execHistory[id] || [] }
+export function setExecHistory(id: string, entries: ExecEntry[]) { _execHistory[id] = entries }
+export function getCmdHistory(id: string): string[] { return _cmdHistory[id] || [] }
+export function pushCmdHistory(id: string, cmd: string) {
+  _cmdHistory[id] = [cmd, ...(_cmdHistory[id] || []).slice(0, 49)]
+}
+
 export async function refreshInstances() {
   _loading = true
   _error = null
