@@ -103,7 +103,9 @@
       <button class="tab" class:active={tab === 'logs'} onclick={() => tab = 'logs'}>Logs</button>
       <button class="tab" class:active={tab === 'exec'} onclick={() => tab = 'exec'}>Exec</button>
       <button class="tab" class:active={tab === 'chat'} onclick={() => tab = 'chat'}>Chat</button>
-      <button class="tab" class:active={tab === 'config'} onclick={() => tab = 'config'}>Config</button>
+      {#if instance.kit}
+        <button class="tab" class:active={tab === 'config'} onclick={() => tab = 'config'}>Kit Config</button>
+      {/if}
     </div>
 
     <div class="tab-content">
@@ -165,8 +167,8 @@
         <CommandRunner instanceId={instance.handle || instance.id} disabled={!canExec} />
       {:else if tab === 'chat'}
         <ChatPanel instanceId={instance.handle || instance.id} disabled={!canExec} />
-      {:else if tab === 'config'}
-        <ConfigEditor instanceId={instance.handle || instance.id} />
+      {:else if tab === 'config' && instance.kit}
+        <ConfigEditor instanceId={instance.handle || instance.id} kitName={instance.kit} />
       {/if}
     </div>
   {/if}

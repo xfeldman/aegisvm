@@ -38,6 +38,13 @@ export interface DaemonStatus {
   capabilities: Record<string, unknown>
 }
 
+export interface KitConfigFile {
+  path: string
+  location: 'workspace' | 'host'
+  label?: string
+  example?: Record<string, any>
+}
+
 export interface Kit {
   name: string
   version?: string
@@ -45,6 +52,7 @@ export interface Kit {
   image?: string
   required_secrets?: string[][]
   defaults?: { command?: string[] }
+  config?: KitConfigFile[]
 }
 
 export interface CreateInstanceRequest {
@@ -134,6 +142,29 @@ export const listKits = () =>
 // Status
 export const getStatus = () =>
   request<DaemonStatus>('GET', '/status')
+
+// Kit config files (host-side, ~/.aegis/kits/{handle}/)
+export async function readKitConfig(id: string, file: string): Promise<string> {
+  const res = await fetch(`${BASE}/instances/${encodeURIComponent(id)}/kit-config?file=${encodeURIComponent(file)}`)
+  if (!res.ok) {
+    let msg = res.statusText
+    try { const d = await res.json(); if (d.error) msg = d.error } catch {}
+    throw new APIError(res.status, msg)
+  }
+  return res.text()
+}
+
+export async function writeKitConfig(id: string, file: string, content: string): Promise<void> {
+  const res = await fetch(`${BASE}/instances/${encodeURIComponent(id)}/kit-config?file=${encodeURIComponent(file)}`, {
+    method: 'POST',
+    body: content,
+  })
+  if (!res.ok) {
+    let msg = res.statusText
+    try { const d = await res.json(); if (d.error) msg = d.error } catch {}
+    throw new APIError(res.status, msg)
+  }
+}
 
 // Workspace files
 export async function readWorkspaceFile(id: string, path: string): Promise<string> {

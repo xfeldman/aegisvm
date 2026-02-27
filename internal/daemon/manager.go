@@ -76,14 +76,14 @@ func (m *Manager) StartDaemons(instanceID, handle, kitName string) error {
 	m.mu.Unlock()
 
 	var procs []*Process
-	for _, binary := range manifest.InstanceDaemons {
-		p, err := m.spawn(instanceID, handle, binary)
+	for _, d := range manifest.InstanceDaemons {
+		p, err := m.spawn(instanceID, handle, d.Binary)
 		if err != nil {
 			// Stop any already-started daemons for this instance
 			for _, started := range procs {
 				started.stop()
 			}
-			return fmt.Errorf("spawn %s for %s: %w", binary, handle, err)
+			return fmt.Errorf("spawn %s for %s: %w", d.Binary, handle, err)
 		}
 		procs = append(procs, p)
 	}

@@ -1,41 +1,35 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { readWorkspaceFile, writeWorkspaceFile, tetherSend } from '../lib/api'
+  import {
+    listKits, readWorkspaceFile, writeWorkspaceFile,
+    readKitConfig, writeKitConfig, tetherSend,
+    type Kit, type KitConfigFile,
+  } from '../lib/api'
   import { addToast } from '../lib/store.svelte'
 
   interface Props {
     instanceId: string
+    kitName: string
   }
 
-  let { instanceId }: Props = $props()
+  let { instanceId, kitName }: Props = $props()
 
-  let content = $state('')
-  let original = $state('')
+  let configs: KitConfigFile[] = $state([])
+  let activeIdx = $state(0)
   let loading = $state(true)
+
+  // Per-config editor state
+  let contents: string[] = $state([])
+  let originals: string[] = $state([])
+  let errors: (string | null)[] = $state([])
   let saving = $state(false)
-  let jsonError: string | null = $state(null)
-  let notFound = $state(false)
-  let showExample = $state(false)
   let textareaEl: HTMLTextAreaElement = $state(null!)
   let codeEl: HTMLElement = $state(null!)
 
-  const CONFIG_PATH = '.aegis/agent.json'
-
-  const EXAMPLE_CONFIG = `{
-  "model": "openai/gpt-4.1",
-  "max_tokens": 4096,
-  "mcp": {
-    "playwright": {
-      "command": "npx",
-      "args": ["@playwright/mcp@latest"]
-    }
-  },
-  "disabled_tools": ["image_generate"],
-  "memory": {
-    "inject_mode": "relevant"
-  }
-}`
-
+  let active = $derived(configs[activeIdx])
+  let content = $derived(contents[activeIdx] ?? '')
+  let original = $derived(originals[activeIdx] ?? '')
+  let jsonError = $derived(errors[activeIdx] ?? null)
   let dirty = $derived(content !== original)
 
   function validate(text: string): string | null {
@@ -48,7 +42,6 @@
     }
   }
 
-  // Single-pass JSON tokenizer — avoids regex chaining issues
   function highlight(json: string): string {
     let result = ''
     let i = 0
@@ -58,7 +51,6 @@
       const ch = json[i]
 
       if (ch === '"') {
-        // Read full string
         let str = '"'
         i++
         while (i < len) {
@@ -75,7 +67,6 @@
           }
         }
         const escaped = str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        // Check if this string is a key (followed by optional whitespace + colon)
         let j = i
         while (j < len && (json[j] === ' ' || json[j] === '\t')) j++
         if (j < len && json[j] === ':') {
@@ -100,7 +91,6 @@
         result += '<span class="hl-null">null</span>'
         i += 4
       } else {
-        // Punctuation, whitespace — escape and pass through
         if (ch === '<') result += '&lt;'
         else if (ch === '>') result += '&gt;'
         else if (ch === '&') result += '&amp;'
@@ -112,10 +102,29 @@
   }
 
   let highlighted = $derived(highlight(content))
-  let exampleHighlighted = $derived(highlight(EXAMPLE_CONFIG))
 
-  function onInput() {
-    jsonError = validate(content)
+  let exampleText = $derived(
+    active?.example ? JSON.stringify(active.example, null, 2) : ''
+  )
+  let exampleHighlighted = $derived(exampleText ? highlight(exampleText) : '')
+
+  // Show example ghost when content is effectively empty
+  let isEmpty = $derived(content.trim() === '' || content.trim() === '{}')
+  let showGhost = $derived(isEmpty && !!exampleText)
+
+  function useExample() {
+    const formatted = JSON.stringify(active.example, null, 2) + '\n'
+    setContent(formatted)
+    requestAnimationFrame(() => textareaEl?.focus())
+  }
+
+  function setContent(text: string) {
+    contents = contents.map((c, i) => i === activeIdx ? text : c)
+    errors = errors.map((e, i) => i === activeIdx ? validate(text) : e)
+  }
+
+  function onInput(e: Event) {
+    setContent((e.target as HTMLTextAreaElement).value)
     syncScroll()
   }
 
@@ -131,38 +140,74 @@
       e.preventDefault()
       const start = textareaEl.selectionStart
       const end = textareaEl.selectionEnd
-      content = content.substring(0, start) + '  ' + content.substring(end)
+      const newContent = content.substring(0, start) + '  ' + content.substring(end)
+      setContent(newContent)
       requestAnimationFrame(() => {
         textareaEl.selectionStart = textareaEl.selectionEnd = start + 2
       })
     }
   }
 
+  function switchTab(idx: number) {
+    activeIdx = idx
+  }
+
+  async function readConfig(cfg: KitConfigFile): Promise<string> {
+    if (cfg.location === 'workspace') {
+      return readWorkspaceFile(instanceId, cfg.path)
+    } else {
+      return readKitConfig(instanceId, cfg.path)
+    }
+  }
+
+  async function writeConfig(cfg: KitConfigFile, data: string): Promise<void> {
+    if (cfg.location === 'workspace') {
+      await writeWorkspaceFile(instanceId, cfg.path, data)
+    } else {
+      await writeKitConfig(instanceId, cfg.path, data)
+    }
+  }
+
   async function load() {
     loading = true
     try {
-      const text = await readWorkspaceFile(instanceId, CONFIG_PATH)
-      content = text
-      original = text
-      notFound = false
-    } catch (e: any) {
-      if (e?.status === 404) {
-        content = '{}\n'
-        original = '{}\n'
-        notFound = true
-        showExample = true
-      } else {
-        addToast(`Load config: ${e instanceof Error ? e.message : 'failed'}`, 'error')
+      const kits = await listKits()
+      const kit = kits.find(k => k.name === kitName)
+      if (!kit?.config?.length) {
+        configs = []
+        loading = false
+        return
       }
+      configs = kit.config
+
+      const loaded: string[] = []
+      const origs: string[] = []
+      const errs: (string | null)[] = []
+
+      for (const cfg of kit.config) {
+        try {
+          const text = await readConfig(cfg)
+          loaded.push(text)
+          origs.push(text)
+        } catch {
+          loaded.push('{}\n')
+          origs.push('{}\n')
+        }
+        errs.push(null)
+      }
+
+      contents = loaded
+      originals = origs
+      errors = errs
+    } catch {
+      configs = []
     } finally {
       loading = false
-      jsonError = validate(content)
     }
   }
 
   async function save(restart = false) {
-    jsonError = validate(content)
-    if (jsonError) {
+    if (!active || jsonError) {
       addToast('Fix JSON errors before saving', 'error')
       return
     }
@@ -170,12 +215,11 @@
     saving = true
     try {
       const formatted = JSON.stringify(JSON.parse(content), null, 2) + '\n'
-      await writeWorkspaceFile(instanceId, CONFIG_PATH, formatted)
-      content = formatted
-      original = formatted
-      notFound = false
+      await writeConfig(active, formatted)
+      contents = contents.map((c, i) => i === activeIdx ? formatted : c)
+      originals = originals.map((o, i) => i === activeIdx ? formatted : o)
 
-      if (restart) {
+      if (restart && active.location === 'workspace') {
         await tetherSend(instanceId, 'default', 'Run self_restart to apply the updated configuration.')
         addToast('Config saved — restart requested', 'success')
       } else {
@@ -191,31 +235,50 @@
   onMount(() => { load() })
 </script>
 
-<div class="config-wrapper">
-  <div class="editor">
-    {#if loading}
-      <div class="empty">Loading config...</div>
-    {:else}
+{#if loading}
+  <div class="empty">Loading config...</div>
+{:else if configs.length === 0}
+  <div class="empty">No configuration files declared by this kit.</div>
+{:else}
+  <div class="config-wrapper">
+    {#if configs.length > 1}
+      <div class="config-tabs">
+        {#each configs as cfg, idx}
+          <button class="config-tab" class:active={activeIdx === idx} onclick={() => switchTab(idx)}>
+            {cfg.label || cfg.path}
+            <span class="location-badge">{cfg.location}</span>
+          </button>
+        {/each}
+      </div>
+    {/if}
+
+    <div class="editor">
       <div class="toolbar">
-        <span class="filepath">{CONFIG_PATH}</span>
-        {#if notFound}
-          <span class="badge">new file</span>
-        {/if}
+        <span class="filepath">{active.path}</span>
+        <span class="location-badge">{active.location}</span>
         <div class="toolbar-right">
           <button class="btn" onclick={() => save()} disabled={saving || !!jsonError || !dirty}>
             {saving ? 'Saving...' : 'Save'}
           </button>
-          <button class="btn btn-primary" onclick={() => save(true)} disabled={saving || !!jsonError}>
-            Save + Restart
-          </button>
+          {#if active.location === 'workspace'}
+            <button class="btn btn-primary" onclick={() => save(true)} disabled={saving || !!jsonError}>
+              Save + Restart
+            </button>
+          {/if}
         </div>
       </div>
       <div class="editor-body" class:has-error={!!jsonError}>
-        <pre class="highlight" bind:this={codeEl}><code>{@html highlighted}</code>{'\n'}</pre>
+        {#if showGhost}
+          <pre class="highlight ghost"><code>{@html exampleHighlighted}</code></pre>
+          <button class="use-example" onclick={useExample}>Use this example</button>
+        {:else}
+          <pre class="highlight" bind:this={codeEl}><code>{@html highlighted}</code>{'\n'}</pre>
+        {/if}
         <textarea
           class="input-overlay"
+          class:ghost-active={showGhost}
           bind:this={textareaEl}
-          bind:value={content}
+          value={content}
           oninput={onInput}
           onscroll={syncScroll}
           onkeydown={onKeydown}
@@ -225,25 +288,52 @@
       {#if jsonError}
         <div class="error-bar">{jsonError}</div>
       {/if}
-    {/if}
-  </div>
+    </div>
 
-  <div class="example-section">
-    <button class="example-toggle" onclick={() => showExample = !showExample}>
-      <span class="chevron" class:open={showExample}>&#9656;</span>
-      Example configuration
-    </button>
-    {#if showExample}
-      <pre class="example-code highlight"><code>{@html exampleHighlighted}</code></pre>
-    {/if}
+
+
   </div>
-</div>
+{/if}
 
 <style>
   .config-wrapper {
     display: flex;
     flex-direction: column;
     gap: 12px;
+  }
+
+  .config-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .config-tab {
+    padding: 6px 14px;
+    border: none;
+    background: none;
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 500;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .config-tab:hover { color: var(--text); }
+  .config-tab.active {
+    color: var(--text);
+    border-bottom-color: var(--accent);
+  }
+
+  .location-badge {
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 6px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    font-weight: 400;
   }
 
   .editor {
@@ -269,14 +359,6 @@
     font-family: var(--font-mono);
     font-size: 12px;
     color: var(--text-muted);
-  }
-
-  .badge {
-    font-size: 10px;
-    padding: 1px 6px;
-    border-radius: 8px;
-    background: rgba(88, 166, 255, 0.15);
-    color: var(--accent);
   }
 
   .toolbar-right {
@@ -349,6 +431,35 @@
     -webkit-text-fill-color: transparent;
   }
 
+  /* When ghost is showing, make textarea fully transparent so ghost shows through,
+     but keep it interactive so typing replaces the empty content */
+  .input-overlay.ghost-active {
+    caret-color: var(--text-muted);
+  }
+
+  .highlight.ghost {
+    opacity: 0.3;
+  }
+
+  .use-example {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    z-index: 2;
+    padding: 3px 10px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-muted);
+    font-size: 11px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+  }
+  .use-example:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
   .error-bar {
     padding: 6px 12px;
     background: rgba(248, 81, 73, 0.1);
@@ -365,45 +476,4 @@
     padding: 40px;
   }
 
-  /* Example section */
-  .example-section {
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    overflow: hidden;
-  }
-
-  .example-toggle {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 100%;
-    padding: 8px 12px;
-    background: var(--bg-secondary);
-    border: none;
-    color: var(--text-muted);
-    font-size: 12px;
-    text-align: left;
-    cursor: pointer;
-  }
-  .example-toggle:hover { color: var(--text); }
-
-  .chevron {
-    font-size: 10px;
-    transition: transform 0.15s;
-    display: inline-block;
-  }
-  .chevron.open { transform: rotate(90deg); }
-
-  .example-code {
-    margin: 0;
-    padding: 12px;
-    background: var(--bg);
-    border-top: 1px solid var(--border);
-    font-size: 13px;
-    line-height: 1.6;
-    position: relative;
-    overflow-x: auto;
-    color: var(--text);
-    opacity: 0.7;
-  }
 </style>

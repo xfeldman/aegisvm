@@ -30,10 +30,14 @@ type Manifest struct {
 	// means either key satisfies the requirement.
 	RequiredSecrets [][]string `json:"required_secrets,omitempty"`
 
-	// InstanceDaemons lists binaries to spawn per enabled instance using this kit.
+	// InstanceDaemons lists host-side processes to spawn per enabled instance.
 	// aegisd manages their lifecycle: start on instance create/enable,
 	// stop on instance disable/delete, restart on crash with backoff.
-	InstanceDaemons []string `json:"instance_daemons,omitempty"`
+	InstanceDaemons []InstanceDaemon `json:"instance_daemons,omitempty"`
+
+	// Config declares editable config files for this kit.
+	// The UI renders a generic editor tab for each entry.
+	Config []ConfigFile `json:"config,omitempty"`
 
 	Image struct {
 		Base   string   `json:"base"`
@@ -43,6 +47,26 @@ type Manifest struct {
 		Command      []string         `json:"command"`
 		Capabilities *json.RawMessage `json:"capabilities"`
 	} `json:"defaults"`
+}
+
+// ConfigFile declares an editable config file for the UI.
+// Kit-level configs live in the workspace (guest-side).
+// Daemon configs live on the host at ~/.aegis/kits/{handle}/.
+type ConfigFile struct {
+	// Path is the file path relative to the location root.
+	Path string `json:"path"`
+	// Label is a short display name for the UI tab/section.
+	Label string `json:"label,omitempty"`
+	// Example is an optional example config shown as reference in the UI.
+	Example json.RawMessage `json:"example,omitempty"`
+}
+
+// InstanceDaemon declares a host-side process to spawn per instance.
+type InstanceDaemon struct {
+	// Binary is the executable name (resolved via BinDir).
+	Binary string `json:"binary"`
+	// Config declares an optional host-side config file for this daemon.
+	Config *ConfigFile `json:"config,omitempty"`
 }
 
 // KitsDir returns the primary user kit manifest directory.
@@ -121,8 +145,8 @@ func ValidateManifest(m *Manifest, binDir string) []string {
 	var missing []string
 	// Check instance daemon binaries
 	for _, d := range m.InstanceDaemons {
-		if config.FindBinary(d, binDir) == "" {
-			missing = append(missing, d)
+		if config.FindBinary(d.Binary, binDir) == "" {
+			missing = append(missing, d.Binary)
 		}
 	}
 	// Check inject binaries

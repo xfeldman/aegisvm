@@ -54,7 +54,23 @@ Plus a kit manifest at `~/.aegis/kits/agent.json` (created on first use or by po
   "name": "agent",
   "version": "0.1.0",
   "description": "Messaging-driven LLM agent with Telegram integration",
-  "daemons": ["aegis-gateway"],
+  "config": [
+    {
+      "path": ".aegis/agent.json",
+      "label": "Agent",
+      "example": { "model": "openai/gpt-4.1", "mcp": {}, "disabled_tools": [] }
+    }
+  ],
+  "instance_daemons": [
+    {
+      "binary": "aegis-gateway",
+      "config": {
+        "path": "gateway.json",
+        "label": "Gateway",
+        "example": { "telegram": { "bot_token_secret": "TELEGRAM_BOT_TOKEN", "allowed_chats": ["*"] } }
+      }
+    }
+  ],
   "image": {
     "base": "python:3.12-alpine",
     "inject": ["aegis-agent"]
@@ -76,6 +92,38 @@ Plus a kit manifest at `~/.aegis/kits/agent.json` (created on first use or by po
 ```
 
 Note: `aegis-mcp-guest` is a core binary injected into every OCI overlay by default — kits don't need to list it. The `version` field is stamped from git tags at build time (CI release of `aegisvm-agent-kit`). For development, `make install-kit` stamps the local git version.
+
+### Kit Manifest: Config Files
+
+Config files are declared in two places — location is implicit from structure:
+
+**Kit-level `config[]`** — workspace configs (guest-side, inside the VM):
+
+```json
+"config": [
+  { "path": ".aegis/agent.json", "label": "Agent", "example": {...} }
+]
+```
+
+**Daemon-level `config`** — host configs (at `~/.aegis/kits/{handle}/`):
+
+```json
+"instance_daemons": [
+  { "binary": "aegis-gateway", "config": { "path": "gateway.json", "label": "Gateway", "example": {...} } }
+]
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `path` | yes | File path relative to the location root |
+| `label` | no | Short display name for the UI sub-tab (defaults to `path`) |
+| `example` | no | Example config object shown as ghost preview in the editor when the file doesn't exist yet |
+
+No `location` field needed — the structure determines it:
+- Kit-level `config[]` → workspace. Read/write via `GET/POST /v1/instances/{id}/workspace?path=...`. "Save + Restart" sends tether message prompting `self_restart`.
+- Daemon `config` → host. Read/write via `GET/POST /v1/instances/{id}/kit-config?file=...`. Daemons hot-reload on file change.
+
+The API flattens both into a single `config[]` array with a computed `location` field for the frontend.
 
 ---
 
@@ -253,6 +301,7 @@ Each brings its own binaries, OCI recipe, and `--kit` preset. Core aegis stays m
 |------|---------|
 | `~/.aegis/kits/agent.json` | Agent Kit manifest |
 | `~/.aegis/kits/` | Kit manifest directory |
+| `~/.aegis/kits/{handle}/` | Per-instance host-side kit config (e.g. `gateway.json`) |
 | Kit binaries next to `aegis` | Resolved via `BinDir` |
 
 ---

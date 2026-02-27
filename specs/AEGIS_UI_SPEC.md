@@ -367,31 +367,34 @@ User → Agent:
 
 **Markdown:** Agent responses rendered as markdown (code blocks, lists, links, bold/italic).
 
-#### Config tab (Agent Kit instances only)
+#### Kit Config tab (Kit instances only)
+
+Generic config editor driven by the kit manifest's `config` field. The core UI has **no hardcoded knowledge** of specific kit config files — everything is declared in the kit manifest.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ /workspace/.aegis/agent.json                     [Save + ↻]    │
+│ [Agent] [Gateway]                                               │
+├─────────────────────────────────────────────────────────────────┤
+│ .aegis/agent.json  workspace       [Save] [Save + Restart]      │
 ├─────────────────────────────────────────────────────────────────┤
 │ {                                                               │
-│   "model": "openai/gpt-5.2",                                   │
-│   "max_tokens": 4096,                                           │
-│   "disabled_tools": [],                                          │
-│   "mcp": {},                                                     │
-│   "memory": {                                                    │
-│     "inject_mode": "relevant"                                    │
+│   "model": "openai/gpt-4.1",          ← syntax highlighted     │
+│   "mcp": {                                                      │
+│     "playwright": { ... }                                       │
 │   }                                                              │
 │ }                                                                │
-├─────────────────────────────────────────────────────────────────┤
-│ [Save + Restart] writes config and triggers self_restart.       │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-JSON editor for `/workspace/.aegis/agent.json`. Read/write via workspace file API.
-
-- JSON syntax highlighting + validation
-- "Save + Restart": writes file via workspace API, triggers self_restart via tether
-- Shows validation errors before save
+- Tab shown only for kit instances (`instance.kit` is set)
+- Kit manifest declares configs in two places: kit-level `config[]` (workspace) and daemon-level `instance_daemons[].config` (host). API flattens both into one array with computed `location` field.
+- Sub-tabs when kit has multiple config files (e.g. Agent + Gateway)
+- **Workspace** configs: read/write via workspace file API. "Save + Restart" sends tether message prompting `self_restart`
+- **Host** configs: read/write via `GET/POST /v1/instances/{id}/kit-config?file=` (files at `~/.aegis/kits/{handle}/`)
+- JSON syntax highlighting (single-pass tokenizer, keys/strings/numbers/bools colored)
+- Live JSON validation with error bar
+- Ghost example preview: when config is empty, kit's example config renders at 30% opacity with a "Use this example" button. Disappears on first keystroke
+- Tab key inserts 2 spaces
 
 ### 3. Secrets
 
@@ -566,7 +569,7 @@ Build `aegis ui` (web mode) first — validates the full stack without Wails com
 7. ~~**Chat** — tether long-poll, streaming, images (lightbox preview), chat history persisted to localStorage~~ **DONE**
 8. ~~**New Instance page** — form with kit/secret selection, port exposure, auto-fills from kit defaults~~ **DONE**
 9. ~~**Secrets page** — list/add/delete with inline form~~ **DONE**
-10. ~~**Config editor** — textarea JSON editor for agent.json with Save and Save + Restart~~ **DONE**
+10. ~~**Kit Config editor** — kit-manifest-driven JSON editor with syntax highlighting, ghost example preview, workspace + host config support~~ **DONE**
 11. **Wails wrapper** — `cmd/aegis-ui/` native app using same frontend + backend
 12. **System tray** — when Wails v3 stabilizes or via third-party lib
 13. **Polish** — reconnect overlay, keyboard shortcuts, busy button states

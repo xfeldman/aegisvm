@@ -80,6 +80,10 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /v1/instances/{id}/workspace", s.handleWorkspaceRead)
 	s.mux.HandleFunc("POST /v1/instances/{id}/workspace", s.handleWorkspaceWrite)
 
+	// Kit config file access (host-side, ~/.aegis/kits/{handle}/)
+	s.mux.HandleFunc("GET /v1/instances/{id}/kit-config", s.handleKitConfigRead)
+	s.mux.HandleFunc("POST /v1/instances/{id}/kit-config", s.handleKitConfigWrite)
+
 	// Tether routes (Agent Kit messaging)
 	s.mux.HandleFunc("POST /v1/instances/{id}/tether", s.handleTetherIngress)
 	s.mux.HandleFunc("GET /v1/instances/{id}/tether/stream", s.handleTetherStream)
@@ -178,6 +182,39 @@ func (s *Server) handleListKits(w http.ResponseWriter, r *http.Request) {
 			entry["defaults"] = map[string]interface{}{
 				"command": m.Defaults.Command,
 			}
+		}
+		// Flatten daemon configs (host) first, then kit-level configs (workspace).
+		var cfgs []map[string]interface{}
+		for _, d := range m.InstanceDaemons {
+			if d.Config != nil {
+				cfg := map[string]interface{}{
+					"path":     d.Config.Path,
+					"location": "host",
+				}
+				if d.Config.Label != "" {
+					cfg["label"] = d.Config.Label
+				}
+				if d.Config.Example != nil {
+					cfg["example"] = json.RawMessage(d.Config.Example)
+				}
+				cfgs = append(cfgs, cfg)
+			}
+		}
+		for _, c := range m.Config {
+			cfg := map[string]interface{}{
+				"path":     c.Path,
+				"location": "workspace",
+			}
+			if c.Label != "" {
+				cfg["label"] = c.Label
+			}
+			if c.Example != nil {
+				cfg["example"] = json.RawMessage(c.Example)
+			}
+			cfgs = append(cfgs, cfg)
+		}
+		if len(cfgs) > 0 {
+			entry["config"] = cfgs
 		}
 		result = append(result, entry)
 	}
@@ -1193,6 +1230,83 @@ func (s *Server) handleWorkspaceWrite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := os.WriteFile(fullPath, data, 0644); err != nil {
+		writeError(w, http.StatusInternalServerError, "write failed")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// Kit config handlers — host-side config at ~/.aegis/kits/{handle}/{file}
+
+func (s *Server) kitConfigDir(inst *lifecycle.Instance) string {
+	handle := inst.HandleAlias
+	if handle == "" {
+		handle = inst.ID
+	}
+	return filepath.Join(kit.KitsDir(), handle)
+}
+
+func (s *Server) handleKitConfigRead(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+	file := r.URL.Query().Get("file")
+	if file == "" || strings.Contains(file, "/") || strings.Contains(file, "..") {
+		writeError(w, http.StatusBadRequest, "file parameter required (filename only, no paths)")
+		return
+	}
+
+	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	fullPath := filepath.Join(s.kitConfigDir(inst), file)
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "config file not found")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(data)
+}
+
+func (s *Server) handleKitConfigWrite(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+	file := r.URL.Query().Get("file")
+	if file == "" || strings.Contains(file, "/") || strings.Contains(file, "..") {
+		writeError(w, http.StatusBadRequest, "file parameter required (filename only, no paths)")
+		return
+	}
+
+	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	data, err := io.ReadAll(io.LimitReader(r.Body, maxWorkspaceFileSize+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read body failed")
+		return
+	}
+	if len(data) > maxWorkspaceFileSize {
+		writeError(w, http.StatusRequestEntityTooLarge, "file too large (10MB limit)")
+		return
+	}
+
+	dir := s.kitConfigDir(inst)
+	os.MkdirAll(dir, 0755)
+
+	if err := os.WriteFile(filepath.Join(dir, file), data, 0644); err != nil {
 		writeError(w, http.StatusInternalServerError, "write failed")
 		return
 	}

@@ -1904,7 +1904,9 @@ func loadKitManifestOrDie(name string) *kitManifest {
 	cm.Name = m.Name
 	cm.Version = m.Version
 	cm.Description = m.Description
-	cm.InstanceDaemons = m.InstanceDaemons
+	for _, d := range m.InstanceDaemons {
+		cm.InstanceDaemons = append(cm.InstanceDaemons, d.Binary)
+	}
 	cm.Image.Base = m.Image.Base
 	cm.Image.Inject = m.Image.Inject
 	cm.Defaults.Command = m.Defaults.Command
