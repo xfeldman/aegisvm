@@ -309,12 +309,13 @@ func cmdDown() {
 		return
 	}
 
-	// Kill the entire process group (aegisd + all child daemons like gateways).
-	// aegisd runs with Setpgid=true so its pgid == its pid. Negative pid
-	// sends the signal to every process in the group.
-	err = syscall.Kill(-pid, syscall.SIGTERM)
+	// Send SIGTERM to aegisd. Its shutdown handler calls StopAll() to kill
+	// child daemons (gateways). We don't use process group kill because
+	// Setpgid may not take effect on all platforms, and killing the wrong
+	// group could take down the user's session.
+	err = proc.Signal(syscall.SIGTERM)
 	if err != nil && errors.Is(err, syscall.EPERM) {
-		sudoKill := exec.Command("sudo", "kill", "-TERM", fmt.Sprintf("-%d", pid))
+		sudoKill := exec.Command("sudo", "kill", "-TERM", strconv.Itoa(pid))
 		sudoKill.Stdin = os.Stdin
 		sudoKill.Stderr = os.Stderr
 		err = sudoKill.Run()
