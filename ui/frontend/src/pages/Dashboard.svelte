@@ -28,11 +28,14 @@
 <div class="dashboard">
   <div class="dashboard-header">
     <h1>Instances</h1>
-    {#if status}
-      <span class="daemon-status">
-        {status.backend}
-      </span>
-    {/if}
+    <div class="header-right">
+      {#if status}
+        <span class="daemon-status">
+          {status.backend}
+        </span>
+      {/if}
+      <a href="#/new" class="btn-new">+ New</a>
+    </div>
   </div>
 
   <div class="status-bar">
@@ -75,7 +78,7 @@
   {:else if instances.length === 0}
     <div class="empty-state">
       <p>No instances yet.</p>
-      <p class="hint">Run <code>aegis instance start --name myvm -- echo hello</code> to create one.</p>
+      <p class="hint"><a href="#/new">Create an instance</a> or run <code>aegis instance start --name myvm -- echo hello</code></p>
     </div>
   {:else}
     <InstanceList {instances} />
@@ -100,6 +103,12 @@
     font-weight: 600;
   }
 
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
   .daemon-status {
     font-size: 12px;
     color: var(--text-muted);
@@ -108,6 +117,21 @@
     background: var(--bg-secondary);
     border: 1px solid var(--border);
     font-family: var(--font-mono);
+  }
+
+  .btn-new {
+    padding: 5px 14px;
+    border-radius: var(--radius);
+    border: 1px solid var(--accent);
+    background: transparent;
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 500;
+    text-decoration: none;
+  }
+  .btn-new:hover {
+    background: rgba(88, 166, 255, 0.1);
+    text-decoration: none;
   }
 
   .status-bar {

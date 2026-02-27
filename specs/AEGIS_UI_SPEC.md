@@ -533,14 +533,14 @@ ui/
     │   ├── pages/
     │   │   ├── Dashboard.svelte
     │   │   ├── InstanceDetail.svelte
-    │   │   ├── Secrets.svelte          (planned)
-    │   │   └── NewInstance.svelte      (planned)
+    │   │   ├── Secrets.svelte
+    │   │   └── NewInstance.svelte
     │   ├── components/
     │   │   ├── InstanceList.svelte
     │   │   ├── LogViewer.svelte
     │   │   ├── CommandRunner.svelte
     │   │   ├── ChatPanel.svelte
-    │   │   ├── ConfigEditor.svelte     (planned)
+    │   │   ├── ConfigEditor.svelte
     │   │   └── Toast.svelte
     │   └── lib/
     │       ├── api.ts                  # fetch() wrappers for /api/v1/...
@@ -564,9 +564,9 @@ Build `aegis ui` (web mode) first — validates the full stack without Wails com
 5. ~~**Dashboard** — instance list with status, ports, disable/delete actions, 5s polling~~ **DONE**
 6. ~~**Instance detail: Info + Logs + Exec** — tabbed view with metadata, real-time log streaming (NDJSON), command runner with streamed output/exit code/duration/copy~~ **DONE**
 7. ~~**Chat** — tether long-poll, streaming, images (lightbox preview), chat history persisted to localStorage~~ **DONE**
-8. **New Instance dialog** — creation with kit/secret selection
-9. **Secrets page** — list/add/delete with "used by" count
-10. **Config editor** — agent.json with Save + Restart
+8. ~~**New Instance page** — form with kit/secret selection, port exposure, auto-fills from kit defaults~~ **DONE**
+9. ~~**Secrets page** — list/add/delete with inline form~~ **DONE**
+10. ~~**Config editor** — textarea JSON editor for agent.json with Save and Save + Restart~~ **DONE**
 11. **Wails wrapper** — `cmd/aegis-ui/` native app using same frontend + backend
 12. **System tray** — when Wails v3 stabilizes or via third-party lib
 13. **Polish** — reconnect overlay, keyboard shortcuts, busy button states

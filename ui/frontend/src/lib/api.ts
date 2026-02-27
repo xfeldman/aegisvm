@@ -43,6 +43,19 @@ export interface Kit {
   version?: string
   description?: string
   image?: string
+  required_secrets?: string[][]
+  defaults?: { command?: string[] }
+}
+
+export interface CreateInstanceRequest {
+  command: string[]
+  handle?: string
+  kit?: string
+  image_ref?: string
+  workspace?: string
+  memory_mb?: number
+  secrets?: string[]
+  env?: Record<string, string>
 }
 
 class APIError extends Error {
@@ -97,13 +110,53 @@ export const resumeInstance = (id: string) =>
 export const deleteInstance = (id: string) =>
   request<unknown>('DELETE', `/instances/${encodeURIComponent(id)}`)
 
+// Instances — create
+export const createInstance = (req: CreateInstanceRequest) =>
+  request<{ id: string; state: string; command: string[]; handle?: string; kit?: string }>('POST', '/instances', req)
+
+export const exposePort = (id: string, guestPort: number, protocol = 'http') =>
+  request<Endpoint>('POST', `/instances/${encodeURIComponent(id)}/expose`, { port: guestPort, protocol })
+
 // Secrets
 export const listSecrets = () =>
   request<SecretInfo[]>('GET', '/secrets')
 
+export const setSecret = (name: string, value: string) =>
+  request<SecretInfo>('PUT', `/secrets/${encodeURIComponent(name)}`, { value })
+
+export const deleteSecret = (name: string) =>
+  request<unknown>('DELETE', `/secrets/${encodeURIComponent(name)}`)
+
+// Kits
+export const listKits = () =>
+  request<Kit[]>('GET', '/kits')
+
 // Status
 export const getStatus = () =>
   request<DaemonStatus>('GET', '/status')
+
+// Workspace files
+export async function readWorkspaceFile(id: string, path: string): Promise<string> {
+  const res = await fetch(`${BASE}/instances/${encodeURIComponent(id)}/workspace?path=${encodeURIComponent(path)}`)
+  if (!res.ok) {
+    let msg = res.statusText
+    try { const d = await res.json(); if (d.error) msg = d.error } catch {}
+    throw new APIError(res.status, msg)
+  }
+  return res.text()
+}
+
+export async function writeWorkspaceFile(id: string, path: string, content: string): Promise<void> {
+  const res = await fetch(`${BASE}/instances/${encodeURIComponent(id)}/workspace?path=${encodeURIComponent(path)}`, {
+    method: 'POST',
+    body: content,
+  })
+  if (!res.ok) {
+    let msg = res.statusText
+    try { const d = await res.json(); if (d.error) msg = d.error } catch {}
+    throw new APIError(res.status, msg)
+  }
+}
 
 // Tether (Agent Kit messaging)
 

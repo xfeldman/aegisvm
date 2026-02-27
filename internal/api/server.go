@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/xfeldman/aegisvm/internal/config"
+	"github.com/xfeldman/aegisvm/internal/kit"
 	"github.com/xfeldman/aegisvm/internal/daemon"
 	"github.com/xfeldman/aegisvm/internal/lifecycle"
 	"github.com/xfeldman/aegisvm/internal/logstore"
@@ -90,6 +91,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /v1/secrets/{name}", s.handleGetSecret)
 	s.mux.HandleFunc("DELETE /v1/secrets/{name}", s.handleDeleteSecret)
 
+	// Kits
+	s.mux.HandleFunc("GET /v1/kits", s.handleListKits)
+
 	// Status
 	s.mux.HandleFunc("GET /v1/status", s.handleStatus)
 }
@@ -146,6 +150,38 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"network_backend":       caps.NetworkBackend,
 		},
 	})
+}
+
+func (s *Server) handleListKits(w http.ResponseWriter, r *http.Request) {
+	manifests, err := kit.ListManifests()
+	if err != nil {
+		manifests = nil
+	}
+	result := make([]map[string]interface{}, 0, len(manifests))
+	for _, m := range manifests {
+		entry := map[string]interface{}{
+			"name": m.Name,
+		}
+		if m.Version != "" {
+			entry["version"] = m.Version
+		}
+		if m.Description != "" {
+			entry["description"] = m.Description
+		}
+		if m.Image.Base != "" {
+			entry["image"] = m.Image.Base
+		}
+		if len(m.RequiredSecrets) > 0 {
+			entry["required_secrets"] = m.RequiredSecrets
+		}
+		if len(m.Defaults.Command) > 0 {
+			entry["defaults"] = map[string]interface{}{
+				"command": m.Defaults.Command,
+			}
+		}
+		result = append(result, entry)
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // Instance API types

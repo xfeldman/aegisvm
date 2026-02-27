@@ -1,6 +1,8 @@
 <script lang="ts">
   import Dashboard from './pages/Dashboard.svelte'
   import InstanceDetail from './pages/InstanceDetail.svelte'
+  import NewInstance from './pages/NewInstance.svelte'
+  import Secrets from './pages/Secrets.svelte'
   import Toast from './components/Toast.svelte'
 
   let hash = $state(window.location.hash || '#/')
@@ -15,6 +17,8 @@
     if (path.startsWith('/instance/')) {
       return { page: 'instance', param: path.slice('/instance/'.length) }
     }
+    if (path === '/new') return { page: 'new' }
+    if (path === '/secrets') return { page: 'secrets' }
     return { page: 'dashboard' }
   }
 
@@ -30,6 +34,7 @@
     </a>
     <nav>
       <a href="#/" class="nav-link" class:active={route.page === 'dashboard'}>Dashboard</a>
+      <a href="#/secrets" class="nav-link" class:active={route.page === 'secrets'}>Secrets</a>
     </nav>
   </header>
 
@@ -38,6 +43,10 @@
       <Dashboard />
     {:else if route.page === 'instance' && route.param}
       <InstanceDetail id={route.param} />
+    {:else if route.page === 'new'}
+      <NewInstance />
+    {:else if route.page === 'secrets'}
+      <Secrets />
     {/if}
   </main>
 </div>
