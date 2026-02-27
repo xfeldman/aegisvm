@@ -1672,10 +1672,9 @@ func (s *Server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
 // resolveEnv builds the final env map for an instance by resolving secrets
 // from the allowlist and merging explicit env vars on top.
 //
-//   - secretKeys == nil or []                      → inject no secrets
-//   - secretKeys == ["*"]                          → inject all secrets
-//   - secretKeys == ["KEY"]                        → inject secret.KEY as KEY
-//   - secretKeys == ["ENV_VAR=secret.secret_name"]  → inject secret.secret_name as ENV_VAR
+//   - secretKeys == nil or []  → inject no secrets
+//   - secretKeys == ["*"]      → inject all secrets
+//   - secretKeys == ["A","B"]  → inject only named secrets
 //
 // Explicit env vars always override secrets on name collision.
 func (s *Server) resolveEnv(secretKeys []string, explicitEnv map[string]string) map[string]string {
@@ -1683,36 +1682,19 @@ func (s *Server) resolveEnv(secretKeys []string, explicitEnv map[string]string) 
 
 	if s.secretStore != nil && len(secretKeys) > 0 {
 		injectAll := len(secretKeys) == 1 && secretKeys[0] == "*"
-
-		// Parse mappings:
-		//   "KEY"                    → envName=KEY, storeName=KEY
-		//   "ENV_VAR=secret.name"    → envName=ENV_VAR, storeName=name
-		allowlist := make(map[string]string) // storeName → envName
+		var allowlist map[string]bool
 		if !injectAll {
+			allowlist = make(map[string]bool, len(secretKeys))
 			for _, k := range secretKeys {
-				if eq := strings.Index(k, "="); eq > 0 && strings.HasPrefix(k[eq+1:], "secret.") {
-					envName := k[:eq]
-					storeName := k[eq+1+len("secret."):]
-					if storeName != "" {
-						allowlist[storeName] = envName
-					}
-				} else {
-					allowlist[k] = k
-				}
+				allowlist[k] = true
 			}
 		}
-
 		secrets, _ := s.registry.ListSecrets()
 		for _, sec := range secrets {
-			if injectAll {
+			if injectAll || allowlist[sec.Name] {
 				val, err := s.secretStore.DecryptString(sec.EncryptedValue)
 				if err == nil {
 					env[sec.Name] = val
-				}
-			} else if envName, ok := allowlist[sec.Name]; ok {
-				val, err := s.secretStore.DecryptString(sec.EncryptedValue)
-				if err == nil {
-					env[envName] = val
 				}
 			}
 		}

@@ -58,7 +58,7 @@ Plus a kit manifest at `~/.aegis/kits/agent.json` (created on first use or by po
     {
       "path": ".aegis/agent.json",
       "label": "Agent",
-      "default": { "model": "openai/gpt-4.1", "mcp": {}, "disabled_tools": [] }
+      "default": { "model": "openai/gpt-4.1", "api_key_env": "OPENAI_API_KEY", "tools": { "web_search": { "brave_api_key_env": "BRAVE_SEARCH_API_KEY" }, "image_generate": { "openai_api_key_env": "OPENAI_API_KEY" } } }
     }
   ],
   "instance_daemons": [

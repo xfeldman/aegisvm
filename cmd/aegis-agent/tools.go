@@ -20,6 +20,29 @@ import (
 )
 
 // builtinTools are workspace-scoped tools available to every agent.
+// toolEnv resolves an env var for a tool from its config.
+// Returns the env var value, or empty string if not configured.
+func (a *Agent) toolEnv(toolName, envField string) string {
+	if a.toolsConfig == nil {
+		return ""
+	}
+	tc, ok := a.toolsConfig[toolName]
+	if !ok {
+		return ""
+	}
+	var envKey string
+	switch envField {
+	case "brave_api_key_env":
+		envKey = tc.BraveAPIKeyEnv
+	case "openai_api_key_env":
+		envKey = tc.OpenAIAPIKeyEnv
+	}
+	if envKey == "" {
+		return ""
+	}
+	return os.Getenv(envKey)
+}
+
 var builtinTools = []Tool{
 	{
 		Name:        "bash",
@@ -238,7 +261,7 @@ var builtinTools = []Tool{
 	},
 	{
 		Name:        "image_generate",
-		Description: "Generate an image using OpenAI's image generation API (DALL-E / gpt-image-1). Returns the image attached to your response. Requires OPENAI_API_KEY.",
+		Description: "Generate an image using OpenAI's image generation API (DALL-E / gpt-image-1). Returns the image attached to your response. Requires openai_api_key_env in tools config.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -250,7 +273,7 @@ var builtinTools = []Tool{
 	},
 	{
 		Name:        "web_search",
-		Description: "Search the web using Brave Search API. Returns titles, URLs, and descriptions. Requires BRAVE_SEARCH_API_KEY env var or secret.",
+		Description: "Search the web using Brave Search API. Returns titles, URLs, and descriptions. Requires brave_api_key_env in tools config.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -263,7 +286,7 @@ var builtinTools = []Tool{
 	},
 	{
 		Name:        "image_search",
-		Description: "Search for images using Brave Image Search API. Returns image URLs, thumbnails, titles, and dimensions. Use with respond_with_image: search → download best result with bash/wget → respond_with_image. Requires BRAVE_SEARCH_API_KEY.",
+		Description: "Search for images using Brave Image Search API. Returns image URLs, thumbnails, titles, and dimensions. Use with respond_with_image: search → download best result with bash/wget → respond_with_image. Requires brave_api_key_env in tools config.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -319,9 +342,9 @@ func (a *Agent) executeTool(name string, input json.RawMessage) string {
 	case "image_generate":
 		return a.toolImageGenerate(input)
 	case "web_search":
-		return toolWebSearch(input)
+		return a.toolWebSearch(input)
 	case "image_search":
-		return toolImageSearch(input)
+		return a.toolImageSearch(input)
 	default:
 		// Try MCP tools
 		for _, mc := range a.mcpClients {
@@ -870,7 +893,7 @@ func toolWebFetch(input json.RawMessage) string {
 	})
 }
 
-func toolWebSearch(input json.RawMessage) string {
+func (a *Agent) toolWebSearch(input json.RawMessage) string {
 	var params struct {
 		Query     string `json:"query"`
 		Count     int    `json:"count"`
@@ -881,9 +904,9 @@ func toolWebSearch(input json.RawMessage) string {
 		return jsonError("query is required")
 	}
 
-	apiKey := os.Getenv("BRAVE_SEARCH_API_KEY")
+	apiKey := a.toolEnv("web_search", "brave_api_key_env")
 	if apiKey == "" {
-		return jsonError("BRAVE_SEARCH_API_KEY not set — add it as a secret to enable web search")
+		return jsonError("web_search: brave_api_key_env not configured in agent.json")
 	}
 
 	if params.Count == 0 {
@@ -949,7 +972,7 @@ func toolWebSearch(input json.RawMessage) string {
 	})
 }
 
-func toolImageSearch(input json.RawMessage) string {
+func (a *Agent) toolImageSearch(input json.RawMessage) string {
 	var params struct {
 		Query string `json:"query"`
 		Count int    `json:"count"`
@@ -959,9 +982,9 @@ func toolImageSearch(input json.RawMessage) string {
 		return jsonError("query is required")
 	}
 
-	apiKey := os.Getenv("BRAVE_SEARCH_API_KEY")
+	apiKey := a.toolEnv("image_search", "brave_api_key_env")
 	if apiKey == "" {
-		return jsonError("BRAVE_SEARCH_API_KEY not set — add it as a secret to enable image search")
+		return jsonError("image_search: brave_api_key_env not configured in agent.json")
 	}
 
 	if params.Count == 0 {
@@ -1072,9 +1095,9 @@ func (a *Agent) toolImageGenerate(input json.RawMessage) string {
 		return jsonError("prompt is required")
 	}
 
-	apiKey := os.Getenv("OPENAI_API_KEY")
+	apiKey := a.toolEnv("image_generate", "openai_api_key_env")
 	if apiKey == "" {
-		return jsonError("OPENAI_API_KEY not set")
+		return jsonError("image_generate: openai_api_key_env not configured in agent.json")
 	}
 
 	if params.Size == "" {

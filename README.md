@@ -49,7 +49,7 @@ Unlike monolithic agent frameworks, Agent Kit is modular Go compiled into a sing
 | **Images** | image_generate (DALL-E), respond_with_image |
 | **Memory** | Persistent memory with auto-injection into LLM context |
 | **Cron** | Scheduled tasks with scale-to-zero (gateway-side scheduler) |
-| **Self-management** | self_restart (hot config reload), self_info, disabled_tools |
+| **Self-management** | self_restart (hot config reload), self_info |
 | **VM orchestration** | Spawn/manage child VMs, expose ports, keepalive |
 
 All built-in tools are Go — zero runtime overhead. Any tool can be disabled and replaced with a custom MCP server via `agent.json`.
@@ -61,7 +61,7 @@ All built-in tools are Go — zero runtime overhead. Any tool can be disabled an
 | **Architecture** | Modular Go binary + optional MCP | Monolithic Python framework |
 | **Idle footprint** | ~40MB | ~200MB+ |
 | **Core tools** | 19 built-in (Go, zero overhead) | Python-based, runtime-dependent |
-| **Extensibility** | MCP servers + `disabled_tools` config | Plugin system |
+| **Extensibility** | MCP servers + `tools` config | Plugin system |
 | **Memory** | Built-in with auto-injection | Requires external service |
 | **Cron** | Built-in with scale-to-zero | Not included |
 | **Image gen** | Built-in (OpenAI API, 0 overhead) | MCP or plugin |

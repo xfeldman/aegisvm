@@ -178,7 +178,7 @@ var tools = []mcpTool{
 				"workspace": {"type": "string", "description": "Absolute host directory path to live-mount inside the VM at /workspace/. Changes on the host are immediately visible inside the VM and vice versa — no restart needed. Example: '/home/user/project' becomes /workspace/ in the VM."},
 				"image":     {"type": "string", "description": "OCI image reference for the VM root filesystem (e.g. 'python:3.12-alpine', 'node:22-alpine'). Default is a minimal Alpine Linux. Kit provides a default if not specified."},
 				"env":       {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment variables to set inside the VM."},
-				"secrets":   {"type": "array", "items": {"type": "string"}, "description": "Environment variables to inject from the secret store. Use 'KEY' for same-name injection, or 'ENV_VAR=secret.name' to map (e.g. 'TELEGRAM_BOT_TOKEN=secret.my_bot'). Same as --env on the CLI."},
+				"secrets":   {"type": "array", "items": {"type": "string"}, "description": "Secret keys to inject as environment variables (must be set via secret_set first). Use '*' for all."},
 				"memory_mb": {"type": "integer", "description": "VM memory in megabytes. Default: 512."},
 				"vcpus":     {"type": "integer", "description": "Number of virtual CPUs. Default: 1."},
 				"capabilities": {"type": "object", "description": "Guest orchestration capabilities. When set, the VM gets a Guest API on http://127.0.0.1:7777 that allows it to spawn and manage child instances. Kit provides defaults if not specified.", "properties": {"spawn": {"type": "boolean", "description": "Allow this instance to spawn child instances via the Guest API."}, "spawn_depth": {"type": "integer", "description": "Maximum nesting depth. 1 = can spawn children, but children cannot spawn grandchildren. 2 = children can also spawn."}, "max_children": {"type": "integer", "description": "Maximum number of concurrent child instances."}, "allowed_images": {"type": "array", "items": {"type": "string"}, "description": "OCI image refs children can use. Use [\"*\"] for any image."}, "max_memory_mb": {"type": "integer", "description": "Maximum memory per child instance in MB."}, "max_vcpus": {"type": "integer", "description": "Maximum vCPUs per child instance."}, "max_expose_ports": {"type": "integer", "description": "Maximum exposed ports per child instance."}}}
@@ -1106,9 +1106,9 @@ Key concepts:
 
 Kits:
 - Kits are optional add-on bundles that provide preset configurations for instances.
-- BEFORE creating a kit instance, call kit_list. Each kit returns a referenced_env array listing env vars its configs need (extracted from *_env fields in config defaults). Then call secret_list to verify matching secrets exist.
+- BEFORE creating a kit instance, call kit_list. Each kit returns a referenced_env array listing secrets its configs need. Then call secret_list to verify matching secrets exist.
 - Use instance_start with kit="<name>" to create an instance with kit defaults. Explicit parameters override.
-- Pass the kit's referenced_env vars via the secrets parameter (e.g. secrets=["OPENAI_API_KEY"]). Without them the instance will start but configs will reference empty env vars.
+- Pass the kit's referenced_env via the secrets parameter (e.g. secrets=["OPENAI_API_KEY"]). Without them the instance will start but configs will reference empty env vars.
 - If the task involves creating or modifying files the user needs, pass workspace to mount their project directory.
 - Example: instance_start with kit="agent", name="my-agent", secrets=["OPENAI_API_KEY"], workspace="/path/to/project" creates a messaging-driven LLM agent with access to the project files.
 

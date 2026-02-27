@@ -14,37 +14,33 @@
   let command = $state('')
   let memory = $state(512)
   let workspace = $state('')
-  let envEntries: { key: string; value: string }[] = $state([])
+  let selectedSecrets: Record<string, boolean> = $state({})
   let ports: string[] = $state([''])
 
   let activeKit = $derived(kits.find(k => k.name === selectedKit))
+
+  function isReferenced(secretName: string): boolean {
+    return activeKit?.referenced_env?.includes(secretName) ?? false
+  }
 
   function onKitChange() {
     const kit = kits.find(k => k.name === selectedKit)
     if (kit) {
       image = kit.image || ''
       command = kit.defaults?.command?.join(' ') || ''
-      // Pre-fill env entries from referenced_env
+      // Auto-select secrets referenced by kit configs
       if (kit.referenced_env) {
-        const existing = new Set(envEntries.map(e => e.key))
         for (const key of kit.referenced_env) {
-          if (!existing.has(key)) {
-            envEntries = [...envEntries, { key, value: '' }]
+          if (secrets.some(s => s.name === key)) {
+            selectedSecrets[key] = true
           }
         }
+        selectedSecrets = { ...selectedSecrets }
       }
     } else {
       image = ''
       command = ''
     }
-  }
-
-  function addEnv() {
-    envEntries = [...envEntries, { key: '', value: '' }]
-  }
-
-  function removeEnv(idx: number) {
-    envEntries = envEntries.filter((_, i) => i !== idx)
   }
 
   function addPort() {
@@ -64,28 +60,9 @@
 
     creating = true
     try {
-      // Build secrets and env from entries
-      // Bare key (no value) or value starting with "secret." → secrets list
-      // KEY=value → explicit env
-      const secretKeys: string[] = []
-      const envVars: Record<string, string> = {}
-
-      for (const entry of envEntries) {
-        const key = entry.key.trim()
-        const val = entry.value.trim()
-        if (!key) continue
-
-        if (!val) {
-          // Bare key → secret lookup
-          secretKeys.push(key)
-        } else if (val.startsWith('secret.')) {
-          // Mapped secret
-          secretKeys.push(`${key}=${val}`)
-        } else {
-          // Literal value
-          envVars[key] = val
-        }
-      }
+      const secretList = Object.entries(selectedSecrets)
+        .filter(([, v]) => v)
+        .map(([k]) => k)
 
       const result = await createInstance({
         command: cmd.split(/\s+/),
@@ -94,8 +71,7 @@
         image_ref: image.trim() || undefined,
         workspace: workspace.trim() || undefined,
         memory_mb: memory || undefined,
-        secrets: secretKeys.length > 0 ? secretKeys : undefined,
-        env: Object.keys(envVars).length > 0 ? envVars : undefined,
+        secrets: secretList.length > 0 ? secretList : undefined,
       })
 
       // Expose ports
@@ -175,30 +151,22 @@
       </div>
     </div>
 
-    <div class="field">
-      <span class="field-label">Environment</span>
-      <span class="hint">Leave value empty to inject from secret store. Use <code>secret.name</code> for mapped secrets.</span>
-      {#each envEntries as entry, idx}
-        <div class="env-row">
-          <input
-            type="text"
-            class="env-key"
-            bind:value={envEntries[idx].key}
-            placeholder="KEY"
-            list="secret-names"
-          />
-          <span class="env-eq">=</span>
-          <input type="text" class="env-val" bind:value={envEntries[idx].value} placeholder="(from secret store)" />
-          <button class="btn-remove" onclick={() => removeEnv(idx)}>&times;</button>
+    {#if secrets.length > 0}
+      <div class="field">
+        <span class="field-label">Secrets</span>
+        <div class="secret-list">
+          {#each secrets as secret}
+            <label class="secret-item" class:referenced={isReferenced(secret.name)}>
+              <input type="checkbox" bind:checked={selectedSecrets[secret.name]} />
+              <span>{secret.name}</span>
+              {#if isReferenced(secret.name)}
+                <span class="referenced-badge">referenced by kit</span>
+              {/if}
+            </label>
+          {/each}
         </div>
-      {/each}
-      <button class="btn-add" onclick={addEnv}>+ Add env</button>
-      <datalist id="secret-names">
-        {#each secrets as s}
-          <option value={s.name}></option>
-        {/each}
-      </datalist>
-    </div>
+      </div>
+    {/if}
 
     <div class="field">
       <span class="field-label">Expose Ports <span class="optional">(optional)</span></span>
@@ -296,31 +264,37 @@
     font-size: 11px;
     color: var(--text-muted);
   }
-  .hint code {
+
+  .secret-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px;
     background: var(--bg);
-    padding: 1px 4px;
-    border-radius: 3px;
-    font-size: 11px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
   }
 
-  .env-row {
+  .secret-item {
     display: flex;
     align-items: center;
-    gap: 4px;
-    margin-bottom: 4px;
-  }
-  .env-key {
-    flex: 2;
-  }
-  .env-eq {
-    color: var(--text-muted);
-    font-family: var(--font-mono);
+    gap: 8px;
     font-size: 13px;
-    user-select: none;
-    flex-shrink: 0;
+    font-weight: normal;
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--text);
+    cursor: pointer;
   }
-  .env-val {
-    flex: 3;
+  .secret-item.referenced { color: var(--accent); }
+  .secret-item input[type="checkbox"] { cursor: pointer; }
+
+  .referenced-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: rgba(88, 166, 255, 0.15);
+    color: var(--accent);
   }
 
   .port-row {

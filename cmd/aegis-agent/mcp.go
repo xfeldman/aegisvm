@@ -25,9 +25,18 @@ type AgentConfig struct {
 	ContextChars int                        `json:"context_chars,omitempty"`
 	ContextTurns int                        `json:"context_turns,omitempty"`
 	SystemPrompt string                     `json:"system_prompt,omitempty"`
-	MCP            map[string]MCPServerConfig `json:"mcp,omitempty"`
-	DisabledTools  []string                   `json:"disabled_tools,omitempty"`
-	Memory         MemoryConfig               `json:"memory,omitempty"`
+	MCP          map[string]MCPServerConfig `json:"mcp,omitempty"`
+	Tools        map[string]ToolConfig      `json:"tools,omitempty"`
+	Memory       MemoryConfig               `json:"memory,omitempty"`
+}
+
+// ToolConfig configures a built-in tool. Tools not listed are enabled with defaults.
+type ToolConfig struct {
+	Enabled *bool  `json:"enabled,omitempty"` // nil = true (default enabled)
+	// Tool-specific env var references (field names ending in _env).
+	// The agent reads the named env var at tool invocation time.
+	BraveAPIKeyEnv string `json:"brave_api_key_env,omitempty"`
+	OpenAIAPIKeyEnv string `json:"openai_api_key_env,omitempty"`
 }
 
 // MCPServerConfig describes a single MCP server to spawn.
@@ -50,15 +59,9 @@ type MCPClient struct {
 
 // initMCPTools discovers and starts MCP servers, assembles the full tool list.
 func (a *Agent) initMCPTools(config AgentConfig) {
-	// Build disabled set for fast lookup
-	disabled := make(map[string]bool, len(config.DisabledTools))
-	for _, name := range config.DisabledTools {
-		disabled[name] = true
-	}
-
-	// Add built-in tools (skip disabled)
+	// Add built-in tools (skip disabled via tools config)
 	for _, t := range builtinTools {
-		if disabled[t.Name] {
+		if tc, ok := config.Tools[t.Name]; ok && tc.Enabled != nil && !*tc.Enabled {
 			log.Printf("tool %s: disabled via config", t.Name)
 			continue
 		}

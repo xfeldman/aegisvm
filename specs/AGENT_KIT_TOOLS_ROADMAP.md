@@ -9,7 +9,7 @@
 
 ### Built-in tools (19)
 
-All built-in tools can be disabled per-instance via `disabled_tools` in `agent.json`.
+All built-in tools can be disabled or configured per-instance via `tools` in `agent.json`.
 
 | Tool | What it does |
 |------|-------------|
@@ -37,7 +37,7 @@ All built-in tools can be disabled per-instance via `disabled_tools` in `agent.j
 
 ### MCP tools via aegis-mcp-guest (7)
 
-VM orchestration — always loaded, not configurable via `agent.json`.
+VM orchestration -- always loaded, not configurable via `agent.json`.
 
 | Tool | What it does |
 |------|-------------|
@@ -56,11 +56,22 @@ VM orchestration — always loaded, not configurable via `agent.json`.
 ```json
 {
   "model": "openai/gpt-5.2",
+  "api_key_env": "OPENAI_API_KEY",
   "max_tokens": 4096,
   "context_chars": 24000,
   "context_turns": 50,
   "system_prompt": "Custom prompt...",
-  "disabled_tools": ["image_generate", "web_search"],
+  "tools": {
+    "web_search": {
+      "brave_api_key_env": "BRAVE_SEARCH_API_KEY"
+    },
+    "image_search": {
+      "brave_api_key_env": "BRAVE_SEARCH_API_KEY"
+    },
+    "image_generate": {
+      "enabled": false
+    }
+  },
   "mcp": {
     "my-server": {"command": "npx", "args": ["my-mcp-server@latest"]}
   },
@@ -74,7 +85,7 @@ VM orchestration — always loaded, not configurable via `agent.json`.
 ```
 
 - Env var overrides: `AEGIS_MODEL`, `AEGIS_MAX_TOKENS`, `AEGIS_CONTEXT_CHARS`, `AEGIS_CONTEXT_TURNS`, `AEGIS_SYSTEM_PROMPT`
-- `disabled_tools`: deny list of built-in tool names to disable (new tools auto-enabled)
+- `tools`: per-tool configuration object. Tools not listed are enabled with defaults. Set `"enabled": false` to disable. Tool-specific config via `*_env` fields.
 - MCP: user-added servers. Core tools (aegis-mcp-guest) are always injected automatically.
 - Agent can edit this file and call `self_restart` to apply changes at runtime.
 
@@ -148,7 +159,7 @@ VM orchestration — always loaded, not configurable via `agent.json`.
 | `respond_with_image` (blob store + tether egress) | **Done** |
 | Memory (store/search/delete + auto-injection + secret rejection) | **Done** |
 | Cron (agent tools + gateway scheduler + dedupe + on_conflict) | **Done** |
-| `disabled_tools` config for disabling/replacing built-in tools | **Done** |
+| `tools` config for disabling/configuring built-in tools | **Done** |
 | MCP protocol handshake (protocolVersion + clientInfo) | **Done** |
 | MCP stdout banner tolerance (skip non-JSON lines) | **Done** |
 | OCI image ENV propagation (host-side, via run RPC) | **Done** |
@@ -209,7 +220,7 @@ VM orchestration — always loaded, not configurable via `agent.json`.
 | Memory (store/search/delete + auto-inject) | Built-in | **Done** |
 | Cron (scheduled tasks via gateway) | Built-in + Gateway | **Done** |
 | Self-management (restart, info) | Built-in | **Done** |
-| Tool disable/replace | Config (`disabled_tools`) | **Done** |
+| Tool disable/configure | Config (`tools`) | **Done** |
 | VM orchestration | MCP (`aegis-mcp-guest`) | **Done** |
 | Browser automation | MCP (Playwright/Chrome DevTools) | User adds |
 | Context compaction | Built-in | Planned |
