@@ -24,8 +24,9 @@ type AgentConfig struct {
 	ContextChars int                        `json:"context_chars,omitempty"`
 	ContextTurns int                        `json:"context_turns,omitempty"`
 	SystemPrompt string                     `json:"system_prompt,omitempty"`
-	MCP          map[string]MCPServerConfig `json:"mcp,omitempty"`
-	Memory       MemoryConfig               `json:"memory,omitempty"`
+	MCP            map[string]MCPServerConfig `json:"mcp,omitempty"`
+	DisabledTools  []string                   `json:"disabled_tools,omitempty"`
+	Memory         MemoryConfig               `json:"memory,omitempty"`
 }
 
 // MCPServerConfig describes a single MCP server to spawn.
@@ -48,7 +49,20 @@ type MCPClient struct {
 
 // initMCPTools discovers and starts MCP servers, assembles the full tool list.
 func (a *Agent) initMCPTools(config AgentConfig) {
-	a.allTools = append(a.allTools, builtinTools...)
+	// Build disabled set for fast lookup
+	disabled := make(map[string]bool, len(config.DisabledTools))
+	for _, name := range config.DisabledTools {
+		disabled[name] = true
+	}
+
+	// Add built-in tools (skip disabled)
+	for _, t := range builtinTools {
+		if disabled[t.Name] {
+			log.Printf("tool %s: disabled via config", t.Name)
+			continue
+		}
+		a.allTools = append(a.allTools, t)
+	}
 	a.mcpClients = make(map[string]*MCPClient)
 
 	for name, serverCfg := range config.MCP {
