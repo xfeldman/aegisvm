@@ -66,6 +66,7 @@ aegis logs <handle|id> [--follow]
 aegis secret set KEY VALUE / list / delete KEY
 aegis kit list                                                       (list installed kits)
 aegis mcp install / uninstall                                        (Claude Code MCP integration)
+aegis ui [--port PORT]                                               (web UI, default port 7700)
 ```
 
 ## Conventions

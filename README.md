@@ -176,6 +176,24 @@ aegis instance start --kit agent --name my-agent \
 
 The agent can now search the web, find images, and generate AI images — all built-in.
 
+## Usage: Web UI
+
+```bash
+aegis ui                    # opens browser to http://localhost:7700
+aegis ui --port 9090        # custom port
+```
+
+Visual companion for managing AegisVM — not a replacement for the CLI.
+
+- **Dashboard** — instance list with status, ports, uptime, quick actions
+- **Instance detail** — Info, Logs, Exec, Chat, Kit Config tabs
+- **Chat** — tether-based agent messaging with streaming and image support
+- **Kit Config** — JSON editor with syntax highlighting for agent and gateway configs
+- **Secrets** — add, list, delete
+- **New Instance** — form with kit selection, secret checkboxes, port exposure
+
+Starts aegisd automatically if not running. Ctrl-C stops only the UI — the daemon stays alive.
+
 ## Architecture
 
 ```
@@ -234,7 +252,7 @@ aegis mcp install / uninstall                       # Claude Code integration
 
 Common flags: `--name`, `--expose`, `--secret KEY`, `--workspace PATH`, `--image REF`, `--kit KIT`, `--memory MB`.
 
-Full reference: [CLI docs](docs/CLI.md).
+Full CLI reference: [CLI docs](docs/CLI.md).
 
 ## Documentation
 

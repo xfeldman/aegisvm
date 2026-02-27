@@ -565,6 +565,39 @@ No kits installed.
 
 ---
 
+## UI Command
+
+### aegis ui
+
+Start the web UI for managing instances, secrets, and kit configuration.
+
+```
+aegis ui [--port PORT]
+```
+
+Opens a browser to `http://localhost:7700` (default). The UI proxies API requests to aegisd via the unix socket. If aegisd is not running, it is started automatically.
+
+| Flag | Description |
+|---|---|
+| `--port PORT` | HTTP listen port (default: 7700) |
+
+**Features:**
+- Dashboard with instance list, status, and quick actions
+- Instance detail: Info, Logs, Exec, Chat, Kit Config tabs
+- New Instance creation with kit/secret selection
+- Secrets management (add/delete)
+- Kit Config editor with JSON syntax highlighting
+- Tether-based agent chat with streaming
+
+**Examples:**
+
+```bash
+aegis ui              # default port 7700
+aegis ui --port 9090  # custom port
+```
+
+---
+
 ## MCP Commands
 
 Manage the MCP (Model Context Protocol) server integration with Claude Code.
