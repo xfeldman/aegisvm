@@ -24,6 +24,22 @@ Think Docker Desktop, but for microVMs with an agent chat panel.
 
 The Go backend is a thin client over the aegisd API — no business logic duplication. Every operation is an API call to the running daemon.
 
+**Two modes, same code:**
+
+| Mode | Binary | Frontend served via | System tray |
+|------|--------|-------------------|-------------|
+| **Desktop app** | `aegis-ui` (Wails) | Native webview | Yes (v3) |
+| **Web mode** | `aegis ui` (CLI subcommand) | HTTP server → browser | No |
+
+Both modes use the **same frontend bundle** and the **same Go backend**. The Wails app embeds the frontend in a native window; `aegis ui` serves it over HTTP and opens the browser.
+
+```bash
+aegis ui              # serves UI, opens browser to http://localhost:PORT
+aegis ui --port 9090  # custom port
+```
+
+`aegis ui` is the escape hatch for: Linux without GUI, SSH access, CI debugging, or when the native app isn't installed. No Wails dependency, no code signing, no native build issues.
+
 ## Daemon Management
 
 The app auto-starts aegisd on launch if not already running.
@@ -513,20 +529,24 @@ cmd/aegis-ui/
 
 ## Implementation Order (MVP-first)
 
-1. **Scaffold** — Wails init, Svelte template, basic window
-2. **Daemon auto-start** — `EnsureDaemon()` with error display
-3. **API client** — unix socket HTTP client, bind to Wails
-4. **Dashboard** — instance list with status, ports, actions
-5. **Instance detail: Info + Logs** — metadata + log streaming
-6. **Chat** — tether long-poll, streaming, images, markdown
-7. **New Instance dialog** — creation with kit/secret selection
-8. **Secrets page** — list/add/delete with "used by" count
-9. **Command Runner** — exec with exit code, duration, copy
-10. **Config editor** — agent.json with Save + Restart
-11. **System tray** — status + quick actions
-12. **Polish** — toast notifications, keyboard shortcuts, dark mode
+Build `aegis ui` (web mode) first — validates the full stack without Wails complexity. Wrap in native app later.
 
-Chat is step 6 (not 10) — it's the main differentiator and should ship early.
+1. **Shared client library** — `internal/client/` reusable aegisd API client
+2. **Workspace file API** — `GET/POST /v1/instances/{id}/workspace` in aegisd
+3. **Frontend scaffold** — Svelte + Vite in `ui/frontend/`
+4. **`aegis ui` command** — HTTP server serving frontend + Go API handlers
+5. **Dashboard** — instance list with status, ports, actions
+6. **Instance detail: Info + Logs** — metadata + log streaming
+7. **Chat** — tether long-poll, streaming, images, markdown
+8. **New Instance dialog** — creation with kit/secret selection
+9. **Secrets page** — list/add/delete with "used by" count
+10. **Command Runner** — exec with exit code, duration, copy
+11. **Config editor** — agent.json with Save + Restart
+12. **Wails wrapper** — `cmd/aegis-ui/` native app using same frontend + backend
+13. **System tray** — when Wails v3 stabilizes or via third-party lib
+14. **Polish** — toast notifications, keyboard shortcuts, dark mode
+
+Chat is step 7 — the main differentiator, ships early. Wails native app is step 12 — web mode works first.
 
 ## What this does NOT include (v0.1)
 
