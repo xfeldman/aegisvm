@@ -51,7 +51,7 @@ else
 ALL_TARGETS := aegisd aegis harness vmm-worker mcp mcp-guest gateway agent
 endif
 
-.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent base-rootfs clean test test-unit test-m2 test-m3 test-network integration install-kit release-tarball release-kit-tarball cloud-hypervisor kernel kernel-build deb deb-agent-kit release-linux-tarball
+.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent base-rootfs clean test test-unit test-m2 test-m3 test-network integration install-kit release-tarball release-kit-tarball cloud-hypervisor kernel kernel-build deb deb-agent-kit release-linux-tarball ui ui-frontend
 
 all: $(ALL_TARGETS)
 
@@ -104,6 +104,12 @@ agent:
 	@mkdir -p $(BIN_DIR)
 	GOOS=$(HARNESS_OS) GOARCH=$(HARNESS_ARCH) CGO_ENABLED=0 \
 		$(GO) build $(GOFLAGS) -o $(BIN_DIR)/aegis-agent ./cmd/aegis-agent
+
+# UI frontend — build Svelte app, then rebuild aegis CLI with embedded frontend
+ui-frontend:
+	cd ui/frontend && npm install && npm run build
+
+ui: ui-frontend aegis
 
 # Base rootfs — Alpine with harness baked in
 # Requires: brew install e2fsprogs (for mkfs.ext4)

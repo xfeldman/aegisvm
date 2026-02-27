@@ -20,6 +20,10 @@ base/rootfs/
 *.out
 vendor/
 
+# Frontend
+node_modules/
+ui/frontend/dist/
+
 # macOS
 .DS_Store
 

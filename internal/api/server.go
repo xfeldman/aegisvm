@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -71,6 +73,10 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("DELETE /v1/instances/{id}/expose/{guest_port}", s.handleUnexposePort)
 	s.mux.HandleFunc("DELETE /v1/instances/{id}", s.handleDeleteInstance)
 	s.mux.HandleFunc("POST /v1/instances/prune", s.handlePruneInstances)
+
+	// Workspace file access
+	s.mux.HandleFunc("GET /v1/instances/{id}/workspace", s.handleWorkspaceRead)
+	s.mux.HandleFunc("POST /v1/instances/{id}/workspace", s.handleWorkspaceWrite)
 
 	// Tether routes (Agent Kit messaging)
 	s.mux.HandleFunc("POST /v1/instances/{id}/tether", s.handleTetherIngress)
@@ -933,6 +939,156 @@ func parseDuration(s string) (time.Duration, error) {
 		return time.Duration(d) * 24 * time.Hour, nil
 	}
 	return time.ParseDuration(s)
+}
+
+// Workspace file handlers — read/write files in instance workspaces.
+
+const maxWorkspaceFileSize = 10 << 20 // 10MB
+
+// validateWorkspacePath checks that a relative path is safe (no traversal, no absolute).
+func validateWorkspacePath(p string) error {
+	if p == "" {
+		return fmt.Errorf("path is required")
+	}
+	if filepath.IsAbs(p) {
+		return fmt.Errorf("absolute paths not allowed")
+	}
+	cleaned := filepath.Clean(p)
+	if strings.HasPrefix(cleaned, "..") || strings.Contains(cleaned, string(filepath.Separator)+"..") {
+		return fmt.Errorf("path traversal not allowed")
+	}
+	return nil
+}
+
+func (s *Server) handleWorkspaceRead(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+	relPath := r.URL.Query().Get("path")
+
+	if err := validateWorkspacePath(relPath); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Resolve instance
+	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	if inst.WorkspacePath == "" {
+		writeError(w, http.StatusNotFound, "instance has no workspace")
+		return
+	}
+
+	fullPath := filepath.Join(inst.WorkspacePath, filepath.Clean(relPath))
+
+	// Verify the resolved path is within the workspace (symlink escape check)
+	resolved, err := filepath.EvalSymlinks(filepath.Dir(fullPath))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
+	wsResolved, _ := filepath.EvalSymlinks(inst.WorkspacePath)
+	if !strings.HasPrefix(resolved, wsResolved) {
+		writeError(w, http.StatusForbidden, "path escapes workspace")
+		return
+	}
+
+	fi, err := os.Stat(fullPath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
+	if fi.IsDir() {
+		writeError(w, http.StatusBadRequest, "path is a directory")
+		return
+	}
+	if fi.Size() > maxWorkspaceFileSize {
+		writeError(w, http.StatusRequestEntityTooLarge, "file exceeds 10MB limit")
+		return
+	}
+
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "read failed")
+		return
+	}
+
+	// Detect content type from extension, fall back to octet-stream
+	ct := mime.TypeByExtension(filepath.Ext(fullPath))
+	if ct == "" {
+		ct = http.DetectContentType(data)
+	}
+
+	w.Header().Set("Content-Type", ct)
+	w.WriteHeader(http.StatusOK)
+	w.Write(data)
+}
+
+func (s *Server) handleWorkspaceWrite(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+	relPath := r.URL.Query().Get("path")
+
+	if err := validateWorkspacePath(relPath); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Resolve instance
+	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	if inst.WorkspacePath == "" {
+		writeError(w, http.StatusNotFound, "instance has no workspace")
+		return
+	}
+
+	// Read body with size limit
+	data, err := io.ReadAll(io.LimitReader(r.Body, maxWorkspaceFileSize+1))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "read body failed")
+		return
+	}
+	if len(data) > maxWorkspaceFileSize {
+		writeError(w, http.StatusRequestEntityTooLarge, "body exceeds 10MB limit")
+		return
+	}
+
+	fullPath := filepath.Join(inst.WorkspacePath, filepath.Clean(relPath))
+
+	// Verify the resolved parent is within the workspace
+	parentDir := filepath.Dir(fullPath)
+	if err := os.MkdirAll(parentDir, 0755); err != nil {
+		writeError(w, http.StatusInternalServerError, "create directory failed")
+		return
+	}
+	resolved, err := filepath.EvalSymlinks(parentDir)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "resolve path failed")
+		return
+	}
+	wsResolved, _ := filepath.EvalSymlinks(inst.WorkspacePath)
+	if !strings.HasPrefix(resolved, wsResolved) {
+		writeError(w, http.StatusForbidden, "path escapes workspace")
+		return
+	}
+
+	if err := os.WriteFile(fullPath, data, 0644); err != nil {
+		writeError(w, http.StatusInternalServerError, "write failed")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // Tether handlers — Agent Kit messaging

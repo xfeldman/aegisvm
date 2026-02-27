@@ -21,6 +21,7 @@
 //	aegis kit list             List installed kits
 //	aegis mcp install          Register aegis-mcp in Claude Code
 //	aegis mcp uninstall        Remove aegis-mcp from Claude Code
+//	aegis ui                   Start web management UI
 //	aegis status               Show daemon status
 //	aegis doctor               Print platform and backend info
 package main
@@ -79,6 +80,8 @@ func main() {
 		cmdKit()
 	case "mcp":
 		cmdMCP()
+	case "ui":
+		cmdUI()
 	case "version", "--version", "-v":
 		fmt.Printf("aegis %s\n", version.Version())
 	case "help", "--help", "-h":
@@ -105,6 +108,7 @@ Commands:
   secret     Manage secrets (set, list, delete)
   kit        Manage kits (list)
   mcp        MCP server management (install)
+  ui         Start web management UI
 
 Examples:
   aegis up
