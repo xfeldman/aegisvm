@@ -1145,6 +1145,29 @@ func (m *Manager) prepareImageRootfs(ctx context.Context, inst *Instance) (strin
 		return "", fmt.Errorf("pull image: %w", err)
 	}
 
+	// Merge OCI image ENV into instance env (image defaults, explicit env wins)
+	if imageEnv := image.ReadImageEnv(cachedDir); len(imageEnv) > 0 {
+		if inst.Env == nil {
+			inst.Env = make(map[string]string)
+		}
+		for k, v := range imageEnv {
+			if k == "PATH" {
+				// Prepend image PATH to existing or default PATH
+				if existing, ok := inst.Env["PATH"]; ok {
+					inst.Env["PATH"] = v + ":" + existing
+				} else {
+					inst.Env["PATH"] = v
+				}
+				continue
+			}
+			// Image env is default — don't override explicit env
+			if _, exists := inst.Env[k]; !exists {
+				inst.Env[k] = v
+			}
+		}
+		log.Printf("instance %s: merged %d image env vars", inst.ID, len(imageEnv))
+	}
+
 	overlayID := inst.ID
 	overlayDir, err := m.overlay.Create(ctx, cachedDir, overlayID)
 	if err != nil {
@@ -1514,9 +1537,19 @@ func (m *Manager) ExecInstance(ctx context.Context, id string, command []string,
 	inst.execWaiters[execID] = doneCh
 	inst.mu.Unlock()
 
+	// Merge instance env (includes image env) with caller's exec env.
+	// Caller env wins over instance env.
+	mergedEnv := make(map[string]string)
+	for k, v := range inst.Env {
+		mergedEnv[k] = v
+	}
+	for k, v := range env {
+		mergedEnv[k] = v
+	}
+
 	resp, err := demux.Call(ctx, "exec", map[string]interface{}{
 		"command": command,
-		"env":     env,
+		"env":     mergedEnv,
 		"exec_id": execID,
 	}, nextRPCID())
 	if err != nil {

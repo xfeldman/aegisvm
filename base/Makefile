@@ -14,7 +14,7 @@ SHELL := /bin/bash
 
 ROOTFS_DIR := rootfs
 HARNESS_BIN := ../bin/aegis-harness
-BASE_IMAGE := python:3.12-alpine3.21
+BASE_IMAGE := alpine:3.21
 
 # Detect host platform for Docker
 HOST_OS := $(shell uname -s | tr A-Z a-z)

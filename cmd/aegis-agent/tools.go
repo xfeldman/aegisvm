@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -236,6 +237,18 @@ var builtinTools = []Tool{
 		},
 	},
 	{
+		Name:        "image_generate",
+		Description: "Generate an image using OpenAI's image generation API (DALL-E / gpt-image-1). Returns the image attached to your response. Requires OPENAI_API_KEY.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"prompt": map[string]string{"type": "string", "description": "Text description of the image to generate"},
+				"size":   map[string]string{"type": "string", "description": "Image size: '1024x1024' (default), '1536x1024' (landscape), '1024x1536' (portrait)"},
+			},
+			"required": []string{"prompt"},
+		},
+	},
+	{
 		Name:        "web_search",
 		Description: "Search the web using Brave Search API. Returns titles, URLs, and descriptions. Requires BRAVE_SEARCH_API_KEY env var or secret.",
 		InputSchema: map[string]interface{}{
@@ -303,6 +316,8 @@ func (a *Agent) executeTool(name string, input json.RawMessage) string {
 		return a.toolSelfRestart(input)
 	case "respond_with_image":
 		return a.toolRespondWithImage(input)
+	case "image_generate":
+		return a.toolImageGenerate(input)
 	case "web_search":
 		return toolWebSearch(input)
 	case "image_search":
@@ -1047,6 +1062,101 @@ func stripHTML(s string) string {
 	return strings.TrimSpace(s)
 }
 
+func (a *Agent) toolImageGenerate(input json.RawMessage) string {
+	var params struct {
+		Prompt string `json:"prompt"`
+		Size   string `json:"size"`
+	}
+	json.Unmarshal(input, &params)
+	if params.Prompt == "" {
+		return jsonError("prompt is required")
+	}
+
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		return jsonError("OPENAI_API_KEY not set")
+	}
+
+	if params.Size == "" {
+		params.Size = "1024x1024"
+	}
+
+	// Call OpenAI Images API
+	reqBody, _ := json.Marshal(map[string]interface{}{
+		"model":  "gpt-image-1",
+		"prompt": params.Prompt,
+		"n":      1,
+		"size":   params.Size,
+	})
+
+	req, _ := http.NewRequest("POST", "https://api.openai.com/v1/images/generations", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return jsonError(fmt.Sprintf("image generation failed: %v", err))
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return jsonError(fmt.Sprintf("OpenAI Images API %d: %s", resp.StatusCode, string(body)))
+	}
+
+	var apiResp struct {
+		Data []struct {
+			B64JSON string `json:"b64_json"`
+			URL     string `json:"url"`
+		} `json:"data"`
+	}
+	json.Unmarshal(body, &apiResp)
+
+	if len(apiResp.Data) == 0 {
+		return jsonError("no image returned")
+	}
+
+	var imgData []byte
+	if apiResp.Data[0].B64JSON != "" {
+		// gpt-image-1 returns base64-encoded image
+		imgData, err = base64Decode(apiResp.Data[0].B64JSON)
+		if err != nil {
+			return jsonError(fmt.Sprintf("decode b64 image: %v", err))
+		}
+	} else if apiResp.Data[0].URL != "" {
+		// DALL-E 3 returns a URL
+		imgResp, err := http.Get(apiResp.Data[0].URL)
+		if err != nil {
+			return jsonError(fmt.Sprintf("download generated image: %v", err))
+		}
+		defer imgResp.Body.Close()
+		imgData, _ = io.ReadAll(io.LimitReader(imgResp.Body, 10*1024*1024))
+	} else {
+		return jsonError("no image data in response")
+	}
+
+	// Store as blob
+	blobStore := blob.NewWorkspaceBlobStore(workspaceRoot)
+	key, err := blobStore.Put(imgData, "image/png")
+	if err != nil {
+		return jsonError(fmt.Sprintf("store image: %v", err))
+	}
+
+	a.pendingImages = append(a.pendingImages, ImageRef{
+		MediaType: "image/png",
+		Blob:      key,
+		Size:      int64(len(imgData)),
+	})
+
+	return jsonResult(map[string]interface{}{
+		"ok":     true,
+		"blob":   key,
+		"size":   len(imgData),
+		"prompt": params.Prompt,
+	})
+}
+
 func (a *Agent) toolSelfInfo(input json.RawMessage) string {
 	// Query harness guest API for instance info
 	resp, err := http.Get(harnessAPI + "/v1/self")
@@ -1250,6 +1360,10 @@ func (a *Agent) toolMemoryDelete(input json.RawMessage) string {
 		return jsonError(err.Error())
 	}
 	return jsonResult(map[string]interface{}{"ok": true})
+}
+
+func base64Decode(s string) ([]byte, error) {
+	return base64.StdEncoding.DecodeString(s)
 }
 
 // jsonResult marshals a value to JSON string.

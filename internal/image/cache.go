@@ -2,6 +2,7 @@ package image
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/xfeldman/aegisvm/internal/config"
 )
 
@@ -109,6 +111,9 @@ func (c *Cache) GetOrPull(ctx context.Context, imageRef string) (rootfsDir strin
 
 	// Write ref file for future index rebuilds
 	c.writeRefFile(cachedDir, imageRef)
+
+	// Extract image ENV directives (e.g. PATH, GOPATH) for the harness to inject
+	c.writeImageEnv(result.Image, cachedDir)
 
 	log.Printf("image: cached %s at %s", imageRef, cachedDir)
 	return cachedDir, digest, nil
@@ -215,6 +220,44 @@ func injectBinary(rootfsDir, srcPath, name string) error {
 	}
 
 	return nil
+}
+
+// writeImageEnv extracts ENV directives from the OCI image config and writes them
+// to .image-env.json alongside the cached rootfs (not inside it).
+// This metadata is read by the lifecycle manager and passed to the VM via the run RPC.
+func (c *Cache) writeImageEnv(img v1.Image, cachedDir string) {
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		return
+	}
+	if len(cfg.Config.Env) == 0 {
+		return
+	}
+	// Store as JSON array of "KEY=VALUE" strings
+	data, _ := json.Marshal(cfg.Config.Env)
+	envFile := filepath.Join(cachedDir, ".image-env.json")
+	os.WriteFile(envFile, data, 0644)
+	log.Printf("image: wrote %d env vars to %s", len(cfg.Config.Env), envFile)
+}
+
+// ReadImageEnv reads OCI image ENV directives from the cached metadata file.
+// Returns a map of key→value. PATH values are returned as-is for the caller to merge.
+func ReadImageEnv(cachedDir string) map[string]string {
+	data, err := os.ReadFile(filepath.Join(cachedDir, ".image-env.json"))
+	if err != nil {
+		return nil
+	}
+	var envList []string
+	if json.Unmarshal(data, &envList) != nil {
+		return nil
+	}
+	result := make(map[string]string, len(envList))
+	for _, e := range envList {
+		if k, v, ok := strings.Cut(e, "="); ok {
+			result[k] = v
+		}
+	}
+	return result
 }
 
 // digestToDirName converts a digest like "sha256:abc123" to "sha256_abc123".
