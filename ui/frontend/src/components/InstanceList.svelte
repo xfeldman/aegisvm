@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Instance } from '../lib/api'
-  import { startInstance, disableInstance, pauseInstance, resumeInstance, deleteInstance } from '../lib/api'
+  import { disableInstance, deleteInstance } from '../lib/api'
   import { addToast, refreshInstances } from '../lib/store.svelte'
 
   interface Props {
@@ -9,14 +9,20 @@
 
   let { instances }: Props = $props()
 
-  function stateColor(state: string): string {
-    switch (state) {
+  function stateColor(inst: Instance): string {
+    if (!inst.enabled) return 'var(--red)'
+    switch (inst.state) {
       case 'running': return 'var(--green)'
       case 'paused': return 'var(--yellow)'
       case 'starting': return 'var(--accent)'
       case 'stopped': return 'var(--text-muted)'
       default: return 'var(--text-muted)'
     }
+  }
+
+  function stateLabel(inst: Instance): string {
+    if (!inst.enabled) return 'disabled'
+    return inst.state
   }
 
   function displayName(inst: Instance): string {
@@ -40,14 +46,12 @@
   async function doAction(action: string, inst: Instance) {
     const name = displayName(inst)
     try {
+      const ref = inst.handle || inst.id
       switch (action) {
-        case 'start': await startInstance(inst.handle || inst.id); break
-        case 'stop': await disableInstance(inst.handle || inst.id); break
-        case 'pause': await pauseInstance(inst.handle || inst.id); break
-        case 'resume': await resumeInstance(inst.handle || inst.id); break
+        case 'disable': await disableInstance(ref); break
         case 'delete':
           if (!confirm(`Delete instance "${name}"?`)) return
-          await deleteInstance(inst.handle || inst.id)
+          await deleteInstance(ref)
           break
       }
       addToast(`${action}: ${name}`, 'success')
@@ -73,7 +77,7 @@
   {#each instances as inst (inst.id)}
     <div class="instance-row">
       <div class="col-status">
-        <span class="status-dot" style="background: {stateColor(inst.state)}"></span>
+        <span class="status-dot" style="background: {stateColor(inst)}"></span>
       </div>
       <div class="col-name">
         <a href="#/instance/{inst.handle || inst.id}" class="instance-name">{displayName(inst)}</a>
@@ -87,7 +91,7 @@
         {/if}
       </div>
       <div class="col-state">
-        <span class="state" style="color: {stateColor(inst.state)}">{inst.state}</span>
+        <span class="state" style="color: {stateColor(inst)}">{stateLabel(inst)}</span>
       </div>
       <div class="col-ports">
         {#if inst.endpoints && inst.endpoints.length > 0}
@@ -102,17 +106,13 @@
         <span class="uptime">{uptime(inst)}</span>
       </div>
       <div class="col-actions">
-        {#if inst.state === 'stopped'}
-          <button class="btn btn-sm" onclick={() => doAction('start', inst)}>Start</button>
+        {#if !inst.enabled}
           <button class="btn btn-sm btn-danger" onclick={() => doAction('delete', inst)}>Delete</button>
-        {:else if inst.state === 'running'}
-          <button class="btn btn-sm" onclick={() => doAction('pause', inst)}>Pause</button>
-          <button class="btn btn-sm" onclick={() => doAction('stop', inst)}>Stop</button>
-        {:else if inst.state === 'paused'}
-          <button class="btn btn-sm" onclick={() => doAction('resume', inst)}>Resume</button>
-          <button class="btn btn-sm" onclick={() => doAction('stop', inst)}>Stop</button>
         {:else if inst.state === 'starting'}
           <span class="text-muted">starting...</span>
+        {:else}
+          <button class="btn btn-sm" onclick={() => doAction('disable', inst)}>Disable</button>
+          <button class="btn btn-sm btn-danger" onclick={() => doAction('delete', inst)}>Delete</button>
         {/if}
       </div>
     </div>

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { getInstance, startInstance, disableInstance, pauseInstance, resumeInstance, deleteInstance, type Instance } from '../lib/api'
+  import { getInstance, disableInstance, deleteInstance, type Instance } from '../lib/api'
   import { addToast } from '../lib/store.svelte'
   import LogViewer from '../components/LogViewer.svelte'
   import CommandRunner from '../components/CommandRunner.svelte'
@@ -31,10 +31,7 @@
     const ref = instance.handle || instance.id
     try {
       switch (action) {
-        case 'start': await startInstance(ref); break
-        case 'stop': await disableInstance(ref); break
-        case 'pause': await pauseInstance(ref); break
-        case 'resume': await resumeInstance(ref); break
+        case 'disable': await disableInstance(ref); break
         case 'delete':
           if (!confirm(`Delete instance "${ref}"?`)) return
           await deleteInstance(ref)
@@ -83,22 +80,16 @@
     <div class="header">
       <div class="header-left">
         <h1>{instance.handle || instance.id}</h1>
-        <span class="state-badge {instance.state}">{instance.state}</span>
+        <span class="state-badge {instance.enabled ? instance.state : 'disabled'}">{instance.enabled ? instance.state : 'disabled'}</span>
         {#if instance.state !== 'stopped'}
           <span class="uptime">{uptime(instance)}</span>
         {/if}
       </div>
       <div class="header-actions">
-        {#if instance.state === 'stopped'}
-          <button class="btn" onclick={() => doAction('start')}>Start</button>
-          <button class="btn btn-danger" onclick={() => doAction('delete')}>Delete</button>
-        {:else if instance.state === 'running'}
-          <button class="btn" onclick={() => doAction('pause')}>Pause</button>
-          <button class="btn btn-danger-outline" onclick={() => doAction('stop')}>Stop</button>
-        {:else if instance.state === 'paused'}
-          <button class="btn" onclick={() => doAction('resume')}>Resume</button>
-          <button class="btn btn-danger-outline" onclick={() => doAction('stop')}>Stop</button>
+        {#if instance.enabled}
+          <button class="btn" onclick={() => doAction('disable')}>Disable</button>
         {/if}
+        <button class="btn btn-danger" onclick={() => doAction('delete')}>Delete</button>
       </div>
     </div>
 
@@ -219,6 +210,7 @@
   .state-badge.paused { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
   .state-badge.stopped { background: var(--bg-tertiary); color: var(--text-muted); }
   .state-badge.starting { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
+  .state-badge.disabled { background: rgba(248, 81, 73, 0.15); color: var(--red); }
 
   .header-actions {
     display: flex;
@@ -236,8 +228,6 @@
   .btn:hover { background: var(--bg); border-color: var(--text-muted); }
   .btn-danger { color: var(--red); border-color: rgba(248, 81, 73, 0.3); }
   .btn-danger:hover { background: rgba(248, 81, 73, 0.1); border-color: var(--red); }
-  .btn-danger-outline { color: var(--red); }
-  .btn-danger-outline:hover { background: rgba(248, 81, 73, 0.1); border-color: var(--red); }
 
   .tabs {
     display: flex;

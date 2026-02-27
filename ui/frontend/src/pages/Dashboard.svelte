@@ -13,7 +13,8 @@
   // Computed status counts
   let running = $derived(instances.filter(i => i.state === 'running').length)
   let paused = $derived(instances.filter(i => i.state === 'paused').length)
-  let stopped = $derived(instances.filter(i => i.state === 'stopped').length)
+  let stopped = $derived(instances.filter(i => i.state === 'stopped' && i.enabled).length)
+  let disabled = $derived(instances.filter(i => !i.enabled).length)
   let starting = $derived(instances.filter(i => i.state === 'starting').length)
 
   onMount(() => {
@@ -53,6 +54,12 @@
       <span class="status-dot stopped-dot"></span>
       Stopped: {stopped}
     </div>
+    {#if disabled > 0}
+      <div class="status-item">
+        <span class="status-dot disabled-dot"></span>
+        Disabled: {disabled}
+      </div>
+    {/if}
     <div class="status-item total">
       Total: {instances.length}
     </div>
@@ -135,6 +142,7 @@
   .status-dot.starting { background: var(--accent); }
   .status-dot.paused { background: var(--yellow); }
   .status-dot.stopped-dot { background: var(--text-muted); }
+  .status-dot.disabled-dot { background: var(--red); }
 
   .error-banner {
     padding: 12px 16px;

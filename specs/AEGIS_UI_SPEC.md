@@ -55,10 +55,10 @@ The app auto-starts aegisd on launch if not already running.
 
 Every async action follows a consistent pattern:
 
-- **Buttons** show busy state: "Starting..." "Disabling..." "Deleting..." (disabled during operation)
-- **Toast notifications** for action results: success (auto-dismiss 3s) or error (persistent until dismissed)
+- **Buttons** show busy state: "Disabling..." "Deleting..." (disabled during operation)
+- **Toast notifications** for action results: success (auto-dismiss 4s) or error (persistent until dismissed)
 - **Daemon disconnected**: all polling stops, overlay with "Reconnecting to aegisd...", auto-reconnects
-- **Instance state transitions**: "starting", "pausing", "resuming" shown as intermediate states with spinner
+- **Instance state transitions**: shown via polling (5s), no user-triggered transitions to wait on
 - **Tether send with no response**: after 60s without `assistant.done`, show inline "Agent still processing..." with cancel button (maps to `control.cancel` tether frame). Pending state persists across UI reconnects.
 
 No silent failures. Every action the user takes gets visible feedback.
@@ -101,19 +101,42 @@ type OperationResult struct {
 
 Standardizes toast messages, error surfaces, and UX language across all actions. Frontend never invents error phrasing — it displays `result.Message`.
 
+### Instance lifecycle philosophy
+
+Aegis manages instance lifecycle non-interactively. The UI does **not** expose start/stop/pause/resume controls. The only user actions are:
+
+- **Disable** — tells aegis "don't auto-wake this instance". Stops the VM, closes port listeners, prevents wake-on-connect/wake-on-message.
+- **Delete** — removes the instance entirely.
+
+All other lifecycle transitions (boot, pause on idle, resume on activity, stop after extended idle) are managed automatically by aegisd. This matches the CLI philosophy.
+
 ### Instance state and action availability
 
-| Instance state | Exec | Chat | Config | Start | Stop | Delete |
-|---|---|---|---|---|---|---|
-| running | yes | yes | yes | — | yes | yes |
-| paused | auto-wake | auto-wake | read-only | — | yes | yes |
-| stopped | no | no | no | yes | — | yes |
-| disabled | no | no | no | yes | — | yes |
-| starting | wait | wait | read-only | — | — | — |
+| Instance state | Exec | Chat | Config | Disable | Delete |
+|---|---|---|---|---|---|
+| running | yes | yes | yes | yes | yes |
+| paused | auto-wake | auto-wake | read-only | yes | yes |
+| stopped | auto-wake | auto-wake | no | yes | yes |
+| disabled | no | no | no | — | yes |
+| starting | wait | wait | read-only | yes | — |
 
-- Exec and Chat on a paused instance: UI shows "Waking..." then proceeds
-- Exec and Chat on stopped/disabled: buttons disabled with tooltip "Instance must be running"
+- Exec and Chat on a paused/stopped instance: API auto-wakes, then proceeds
+- Exec and Chat on a disabled instance: disabled in UI with tooltip
 - Starting: buttons show spinner, wait for running state
+
+### Status display
+
+Color-coded status with disabled as a distinct visual state:
+
+| State | Dot color | Label |
+|---|---|---|
+| running | green | running |
+| paused | yellow | paused |
+| stopped | gray | stopped |
+| disabled | red | disabled |
+| starting | blue | starting |
+
+Dashboard status bar shows separate counters: Running: N | Paused: N | Stopped: N | Disabled: N
 
 ### Cancel semantics
 
@@ -188,10 +211,10 @@ Overview of all instances.
 
 - Instance list: status, kit, **public URL** (clickable → opens browser), uptime/age
 - Port display: show only what the user connects to (`http://localhost:54516`), hide internal guest port mapping
-- Color-coded status: green=running, yellow=paused, gray=stopped/disabled
-- Quick actions: start/stop/pause/resume/delete (right-click or action buttons)
-- Daemon status + version in header
-- Manual refresh button (polling is background, refresh forces immediate)
+- Color-coded status: green=running, yellow=paused, gray=stopped, red=disabled
+- Quick actions: **Disable** and **Delete** only (no start/stop/pause/resume — aegis manages lifecycle)
+- Daemon status + backend in header
+- 5s auto-refresh polling
 
 ### 2. Instance Detail
 
@@ -201,9 +224,9 @@ Per-instance view with tabs.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  ← my-agent                                       [■ Stop]     │
+│  ← my-agent  ● running  42m       [Disable] [Delete]          │
 ├──────┬──────┬──────────────────┬───────┬────────┬───────────────┤
-│ Info │ Logs │ Command Runner   │ Chat  │ Config │               │
+│ Info │ Logs │ Exec             │ Chat  │ Config │               │
 ├──────┴──────┴──────────────────┴───────┴────────┴───────────────┤
 │                                                                 │
 │  ID:        inst-1772143240906457000                            │
@@ -421,17 +444,17 @@ JSON editor for `/workspace/.aegis/agent.json`. Read/write via workspace file AP
   [AegisVM ●]
   ├── Status: Running (5 instances)
   ├── ──────────
-  ├── my-agent (running)       →  Open | Stop
-  ├── browser-agent (paused)   →  Open | Resume
-  ├── web-server (running)     →  Open | Stop
+  ├── my-agent (running)       →  Open | Disable
+  ├── browser-agent (paused)   →  Open | Disable
+  ├── web-server (running)     →  Open | Disable
   ├── ──────────
   ├── Open Dashboard
   └── Quit
 ```
 
-- Green/yellow/gray dot for daemon status
-- Quick instance actions without opening the main window
-- "Open" → brings up instance detail in main window
+- Green/yellow/gray/red dot for daemon status
+- Quick instance actions: Open (detail view) and Disable only
+- No start/stop/pause/resume — aegis manages lifecycle
 - No daemon start/stop in tray (auto-managed on app launch)
 - Tray stays shallow — never add instance creation, secret editing, or config editing here
 
@@ -452,11 +475,8 @@ func (a *App) DaemonStatus() (*DaemonStatus, error)
 func (a *App) ListInstances() ([]Instance, error)
 func (a *App) GetInstance(id string) (*Instance, error)
 func (a *App) CreateInstance(req CreateRequest) (*Instance, error)
-func (a *App) StartInstance(id string) error
 func (a *App) DisableInstance(id string) error
 func (a *App) DeleteInstance(id string) error
-func (a *App) PauseInstance(id string) error
-func (a *App) ResumeInstance(id string) error
 
 // Exec
 func (a *App) ExecCommand(id string, command []string) (*ExecResult, error)
@@ -491,9 +511,10 @@ Svelte with minimal dependencies:
 
 ### Polling strategy
 
-- **Dashboard**: 5-10s + manual "Refresh" button
-- **Instance detail**: 5-10s for state updates
-- **Logs**: Wails event stream (Go reads SSE, emits to frontend)
+- **Dashboard**: 5s polling for instance list
+- **Instance detail**: 5s polling for instance state
+- **Logs**: NDJSON streaming via `fetch()` + `getReader()` (real-time, no polling)
+- **Exec**: NDJSON streaming inline per command (same pattern as logs)
 - **Chat**: classic long-poll — immediately next poll on return (`wait_ms=5000`), no sleep
 
 ## Project Structure
@@ -515,8 +536,8 @@ ui/
     │   │   └── NewInstance.svelte      (planned)
     │   ├── components/
     │   │   ├── InstanceList.svelte
-    │   │   ├── LogViewer.svelte        (planned)
-    │   │   ├── CommandRunner.svelte    (planned)
+    │   │   ├── LogViewer.svelte
+    │   │   ├── CommandRunner.svelte
     │   │   ├── ChatPanel.svelte        (planned)
     │   │   ├── ConfigEditor.svelte     (planned)
     │   │   └── Toast.svelte
@@ -537,18 +558,25 @@ Build `aegis ui` (web mode) first — validates the full stack without Wails com
 
 1. ~~**Shared client library** — `internal/client/` reusable aegisd API client~~ **DONE**
 2. ~~**Workspace file API** — `GET/POST /v1/instances/{id}/workspace` in aegisd~~ **DONE**
-3. ~~**Frontend scaffold** — Svelte + Vite in `ui/frontend/`~~ **DONE**
-4. ~~**`aegis ui` command** — HTTP server serving embedded frontend + API proxy to aegisd~~ **DONE**
-5. ~~**Dashboard** — instance list with status, ports, actions~~ **DONE** (sort: running→paused→stopped, by updated_at)
-6. **Instance detail: Info + Logs** — metadata + log streaming ← **NEXT**
-7. **Command Runner** — exec with exit code, duration, copy
-8. **Chat** — tether long-poll, streaming, images, markdown
-9. **New Instance dialog** — creation with kit/secret selection
-10. **Secrets page** — list/add/delete with "used by" count
-11. **Config editor** — agent.json with Save + Restart
-12. **Wails wrapper** — `cmd/aegis-ui/` native app using same frontend + backend
-13. **System tray** — when Wails v3 stabilizes or via third-party lib
-14. **Polish** — toast notifications, keyboard shortcuts, dark mode
+3. ~~**Frontend scaffold** — Svelte 5 + Vite in `ui/frontend/`~~ **DONE**
+4. ~~**`aegis ui` command** — HTTP server serving embedded frontend + API proxy to aegisd, auto-starts daemon~~ **DONE**
+5. ~~**Dashboard** — instance list with status, ports, disable/delete actions, 5s polling~~ **DONE**
+6. ~~**Instance detail: Info + Logs + Exec** — tabbed view with metadata, real-time log streaming (NDJSON), command runner with streamed output/exit code/duration/copy~~ **DONE**
+7. **Chat** — tether long-poll, streaming, images, markdown ← **NEXT**
+8. **New Instance dialog** — creation with kit/secret selection
+9. **Secrets page** — list/add/delete with "used by" count
+10. **Config editor** — agent.json with Save + Restart
+11. **Wails wrapper** — `cmd/aegis-ui/` native app using same frontend + backend
+12. **System tray** — when Wails v3 stabilizes or via third-party lib
+13. **Polish** — reconnect overlay, keyboard shortcuts, busy button states
+
+### Implementation notes
+
+- **Lifecycle controls**: UI only exposes Disable + Delete. No start/stop/pause/resume — aegis manages lifecycle automatically.
+- **Exec on any enabled instance**: API auto-wakes paused/stopped instances. UI only disables exec input for disabled (`enabled=false`) instances.
+- **Exec history**: persisted in Svelte store across tab switches, keyed by instance ID.
+- **Instance sort order**: running → starting → paused → stopped, then by `updated_at` (most recent first). Fixed in API layer (benefits CLI + MCP too).
+- **`updated_at`**: added to lifecycle `Instance` struct, touched on every state transition via `notifyStateChange`. Persisted in registry, restored on daemon restart.
 
 Chat is step 7 — the main differentiator, ships early. Wails native app is step 12 — web mode works first.
 
