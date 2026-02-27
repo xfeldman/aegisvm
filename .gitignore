@@ -5,6 +5,7 @@
 /aegis-harness
 /aegis-mcp
 /aegis-vmm-worker
+/aegis-gateway
 
 # Base rootfs
 base/*.ext4
