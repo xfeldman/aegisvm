@@ -459,6 +459,20 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 		if !inst.StoppedAt.IsZero() {
 			entry["stopped_at"] = inst.StoppedAt.Format(time.RFC3339)
 		}
+		if s.router != nil {
+			publicEps := s.router.GetAllPublicPorts(inst.ID)
+			if len(publicEps) > 0 {
+				eps := make([]map[string]interface{}, len(publicEps))
+				for i, ep := range publicEps {
+					eps[i] = map[string]interface{}{
+						"guest_port":  ep.GuestPort,
+						"public_port": ep.PublicPort,
+						"protocol":    ep.Protocol,
+					}
+				}
+				entry["endpoints"] = eps
+			}
+		}
 		result = append(result, entry)
 	}
 
