@@ -1,187 +1,185 @@
 # Agent Kit Tools Roadmap
 
 **Status:** Active
-**Updated:** 2026-02-26
+**Updated:** 2026-02-27
 
 ---
 
 ## 1. Current State
 
-### Built-in tools (11)
+### Built-in tools (19)
 
-| Tool | What it does | Status |
-|------|-------------|--------|
-| `bash` | Execute shell commands (60s timeout, 10KB output) | Done |
-| `read_file` | Read file contents, supports line ranges | Done |
-| `write_file` | Create/overwrite files | Done |
-| `edit_file` | Targeted edits via text match or line range, returns diff | Done |
-| `list_files` | List directory contents | Done |
-| `glob` | Find files by pattern (`**/*.go`), cap 200 results | Done |
-| `grep` | Regex search file contents, cap 50 matches | Done |
-| `web_fetch` | Fetch URL, strip HTML, extract text (10KB cap) | Done |
-| `memory_store` | Store a persistent memory (with secret rejection) | Done |
-| `memory_search` | Search memories by keyword/tag | Done |
-| `memory_delete` | Delete a memory by ID | Done |
+All built-in tools can be disabled per-instance via `disabled_tools` in `agent.json`.
 
-### MCP tools via aegis-mcp-guest (9)
+| Tool | What it does |
+|------|-------------|
+| `bash` | Execute shell commands (60s timeout, 10KB output) |
+| `read_file` | Read file contents, supports line ranges (start_line/end_line) |
+| `write_file` | Create/overwrite files, auto-creates parent directories |
+| `edit_file` | Targeted edits via text match or line range, returns diff |
+| `list_files` | List directory contents |
+| `glob` | Find files by pattern (`**/*.go`), cap 200 results |
+| `grep` | Regex search file contents with include filter, cap 50 matches |
+| `web_fetch` | Fetch URL, strip HTML, extract text (10KB cap) |
+| `web_search` | Search the web via Brave Search API (requires BRAVE_SEARCH_API_KEY) |
+| `image_search` | Search for images via Brave Image Search API, returns direct URLs |
+| `image_generate` | Generate images via OpenAI Images API (DALL-E / gpt-image-1) |
+| `respond_with_image` | Attach a downloaded image to the response (user sees it in Telegram etc.) |
+| `memory_store` | Store a persistent memory (with secret rejection, max 500 chars) |
+| `memory_search` | Search memories by keyword and/or tag |
+| `memory_delete` | Delete a memory by ID |
+| `cron_create` | Create a scheduled recurring task |
+| `cron_list` | List all cron entries |
+| `cron_delete` | Delete a cron entry |
+| `cron_enable` / `cron_disable` | Toggle cron entries without deleting |
+| `self_info` | Get VM instance info (ID, handle, state, endpoints) |
+| `self_restart` | Restart agent process cleanly (config reload, no data loss) |
 
-| Tool | What it does | Status |
-|------|-------------|--------|
-| `instance_spawn` | Spawn child VM | Done |
-| `instance_list` | List child instances | Done |
-| `instance_stop` | Stop a child | Done |
-| `self_info` | Get current VM info | Done |
-| `self_restart` | Restart agent process (config reload) | Done |
-| `expose_port` | Expose guest port on host | Done |
-| `unexpose_port` | Remove port exposure | Done |
-| `keepalive_acquire` | Prevent VM pause during long work | Done |
-| `keepalive_release` | Release keepalive lease | Done |
+### MCP tools via aegis-mcp-guest (7)
+
+VM orchestration — always loaded, not configurable via `agent.json`.
+
+| Tool | What it does |
+|------|-------------|
+| `instance_spawn` | Spawn child VM instance |
+| `instance_list` | List child instances |
+| `instance_stop` | Stop a child instance |
+| `expose_port` | Expose guest port on host |
+| `unexpose_port` | Remove port exposure |
+| `keepalive_acquire` | Prevent VM pause during long work |
+| `keepalive_release` | Release keepalive lease |
 
 ### Agent configuration
 
-- `/workspace/.aegis/agent.json` — model, max_tokens, context limits, system prompt, MCP servers, memory config
+`/workspace/.aegis/agent.json`:
+
+```json
+{
+  "model": "openai/gpt-5.2",
+  "max_tokens": 4096,
+  "context_chars": 24000,
+  "context_turns": 50,
+  "system_prompt": "Custom prompt...",
+  "disabled_tools": ["image_generate", "web_search"],
+  "mcp": {
+    "my-server": {"command": "npx", "args": ["my-mcp-server@latest"]}
+  },
+  "memory": {
+    "inject_mode": "relevant",
+    "max_inject_chars": 2000,
+    "max_inject_count": 10,
+    "max_total": 500
+  }
+}
+```
+
 - Env var overrides: `AEGIS_MODEL`, `AEGIS_MAX_TOKENS`, `AEGIS_CONTEXT_CHARS`, `AEGIS_CONTEXT_TURNS`, `AEGIS_SYSTEM_PROMPT`
-- MCP handshake with `protocolVersion` + `clientInfo` (Chrome DevTools MCP compatible)
-- Self-management: agent can edit `agent.json` and call `self_restart` to load new MCP servers at runtime
+- `disabled_tools`: deny list of built-in tool names to disable (new tools auto-enabled)
+- MCP: user-added servers. Core tools (aegis-mcp-guest) are always injected automatically.
+- Agent can edit this file and call `self_restart` to apply changes at runtime.
 
 ### Memory
 
 - JSONL-backed persistent memory (`/workspace/.aegis/memory/memories.jsonl`)
 - Automatic context injection — relevant memories injected into system prompt before each LLM call
-- Keyword-based relevance scoring with stopword filter and recency bonus
+- Keyword-based relevance scoring with stopword filter and recency bonus (only on overlap)
 - Three injection modes: `relevant` (default), `recent_only`, `off`
 - Secret rejection: API keys, tokens, high-entropy blobs blocked from storage
-- Configurable via `agent.json`: `memory.inject_mode`, `memory.max_inject_chars`, `memory.max_inject_count`, `memory.max_total`
+- Scope field stored (`user`/`workspace`/`session`) for future filtering
+
+### Cron (scheduled tasks)
+
+- Scheduler runs in the gateway (host-side) — no keepalive needed, VM pauses freely
+- Cron file: `/workspace/.aegis/cron.json` (host-mounted, gateway reads directly)
+- Agent tools create/manage entries, gateway fires tether messages on schedule
+- Wake-on-message wakes the VM, agent processes, VM goes idle again
+- `on_conflict`: `skip` (default) or `queue` per entry
+- Deduplicate fires per minute, host local time evaluation
+
+### Image support
+
+- Ingress: users can send images to the agent (Telegram photos, tether image blocks)
+- Egress: `respond_with_image` attaches images to responses, `image_generate` creates AI images
+- `image_search` finds existing images via Brave, agent downloads and sends them
+- Blob storage: content-addressed in `/workspace/.aegis/blobs/`
 
 ### LLM integration
 
-- Claude + OpenAI, configurable model via `agent.json` or env var
+- OpenAI (GPT-5.2 default) + Anthropic Claude, configurable model via `agent.json` or env var
 - Streaming with tool calling
 - Image support (ingress + egress)
 - Configurable max tokens (default 4096)
+- GPT-5+ uses `max_completion_tokens` (auto-detected)
+- Dynamic env var summary injected into system prompt (available API keys)
 
 ### Session management
 
 - JSONL persistence in `/workspace/sessions/`
 - Configurable context window (default 50 turns / 24K chars)
-- Tool chain preservation (never breaks assistant→tool→result)
-- No compaction — old turns drop off the window silently
+- Tool chain preservation (never breaks assistant→tool→result chains)
+- Tail trimming: orphaned tool calls at end of history silently dropped (crash recovery)
+- Sessions persist across VM restart (disable→start preserves workspace)
+- Post-restart notification: agent sends "Restart complete" to the session that triggered restart
+
+### OCI image ENV propagation
+
+- OCI image ENV directives (PATH, GOPATH, etc.) extracted during image pull
+- Stored as `.image-env.json` metadata alongside cached rootfs (not inside rootfs)
+- Merged into instance env on boot via the run RPC (host-side, no guest hacks)
+- PATH is prepended; explicit env wins over image defaults
 
 ---
 
 ## 2. What's Done
 
-| Phase | What | Status |
-|-------|------|--------|
-| Phase 0 | `agent.json` config + env var overrides | **Done** |
-| Phase 0 | Configurable model/max_tokens for Claude + OpenAI | **Done** |
-| Phase 0 | `self_restart` tool + harness restart endpoint | **Done** |
-| Phase 1 | `edit_file` (text match + line range modes) | **Done** |
-| Phase 1 | `read_file` partial reads (start_line/end_line) | **Done** |
-| Phase 1 | `glob` with `**` recursive pattern support | **Done** |
-| Phase 1 | `grep` with regex + include filter | **Done** |
-| Phase 2 | `web_fetch` with HTML stripping | **Done** |
-| — | Memory (store/search/delete + auto-injection) | **Done** |
-| — | MCP protocol handshake fix (protocolVersion + clientInfo) | **Done** |
+| What | Status |
+|------|--------|
+| `agent.json` config + env var overrides | **Done** |
+| Configurable model/max_tokens for Claude + OpenAI (including GPT-5.2) | **Done** |
+| `self_restart` + `self_info` (built-in, clean shutdown) | **Done** |
+| `edit_file` (text match + line range modes) | **Done** |
+| `read_file` partial reads (start_line/end_line) | **Done** |
+| `glob` with `**` recursive pattern support | **Done** |
+| `grep` with regex + include filter | **Done** |
+| `web_fetch` with HTML stripping | **Done** |
+| `web_search` (Brave Search API) | **Done** |
+| `image_search` (Brave Image Search API) | **Done** |
+| `image_generate` (OpenAI Images API, b64_json + URL) | **Done** |
+| `respond_with_image` (blob store + tether egress) | **Done** |
+| Memory (store/search/delete + auto-injection + secret rejection) | **Done** |
+| Cron (agent tools + gateway scheduler + dedupe + on_conflict) | **Done** |
+| `disabled_tools` config for disabling/replacing built-in tools | **Done** |
+| MCP protocol handshake (protocolVersion + clientInfo) | **Done** |
+| MCP stdout banner tolerance (skip non-JSON lines) | **Done** |
+| OCI image ENV propagation (host-side, via run RPC) | **Done** |
+| Auto-workspace (`~/.aegis/data/workspaces/{handle}/`) | **Done** |
+| Post-restart notification (marker file + tether send) | **Done** |
+| Gateway: unsolicited message delivery (restart notifications, future agent-push) | **Done** |
+| Gateway: unconditional egress subscription (serves all channels) | **Done** |
 
 ---
 
 ## 3. What's Next
 
-### Tier 1 — High impact, ready to build
+### Tier 1 — High impact
 
 | Feature | Why it matters | Effort |
 |---------|---------------|--------|
-| **Cron / scheduled tasks** | Agent needs to run recurring work: health checks, polling, periodic reports, data collection. Currently requires user to send tether messages manually. | Medium |
-| **Context compaction** | When the 24K window fills, old turns drop silently. The agent loses important early context. Compaction summarizes old turns via LLM call, preserving key info. | Medium |
-| **Token/cost tracking** | Count request/response tokens per session, log to session file. Visibility into usage — no budget enforcement yet. | Small |
+| **Context compaction** | Old turns drop silently. Compaction summarizes via LLM call. | Medium |
+| **Token/cost tracking** | Count tokens per session, log to JSONL. Visibility, no enforcement. | Small |
+| **Agent-initiated messages** | `send_message(channel, chat_id, text)` for cross-channel push (cron→Telegram). | Medium |
 
 ### Tier 2 — Medium impact
 
 | Feature | Why it matters | Effort |
 |---------|---------------|--------|
-| **Skills** (markdown instructions) | Scan `/workspace/.aegis/skills/*.md`, inject relevant instructions into system prompt. Lets users define task-specific behavior without modifying code. | Medium |
-| **Memory scope filtering** | Use the `scope` field on memories to filter injection (e.g., only `"user"` scope in new sessions). | Small |
-| **Embedding-based memory search** | Optional enhancement: call embedding API, store vectors alongside text. Better relevance for semantic queries. | Large |
+| **Skills** (markdown injection) | Scan `/workspace/.aegis/skills/*.md`, inject into system prompt. | Medium |
+| **Memory scope filtering** | Filter injection by scope (user/workspace/session). | Small |
+| **Workspace persistence on delete** | Keep workspace on `instance delete`, add `--purge` flag. | Small |
 
 ---
 
-## 4. Cron / Scheduled Tasks
-
-### Problem
-
-Agents can only react to tether messages. There's no way to say "check the server health every 5 minutes" or "poll the RSS feed hourly" or "send a daily digest at 9am". The user has to manually send messages to trigger recurring work.
-
-### Design
-
-A built-in cron scheduler in `aegis-agent` that fires synthetic user messages on a schedule. Cron entries are stored in `/workspace/.aegis/cron.json` and managed via tools.
-
-**Cron entry:**
-```json
-{
-  "id": "cron-1",
-  "schedule": "*/5 * * * *",
-  "message": "Check if the web server at http://localhost:8080 is responding. If not, restart it.",
-  "session": "health-check",
-  "enabled": true
-}
-```
-
-Fields:
-- `id` — auto-generated
-- `schedule` — standard cron expression (minute hour dom month dow)
-- `message` — the text injected as a synthetic user message
-- `session` — session ID for the cron's conversation (isolates cron work from interactive sessions)
-- `enabled` — can be paused without deleting
-
-**Built-in tools:**
-- `cron_create` — create a new scheduled task
-- `cron_list` — list all cron entries
-- `cron_delete` — delete by ID
-- `cron_enable` / `cron_disable` — toggle without deleting
-
-**Scheduler:** A goroutine in `aegis-agent` that checks cron entries once per minute, evaluates which ones should fire, and injects a synthetic `user.message` tether frame into the agent's own handler. The cron message goes to a dedicated session (per cron entry), keeping cron work separate from interactive conversations.
-
-**Keepalive:** When cron entries exist and are enabled, the agent should acquire a keepalive lease to prevent the VM from being paused by the idle timer. Release when all cron entries are disabled/deleted.
-
-### Implementation
-
-| File | Changes |
-|------|---------|
-| `cmd/aegis-agent/cron.go` | New file — CronStore (load/save), CronScheduler (goroutine), cron expression parsing |
-| `cmd/aegis-agent/tools.go` | Add cron_create, cron_list, cron_delete, cron_enable, cron_disable tools |
-| `cmd/aegis-agent/main.go` | Start cron scheduler, wire keepalive |
-
-### Cron expression parsing
-
-Standard 5-field: `minute hour day-of-month month day-of-week`. Support:
-- `*` (any), `*/N` (every N), `N` (exact), `N-M` (range), `N,M` (list)
-- No need for seconds or year fields
-- Implement in ~100 lines, no external deps
-
----
-
-## 5. Context Compaction (Phase 3)
-
-When `assembleContext` drops turns due to window limits:
-1. Collect the dropped turns
-2. If total dropped > 5 turns and no cached summary covers them: generate summary via LLM call
-3. Write summary to session JSONL as a special entry: `{"role": "compaction", "content": "...", "covers_through_ts": "..."}`
-4. Inject into assembled context as a system message: `"[Context summary from earlier: ...]"`
-5. On subsequent calls, reuse cached compaction entry if it covers the same dropped range
-
----
-
-## 6. Token Tracking (Phase 3b)
-
-- Count input/output tokens from API response headers (both Anthropic and OpenAI return usage)
-- Log per-turn: `{"role": "usage", "input_tokens": 1200, "output_tokens": 450, "model": "...", "ts": "..."}`
-- Append to session JSONL (same file, special role)
-- No budget enforcement — just visibility
-
----
-
-## 7. Tool Limits & Defaults
+## 4. Tool Limits & Defaults
 
 | Limit | Default | Applies to |
 |-------|---------|-----------|
@@ -192,25 +190,29 @@ When `assembleContext` drops turns due to window limits:
 | Bash timeout | 60 seconds | bash |
 | Web fetch timeout | 30 seconds | web_fetch |
 | Web fetch body max | 1 MB | web_fetch |
+| Web/image search timeout | 15 seconds | web_search, image_search |
+| Image generate timeout | 60 seconds | image_generate |
 | Memory injection max | 2 KB / 10 entries | memory auto-inject |
 | Memory total max | 500 entries | memory store |
+| Cron max entries | 20 | cron_create |
 
 ---
 
-## 8. Capability Summary
+## 5. Capability Summary
 
 | Capability | Type | Status |
 |-----------|------|--------|
-| bash, read/write/edit file, glob, grep | Built-in | **Done** |
-| web_fetch | Built-in | **Done** |
+| File ops (bash, read/write/edit, glob, grep) | Built-in | **Done** |
+| Web access (fetch, search, image search) | Built-in | **Done** |
+| Image generation (DALL-E / gpt-image-1) | Built-in | **Done** |
+| Image send (respond_with_image) | Built-in | **Done** |
 | Memory (store/search/delete + auto-inject) | Built-in | **Done** |
-| Image support | Built-in | **Done** |
-| `agent.json` config + env overrides | Agent internals | **Done** |
-| VM orchestration + self_restart | MCP (`aegis-mcp-guest`) | **Done** |
-| Browser | MCP (Chrome DevTools) | **Tested E2E** |
-| Cron / scheduled tasks | Built-in | **Next** |
+| Cron (scheduled tasks via gateway) | Built-in + Gateway | **Done** |
+| Self-management (restart, info) | Built-in | **Done** |
+| Tool disable/replace | Config (`disabled_tools`) | **Done** |
+| VM orchestration | MCP (`aegis-mcp-guest`) | **Done** |
+| Browser automation | MCP (Playwright/Chrome DevTools) | User adds |
 | Context compaction | Built-in | Planned |
 | Token tracking | Built-in | Planned |
-| Skills (markdown injection) | Built-in | Future |
-| Memory scope filtering | Built-in | Future |
+| Agent-initiated messages | Built-in | Planned |
 | GitHub, Slack, Jira, DB, etc. | MCP | User brings |

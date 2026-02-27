@@ -133,7 +133,7 @@ NDJSON stream of all egress frames. Used by the gateway for Telegram integration
 
 Each tether conversation is identified by `channel` + `session_id`:
 
-- `channel` identifies the source: `"host"` for host agents, `"telegram"` for Telegram
+- `channel` identifies the source: `"host"` for host agents, `"telegram"` for Telegram, `"cron"` for scheduled tasks
 - `session_id` is caller-chosen: `"default"`, `"debug-1"`, `"task-analyze"`, etc.
 
 Sessions are independent — a host session doesn't interfere with Telegram sessions, even if session IDs collide. The guest agent keys sessions by `channel_session_id` internally.
@@ -179,3 +179,7 @@ If no `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is set, the agent runs in passive 
 **Orchestration**: a host agent manages multiple in-VM agents, sending tasks and collecting results via tether.
 
 **Multi-agent**: an in-VM agent can emit `assistant.message` frames without a prior `user.message` — for task completion notifications, error escalation, or telemetry.
+
+**Messaging gateway**: the gateway bridges external messaging apps (Telegram) to agents via tether. Inbound messages become `user.message` frames; agent responses (`assistant.delta`, `assistant.done`) are rendered back in the messaging app. The gateway also fires cron-scheduled messages as synthetic `user.message` frames on the `"cron"` channel, enabling recurring tasks with scale-to-zero.
+
+**Unsolicited messages**: the gateway delivers `assistant.done` frames that arrive without a preceding user message (e.g., restart notifications, future agent-push) as new messages in the messaging app.

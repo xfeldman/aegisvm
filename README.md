@@ -49,9 +49,9 @@ aegis down                                                  # stop everything
 
 ## Agent Kit
 
-Agent Kit adds an LLM agent to AegisVM instances. Each agent runs in its own isolated VM — delegate tasks from Claude Code, connect messaging bots, or build multi-agent pipelines where agents spawn sub-agents.
+Agent Kit turns an AegisVM instance into a full-featured LLM agent — 19 built-in tools, persistent memory, scheduled tasks, web search, image generation, and multi-agent orchestration. All in a ~40MB idle footprint with scale-to-zero.
 
-**Pair debugging across host + VM.** Run your backend inside a VM while a host-side agent and the in-VM agent collaborate over tether. You get live, interactive debugging with full isolation: the host agent can orchestrate, the VM agent can inspect the sandboxed runtime, and the VM still scale-to-zero when idle.
+Unlike monolithic agent frameworks, Agent Kit is modular Go compiled into a single static binary. No Python/Node runtime overhead for core tools. MCP servers are optional add-ons for specialized capabilities (browser automation, custom integrations).
 
 ```bash
 # macOS (Linux: already included by install.sh)
@@ -63,27 +63,58 @@ aegis secret set OPENAI_API_KEY sk-...
 aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
 ```
 
-The agent is immediately reachable — Claude Code can delegate tasks, read streaming responses, and orchestrate multiple agents:
+### What's included
 
-```
-You: Start a new aegis instance with Agent kit using OpenAI, and try to contact its agent.
+| Category | Tools |
+|----------|-------|
+| **File ops** | bash, read/write/edit file, glob, grep |
+| **Web** | web_search, image_search, web_fetch |
+| **Images** | image_generate (DALL-E), respond_with_image |
+| **Memory** | Persistent memory with auto-injection into LLM context |
+| **Cron** | Scheduled tasks with scale-to-zero (gateway-side scheduler) |
+| **Self-management** | self_restart (hot config reload), self_info, disabled_tools |
+| **VM orchestration** | Spawn/manage child VMs, expose ports, keepalive |
 
-Claude: Let me spin up an agent instance and ping it.
-        ⏺ aegis — instance_start (kit="agent", name="my-agent", secrets=["OPENAI_API_KEY"])
-        Instance is starting. Let me send it a message.
-        ⏺ aegis — tether_send (instance="my-agent", text="Hello, are you there?")
-        Message sent. Let me read the response.
-        ⏺ aegis — tether_read (instance="my-agent", after_seq=1, wait_ms=15000)
-        It's alive and responding! The agent replied:
-          "Hello! I'm an AI assistant running inside an Aegis VM. I can help with
-           executing shell commands, reading and writing files, and managing
-           resources within the workspace. Let me know what you need!"
-```
+All built-in tools are Go — zero runtime overhead. Any tool can be disabled and replaced with a custom MCP server via `agent.json`.
 
-Agents can also spawn sub-agents via the Guest API, and optionally connect to messaging apps for conversational AI with wake-on-message and scale-to-zero:
+### Profiles
+
+| Profile | Image | Memory | Use case |
+|---------|-------|--------|----------|
+| **Lightweight** (default) | `python:3.12-alpine` | 512MB | Built-in tools + Python apps |
+| **Heavy** | `node:22-alpine` | 2048MB | + Browser MCP, Node MCP servers |
 
 ```bash
-# Connect to Telegram (optional)
+# Lightweight (default)
+aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
+
+# Heavy (browser automation)
+aegis instance start --kit agent --name browser-agent \
+  --image node:22-alpine --memory 2048 --secret OPENAI_API_KEY
+```
+
+### Why not OpenClaw?
+
+| | Agent Kit | OpenClaw |
+|---|---|---|
+| **Architecture** | Modular Go binary + optional MCP | Monolithic Python framework |
+| **Idle footprint** | ~40MB | ~200MB+ |
+| **Core tools** | 19 built-in (Go, zero overhead) | Python-based, runtime-dependent |
+| **Extensibility** | MCP servers + `disabled_tools` config | Plugin system |
+| **Memory** | Built-in with auto-injection | Requires external service |
+| **Cron** | Built-in with scale-to-zero | Not included |
+| **Image gen** | Built-in (OpenAI API, 0 overhead) | MCP or plugin |
+| **Browser** | MCP add-on (when needed) | Built-in (always loaded) |
+| **VM isolation** | Real microVM per agent | Container or process |
+| **Scale-to-zero** | Native (pause/resume in ms) | Not supported |
+
+Agent Kit is the right choice when you want lightweight, isolated agents that scale to zero. OpenClaw is the right choice when you need a batteries-included Python framework with a large plugin ecosystem.
+
+### Messaging
+
+Connect agents to Telegram (more channels planned) with wake-on-message and streaming responses:
+
+```bash
 aegis secret set TELEGRAM_BOT_TOKEN 123456:ABC-...
 mkdir -p ~/.aegis/kits/my-agent
 echo '{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","allowed_chats":["*"]}}' \
@@ -91,7 +122,28 @@ echo '{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","allowed_chats":["*"]
 # Gateway picks up config within seconds — send a message to your bot
 ```
 
-See [Agent Kit docs](docs/AGENT_KIT.md) for the full guide. See [Kits](docs/KITS.md) for how kits work.
+### Agent delegation
+
+Claude Code delegates tasks to isolated agents via MCP:
+
+```
+Claude: ⏺ aegis — instance_start (kit="agent", name="researcher", secrets=["OPENAI_API_KEY"])
+        ⏺ aegis — tether_send (instance="researcher", text="Research the top 5 ML frameworks for time series")
+        ⏺ aegis — tether_read (instance="researcher", wait_ms=30000)
+        The agent responded with a detailed comparison...
+```
+
+### Tether — universal agent transport
+
+Tether is the bidirectional message channel between host and VM agents. Everything flows through it — Claude Code delegation, Telegram messages, cron-scheduled tasks, multi-agent orchestration. Wake-on-message is built in: sending a tether frame to a paused VM wakes it in ~35ms.
+
+```
+Host (Claude Code) ──tether──► Agent VM ──tether──► Child Agent VM
+Telegram ──gateway──► tether ──┘
+Cron     ──gateway──► tether ──┘
+```
+
+See [Tether docs](docs/TETHER.md) for the protocol reference. See [Agent Kit docs](docs/AGENT_KIT.md) for the full guide. See [Kits](docs/KITS.md) for how kits work.
 
 ## MCP (Claude Code integration)
 
