@@ -103,21 +103,6 @@
 
   let highlighted = $derived(highlight(content))
 
-  let exampleText = $derived(
-    active?.example ? JSON.stringify(active.example, null, 2) : ''
-  )
-  let exampleHighlighted = $derived(exampleText ? highlight(exampleText) : '')
-
-  // Show example ghost when content is effectively empty
-  let isEmpty = $derived(content.trim() === '' || content.trim() === '{}')
-  let showGhost = $derived(isEmpty && !!exampleText)
-
-  function useExample() {
-    const formatted = JSON.stringify(active.example, null, 2) + '\n'
-    setContent(formatted)
-    requestAnimationFrame(() => textareaEl?.focus())
-  }
-
   function setContent(text: string) {
     contents = contents.map((c, i) => i === activeIdx ? text : c)
     errors = errors.map((e, i) => i === activeIdx ? validate(text) : e)
@@ -268,15 +253,9 @@
         </div>
       </div>
       <div class="editor-body" class:has-error={!!jsonError}>
-        {#if showGhost}
-          <pre class="highlight ghost"><code>{@html exampleHighlighted}</code></pre>
-          <button class="use-example" onclick={useExample}>Use this example</button>
-        {:else}
-          <pre class="highlight" bind:this={codeEl}><code>{@html highlighted}</code>{'\n'}</pre>
-        {/if}
+        <pre class="highlight" bind:this={codeEl}><code>{@html highlighted}</code>{'\n'}</pre>
         <textarea
           class="input-overlay"
-          class:ghost-active={showGhost}
           bind:this={textareaEl}
           value={content}
           oninput={onInput}
@@ -429,35 +408,6 @@
     outline: none;
     resize: none;
     -webkit-text-fill-color: transparent;
-  }
-
-  /* When ghost is showing, make textarea fully transparent so ghost shows through,
-     but keep it interactive so typing replaces the empty content */
-  .input-overlay.ghost-active {
-    caret-color: var(--text-muted);
-  }
-
-  .highlight.ghost {
-    opacity: 0.3;
-  }
-
-  .use-example {
-    position: absolute;
-    top: 10px;
-    right: 12px;
-    z-index: 2;
-    padding: 3px 10px;
-    border-radius: var(--radius);
-    border: 1px solid var(--border);
-    background: var(--bg-secondary);
-    color: var(--text-muted);
-    font-size: 11px;
-    font-family: var(--font-mono);
-    cursor: pointer;
-  }
-  .use-example:hover {
-    color: var(--accent);
-    border-color: var(--accent);
   }
 
   .error-bar {

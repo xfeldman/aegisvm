@@ -42,7 +42,7 @@ export interface KitConfigFile {
   path: string
   location: 'workspace' | 'host'
   label?: string
-  example?: Record<string, any>
+  default?: Record<string, any>
 }
 
 export interface Kit {
@@ -50,8 +50,8 @@ export interface Kit {
   version?: string
   description?: string
   image?: string
-  required_secrets?: string[][]
   defaults?: { command?: string[] }
+  referenced_env?: string[]
   config?: KitConfigFile[]
 }
 

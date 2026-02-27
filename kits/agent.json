@@ -2,25 +2,15 @@
   "name": "agent",
   "version": "0.1.0",
   "description": "Messaging-driven LLM agent with Telegram integration",
-  "required_secrets": [["OPENAI_API_KEY", "ANTHROPIC_API_KEY"]],
-  "usage": "Creates a VM running an LLM agent that receives messages via tether or Telegram and responds with streaming text.\n\nBuilt-in tools: bash, file ops (read/write/edit/glob/grep), web_search, image_search, image_generate, web_fetch, respond_with_image, memory (store/search/delete with auto-injection), cron (scheduled tasks), self_restart, self_info. MCP tools for VM orchestration (spawn/list/stop child instances, expose ports, keepalive).\n\nProfiles:\n- Lightweight (default): python:3.12-alpine, 512MB. Built-in tools + Python for app development. Covers 90% of use cases.\n  instance_start with kit=\"agent\", name=\"my-agent\", secrets=[\"OPENAI_API_KEY\"]\n- Heavy (Chrome MCP, Node-based MCP servers): override with image=\"node:22-alpine\" and memory_mb=2048.\n  instance_start with kit=\"agent\", name=\"browser-agent\", image=\"node:22-alpine\", memory_mb=2048, secrets=[\"OPENAI_API_KEY\"]\n\nQuick start (tether only):\n1. Check available secrets with secret_list\n2. Start: instance_start with kit=\"agent\", name=\"my-agent\", secrets=[\"OPENAI_API_KEY\"]\n3. Send messages via tether_send, read responses via tether_read\n\nWith Telegram gateway:\n1. Set secrets: secret_set OPENAI_API_KEY and TELEGRAM_BOT_TOKEN\n2. Start: instance_start with kit=\"agent\", name=\"my-agent\", secrets=[\"OPENAI_API_KEY\", \"TELEGRAM_BOT_TOKEN\"]\n3. Create gateway config at ~/.aegis/kits/my-agent/gateway.json:\n   {\"telegram\":{\"bot_token_secret\":\"TELEGRAM_BOT_TOKEN\",\"allowed_chats\":[\"*\"]}}\n4. The gateway starts automatically and picks up the config within seconds\n\nThe agent VM pauses when idle and wakes on new messages. Workspace is auto-created if not specified.\n\nRequired secrets: OPENAI_API_KEY (or ANTHROPIC_API_KEY)\nOptional secrets: TELEGRAM_BOT_TOKEN, BRAVE_SEARCH_API_KEY (web/image search)\nOptional env: AEGIS_SYSTEM_PROMPT (custom system prompt)",
+  "usage": "Creates a VM running an LLM agent that receives messages via tether or Telegram and responds with streaming text.\n\nBuilt-in tools: bash, file ops (read/write/edit/glob/grep), web_search, image_search, image_generate, web_fetch, respond_with_image, memory (store/search/delete with auto-injection), cron (scheduled tasks), self_restart, self_info. MCP tools for VM orchestration (spawn/list/stop child instances, expose ports, keepalive).\n\nProfiles:\n- Lightweight (default): python:3.12-alpine, 512MB. Built-in tools + Python for app development. Covers 90% of use cases.\n  instance_start with kit=\"agent\", name=\"my-agent\", secrets=[\"OPENAI_API_KEY\"]\n- Heavy (Chrome MCP, Node-based MCP servers): override with image=\"node:22-alpine\" and memory_mb=2048.\n  instance_start with kit=\"agent\", name=\"browser-agent\", image=\"node:22-alpine\", memory_mb=2048, secrets=[\"OPENAI_API_KEY\"]\n\nQuick start (tether only):\n1. Check available secrets with secret_list\n2. Start: instance_start with kit=\"agent\", name=\"my-agent\", secrets=[\"OPENAI_API_KEY\"]\n3. Send messages via tether_send, read responses via tether_read\n\nWith Telegram gateway:\n1. Set secrets: secret_set OPENAI_API_KEY and TELEGRAM_BOT_TOKEN\n2. Start: instance_start with kit=\"agent\", name=\"my-agent\", secrets=[\"OPENAI_API_KEY\", \"TELEGRAM_BOT_TOKEN\"]\n3. Create gateway config at ~/.aegis/kits/my-agent/gateway.json:\n   {\"telegram\":{\"allowed_chats\":[\"*\"]}}\n4. The gateway starts automatically, reads TELEGRAM_BOT_TOKEN from instance env\n\nThe agent VM pauses when idle and wakes on new messages. Workspace is auto-created if not specified.\n\nRequired secrets: OPENAI_API_KEY (or ANTHROPIC_API_KEY)\nOptional secrets: TELEGRAM_BOT_TOKEN, BRAVE_SEARCH_API_KEY (web/image search)\nOptional env: AEGIS_SYSTEM_PROMPT (custom system prompt)\n\nSecret mapping: use ENV_VAR=secret.store_name to inject a secret under a different env var name (e.g. TELEGRAM_BOT_TOKEN=secret.my_bot).",
   "config": [
     {
       "path": ".aegis/agent.json",
       "label": "Agent",
-      "example": {
+      "default": {
         "model": "openai/gpt-4.1",
-        "max_tokens": 4096,
-        "mcp": {
-          "playwright": {
-            "command": "npx",
-            "args": ["@playwright/mcp@latest"]
-          }
-        },
-        "disabled_tools": ["image_generate"],
-        "memory": {
-          "inject_mode": "relevant"
-        }
+        "api_key_env": "OPENAI_API_KEY",
+        "max_tokens": 4096
       }
     }
   ],
@@ -30,9 +20,9 @@
       "config": {
         "path": "gateway.json",
         "label": "Gateway",
-        "example": {
+        "default": {
           "telegram": {
-            "bot_token_secret": "TELEGRAM_BOT_TOKEN",
+            "bot_token_env": "TELEGRAM_BOT_TOKEN",
             "allowed_chats": ["*"]
           }
         }

@@ -117,7 +117,7 @@ New tools are enabled by default — no config migration needed when the agent b
 Base image: `python:3.12-alpine` | Memory: 512MB | Idle: ~40MB
 
 ```bash
-aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
+aegis instance start --kit agent --name my-agent --env OPENAI_API_KEY
 ```
 
 Built-in tools + Python for app development. Covers 90% of use cases.
@@ -129,7 +129,7 @@ Base image: `node:22-alpine` | Memory: 2048MB
 ```bash
 aegis instance start --kit agent --name browser-agent \
   --image node:22-alpine --memory 2048 \
-  --secret OPENAI_API_KEY
+  --env OPENAI_API_KEY
 ```
 
 For Chrome DevTools MCP, Playwright MCP, or other Node-based MCP servers that need more memory.
@@ -183,7 +183,7 @@ Pass secrets when creating the instance:
 
 ```bash
 aegis instance start --kit agent --name my-agent \
-  --secret OPENAI_API_KEY --secret BRAVE_SEARCH_API_KEY
+  --env OPENAI_API_KEY --env BRAVE_SEARCH_API_KEY
 ```
 
 Secrets are injected as environment variables inside the VM. MCP servers inherit them automatically.
@@ -194,7 +194,7 @@ Secrets are injected as environment variables inside the VM. MCP servers inherit
 
 ```bash
 aegis secret set OPENAI_API_KEY sk-...
-aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
+aegis instance start --kit agent --name my-agent --env OPENAI_API_KEY
 ```
 
 Talk to it from Claude Code via MCP:
@@ -210,10 +210,10 @@ aegis secret set OPENAI_API_KEY sk-...
 aegis secret set TELEGRAM_BOT_TOKEN 123456:ABC-...
 
 aegis instance start --kit agent --name my-agent \
-  --secret OPENAI_API_KEY --secret TELEGRAM_BOT_TOKEN
+  --env OPENAI_API_KEY --env TELEGRAM_BOT_TOKEN
 
 mkdir -p ~/.aegis/kits/my-agent
-echo '{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","allowed_chats":["*"]}}' \
+echo '{"telegram":{"allowed_chats":["*"]}}' \
   > ~/.aegis/kits/my-agent/gateway.json
 ```
 
@@ -225,7 +225,7 @@ Gateway picks up config within seconds. Send a message to your bot.
 aegis secret set BRAVE_SEARCH_API_KEY BSA...
 
 aegis instance start --kit agent --name my-agent \
-  --secret OPENAI_API_KEY --secret BRAVE_SEARCH_API_KEY
+  --env OPENAI_API_KEY --env BRAVE_SEARCH_API_KEY
 ```
 
 The agent can now search the web, find images, and generate images — all built-in, no MCP needed.

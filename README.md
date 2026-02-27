@@ -119,7 +119,7 @@ aegis down                                                  # stop everything
 
 **Workspaces.** Host directories mounted at `/workspace` inside the VM. Auto-created if not specified. Named workspaces (`--workspace myapp`) or host paths (`--workspace ./code`).
 
-**Secrets.** AES-256-GCM encrypted store. Explicit injection only (`--secret API_KEY`). Default: inject nothing.
+**Secrets.** AES-256-GCM encrypted store. Explicit injection only (`--env API_KEY`). Default: inject nothing.
 
 **OCI images.** Use any Docker image as the VM filesystem: `--image python:3.12-alpine`, `--image node:20`. OCI image ENV vars (PATH, GOPATH, etc.) are automatically propagated.
 
@@ -135,7 +135,7 @@ aegis mcp install     # register with Claude Code
 
 ```bash
 aegis secret set OPENAI_API_KEY sk-...
-aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
+aegis instance start --kit agent --name my-agent --env OPENAI_API_KEY
 ```
 
 ### Talk to it (from Claude Code via MCP)
@@ -150,7 +150,7 @@ Claude: ⏺ aegis — tether_send (instance="my-agent", text="Research the top 5
 
 ```bash
 aegis instance start --kit agent --name browser-agent \
-  --image node:22-alpine --memory 2048 --secret OPENAI_API_KEY
+  --image node:22-alpine --memory 2048 --env OPENAI_API_KEY
 ```
 
 ### Connect to Telegram
@@ -158,10 +158,10 @@ aegis instance start --kit agent --name browser-agent \
 ```bash
 aegis secret set TELEGRAM_BOT_TOKEN 123456:ABC-...
 aegis instance start --kit agent --name my-agent \
-  --secret OPENAI_API_KEY --secret TELEGRAM_BOT_TOKEN
+  --env OPENAI_API_KEY --env TELEGRAM_BOT_TOKEN
 
 mkdir -p ~/.aegis/kits/my-agent
-echo '{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","allowed_chats":["*"]}}' \
+echo '{"telegram":{"allowed_chats":["*"]}}' \
   > ~/.aegis/kits/my-agent/gateway.json
 # Gateway picks up config within seconds — send a message to your bot
 ```
@@ -171,7 +171,7 @@ echo '{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","allowed_chats":["*"]
 ```bash
 aegis secret set BRAVE_SEARCH_API_KEY BSA...
 aegis instance start --kit agent --name my-agent \
-  --secret OPENAI_API_KEY --secret BRAVE_SEARCH_API_KEY
+  --env OPENAI_API_KEY --env BRAVE_SEARCH_API_KEY
 ```
 
 The agent can now search the web, find images, and generate AI images — all built-in.
@@ -232,7 +232,7 @@ aegis kit list                                      # list installed kits
 aegis mcp install / uninstall                       # Claude Code integration
 ```
 
-Common flags: `--name`, `--expose`, `--env K=V`, `--secret KEY`, `--workspace PATH`, `--image REF`, `--kit KIT`, `--memory MB`.
+Common flags: `--name`, `--expose`, `--env KEY|K=V|K=secret.name`, `--workspace PATH`, `--image REF`, `--kit KIT`, `--memory MB`.
 
 Full reference: [CLI docs](docs/CLI.md).
 

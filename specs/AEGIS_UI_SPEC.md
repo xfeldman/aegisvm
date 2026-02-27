@@ -393,7 +393,7 @@ Generic config editor driven by the kit manifest's `config` field. The core UI h
 - **Host** configs: read/write via `GET/POST /v1/instances/{id}/kit-config?file=` (files at `~/.aegis/kits/{handle}/`)
 - JSON syntax highlighting (single-pass tokenizer, keys/strings/numbers/bools colored)
 - Live JSON validation with error bar
-- Ghost example preview: when config is empty, kit's example config renders at 30% opacity with a "Use this example" button. Disappears on first keystroke
+- Default configs are written on instance creation from kit manifest. "Reset to default" ghost preview shown when config is empty.
 - Tab key inserts 2 spaces
 
 ### 3. Secrets

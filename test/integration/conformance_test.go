@@ -393,7 +393,7 @@ func TestConformance_SecretSetListDelete(t *testing.T) {
 	apiDeleteAllowFail(t, "/v1/secrets/CONF_KEY_B")
 }
 
-// TestConformance_SecretScopingNone — default (no --secret) injects nothing.
+// TestConformance_SecretScopingNone — default (no --env KEY) injects nothing.
 func TestConformance_SecretScopingNone(t *testing.T) {
 	// Set a secret
 	apiPut(t, "/v1/secrets/SCOPE_TEST", map[string]interface{}{"value": "should-not-appear"})
@@ -418,7 +418,7 @@ func TestConformance_SecretScopingNone(t *testing.T) {
 	data, _ := io.ReadAll(resp.Body)
 
 	if strings.Contains(string(data), "should-not-appear") {
-		t.Fatal("secret value leaked without --secret flag")
+		t.Fatal("secret value leaked without --env flag")
 	}
 	if !strings.Contains(string(data), "SECRET=") {
 		t.Fatal("expected 'SECRET=' (empty) in output")

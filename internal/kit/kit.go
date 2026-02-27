@@ -24,12 +24,6 @@ type Manifest struct {
 	Description string `json:"description"`
 	Usage       string `json:"usage,omitempty"`
 
-	// RequiredSecrets declares secrets needed by this kit. Each element is a
-	// group of alternatives — at least one secret from each group must be
-	// passed via the secrets parameter. Example: [["OPENAI_API_KEY","ANTHROPIC_API_KEY"]]
-	// means either key satisfies the requirement.
-	RequiredSecrets [][]string `json:"required_secrets,omitempty"`
-
 	// InstanceDaemons lists host-side processes to spawn per enabled instance.
 	// aegisd manages their lifecycle: start on instance create/enable,
 	// stop on instance disable/delete, restart on crash with backoff.
@@ -57,8 +51,9 @@ type ConfigFile struct {
 	Path string `json:"path"`
 	// Label is a short display name for the UI tab/section.
 	Label string `json:"label,omitempty"`
-	// Example is an optional example config shown as reference in the UI.
-	Example json.RawMessage `json:"example,omitempty"`
+	// Default is the initial config written when the file doesn't exist yet.
+	// No default = no file created (optional config).
+	Default json.RawMessage `json:"default,omitempty"`
 }
 
 // InstanceDaemon declares a host-side process to spawn per instance.

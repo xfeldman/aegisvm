@@ -344,7 +344,8 @@ type exposeFlag struct {
 	Protocol   string // "http", "tcp", etc. Default: "http"
 }
 
-// parseRunFlags parses common flags: --name, --env, --image, --workspace, --secret, --kit
+// parseRunFlags parses common flags: --name, --env, --image, --workspace, --kit
+// --env supports three forms: KEY (secret), KEY=value (literal), KEY=secret.name (mapped secret)
 func parseRunFlags(args []string) (name, imageRef string, envVars map[string]string, secretKeys []string, workspace string, kitName string, command []string) {
 	envVars = make(map[string]string)
 
@@ -370,23 +371,24 @@ func parseRunFlags(args []string) (name, imageRef string, envVars map[string]str
 			i++
 		case "--env":
 			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--env requires KEY=VALUE")
+				fmt.Fprintln(os.Stderr, "--env requires KEY, KEY=value, or KEY=secret.name")
 				os.Exit(1)
 			}
 			kv := args[i+1]
 			eq := strings.IndexByte(kv, '=')
 			if eq < 0 {
-				fmt.Fprintf(os.Stderr, "invalid --env format: %s (expected KEY=VALUE)\n", kv)
-				os.Exit(1)
+				// Bare key: --env KEY → secret lookup (shorthand for KEY=secret.KEY)
+				secretKeys = append(secretKeys, kv)
+			} else if strings.HasPrefix(kv[eq+1:], "secret.") {
+				// Secret reference: --env KEY=secret.name
+				secretKeys = append(secretKeys, kv)
+			} else if kv == "*" {
+				// All secrets
+				secretKeys = append(secretKeys, "*")
+			} else {
+				// Literal value: --env KEY=value
+				envVars[kv[:eq]] = kv[eq+1:]
 			}
-			envVars[kv[:eq]] = kv[eq+1:]
-			i++
-		case "--secret":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--secret requires a key name (or '*' for all)")
-				os.Exit(1)
-			}
-			secretKeys = append(secretKeys, args[i+1])
 			i++
 		case "--workspace":
 			if i+1 >= len(args) {
@@ -469,7 +471,7 @@ func cmdRun() {
 	}
 
 	if len(command) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: aegis run [--name NAME] [--env K=V] [--secret KEY] [--image IMAGE] [--kit KIT] -- COMMAND [args...]")
+		fmt.Fprintln(os.Stderr, "usage: aegis run [--name NAME] [--env KEY|KEY=value|KEY=secret.name] [--image IMAGE] [--kit KIT] -- COMMAND [args...]")
 		os.Exit(1)
 	}
 
@@ -895,7 +897,7 @@ func cmdInstanceStart(client *http.Client) {
 	}
 
 	if len(command) == 0 && name == "" {
-		fmt.Fprintln(os.Stderr, "usage: aegis instance start [--name NAME] [--env K=V] [--secret KEY] [--image IMAGE] [--kit KIT] -- COMMAND [args...]")
+		fmt.Fprintln(os.Stderr, "usage: aegis instance start [--name NAME] [--env KEY|KEY=value|KEY=secret.name] [--image IMAGE] [--kit KIT] -- COMMAND [args...]")
 		fmt.Fprintln(os.Stderr, "       aegis instance start --name NAME   (restart stopped instance)")
 		os.Exit(1)
 	}

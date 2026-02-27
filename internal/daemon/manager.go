@@ -33,12 +33,13 @@ type Manager struct {
 
 // Process represents a running daemon process.
 type Process struct {
-	InstanceID string
-	Handle     string
-	Binary     string
-	cmd        *exec.Cmd
-	done       chan struct{} // closed when process exits
-	stopOnce   sync.Once
+	InstanceID  string
+	Handle      string
+	Binary      string
+	instanceEnv map[string]string // resolved secrets for env injection
+	cmd         *exec.Cmd
+	done        chan struct{} // closed when process exits
+	stopOnce    sync.Once
 }
 
 // NewManager creates a daemon manager.
@@ -54,7 +55,8 @@ func NewManager(binDir, dataDir, socketPath string) *Manager {
 // StartDaemons spawns instance daemons declared by the kit manifest.
 // No-op if the instance has no kit or the kit has no instance_daemons.
 // No-op if daemons are already running for this instance.
-func (m *Manager) StartDaemons(instanceID, handle, kitName string) error {
+// instanceEnv is the resolved env map (secrets + explicit env) to pass to daemons.
+func (m *Manager) StartDaemons(instanceID, handle, kitName string, instanceEnv map[string]string) error {
 	if kitName == "" {
 		return nil
 	}
@@ -77,7 +79,7 @@ func (m *Manager) StartDaemons(instanceID, handle, kitName string) error {
 
 	var procs []*Process
 	for _, d := range manifest.InstanceDaemons {
-		p, err := m.spawn(instanceID, handle, d.Binary)
+		p, err := m.spawn(instanceID, handle, d.Binary, instanceEnv)
 		if err != nil {
 			// Stop any already-started daemons for this instance
 			for _, started := range procs {
@@ -141,7 +143,7 @@ func (m *Manager) IsRunning(instanceID string) bool {
 }
 
 // spawn starts a single daemon binary for an instance.
-func (m *Manager) spawn(instanceID, handle, binary string) (*Process, error) {
+func (m *Manager) spawn(instanceID, handle, binary string, instanceEnv map[string]string) (*Process, error) {
 	binPath := filepath.Join(m.binDir, binary)
 	if _, err := os.Stat(binPath); err != nil {
 		return nil, fmt.Errorf("binary %q not found at %s", binary, binPath)
@@ -162,6 +164,11 @@ func (m *Manager) spawn(instanceID, handle, binary string) (*Process, error) {
 		"AEGIS_INSTANCE="+handle,
 		"AEGIS_SOCKET="+m.socketPath,
 	)
+	// Inject instance's resolved secrets so daemons can read them from env
+	// (same mechanism as guest-side env injection).
+	for k, v := range instanceEnv {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
 
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
@@ -169,11 +176,12 @@ func (m *Manager) spawn(instanceID, handle, binary string) (*Process, error) {
 	}
 
 	p := &Process{
-		InstanceID: instanceID,
-		Handle:     handle,
-		Binary:     binary,
-		cmd:        cmd,
-		done:       make(chan struct{}),
+		InstanceID:  instanceID,
+		Handle:      handle,
+		Binary:      binary,
+		instanceEnv: instanceEnv,
+		cmd:         cmd,
+		done:        make(chan struct{}),
 	}
 
 	log.Printf("daemon: started %s for instance %s (pid %d)", binary, handle, cmd.Process.Pid)
@@ -258,6 +266,9 @@ func (m *Manager) monitor(p *Process, logFile *os.File) {
 			"AEGIS_INSTANCE="+p.Handle,
 			"AEGIS_SOCKET="+m.socketPath,
 		)
+		for k, v := range p.instanceEnv {
+			newCmd.Env = append(newCmd.Env, k+"="+v)
+		}
 
 		if err := newCmd.Start(); err != nil {
 			log.Printf("daemon: restart %s for %s failed: %v", p.Binary, p.Handle, err)

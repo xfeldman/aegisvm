@@ -56,8 +56,8 @@ make all
 
 ```
 aegis up / down / status / doctor
-aegis run [--expose [PUB:]GUEST[/proto]] [--env K=V] [--secret KEY] [--name H] [--workspace W] [--kit KIT] -- CMD
-aegis instance start [--name H] [--expose [PUB:]GUEST[/proto]] [--env K=V] [--secret KEY] [--workspace W] [--image REF] [--kit KIT] -- CMD
+aegis run [--expose [PUB:]GUEST[/proto]] [--env KEY|K=V|K=secret.name] [--name H] [--workspace W] [--kit KIT] -- CMD
+aegis instance start [--name H] [--expose [PUB:]GUEST[/proto]] [--env KEY|K=V|K=secret.name] [--workspace W] [--image REF] [--kit KIT] -- CMD
 aegis instance start --name H                              (restart stopped instance)
 aegis instance list [--stopped | --running] / info / disable / delete / pause / resume
 aegis instance prune --stopped-older-than <dur>

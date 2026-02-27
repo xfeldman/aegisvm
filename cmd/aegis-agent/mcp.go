@@ -20,6 +20,7 @@ const agentConfigPath = "/workspace/.aegis/agent.json"
 // Loaded from /workspace/.aegis/agent.json with env var overrides.
 type AgentConfig struct {
 	Model        string                     `json:"model,omitempty"`
+	APIKeyEnv    string                     `json:"api_key_env,omitempty"` // env var holding the LLM API key (e.g. "OPENAI_API_KEY")
 	MaxTokens    int                        `json:"max_tokens,omitempty"`
 	ContextChars int                        `json:"context_chars,omitempty"`
 	ContextTurns int                        `json:"context_turns,omitempty"`

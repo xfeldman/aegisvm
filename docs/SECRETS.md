@@ -19,25 +19,32 @@ Secrets are a flat key-value store. No scoping, no naming conventions, no rotati
 ## Injection
 
 Secrets are **not injected by default**. Each instance explicitly declares which
-secrets it receives:
+secrets it receives via the `--env` flag:
 
 ```bash
-# Inject specific secrets
-aegis run --secret API_KEY --secret DB_URL -- python app.py
+# Inject specific secrets (bare key = secret lookup)
+aegis run --env API_KEY --env DB_URL -- python app.py
+
+# Inject with mapped secret name
+aegis run --env API_KEY=secret.my_api_key -- python app.py
 
 # Inject all secrets
-aegis run --secret '*' -- python agent.py
+aegis run --env '*' -- python agent.py
 
-# No --secret flag = no secrets injected
+# Mix secrets and literal values
+aegis run --env API_KEY --env DEBUG=true -- python app.py
+
+# No --env flag = no secrets injected
 aegis run -- echo hello
 ```
 
-API equivalent: `"secrets": ["API_KEY", "DB_URL"]` or `"secrets": ["*"]` or `"secrets": []` (default).
+The `--env` flag supports three forms:
+- `--env KEY` — bare key, shorthand for `--env KEY=secret.KEY` (secret lookup)
+- `--env KEY=secret.name` — mapped secret reference (inject secret `name` as env var `KEY`)
+- `--env KEY=value` — literal value (no secret lookup)
 
 At boot time, matching secrets are decrypted on the host and injected as env vars
 via the `run` RPC. The harness passes them to the child process via `execve`.
-
-Per-instance env vars (from `--env` flag) take precedence over secrets on name collision.
 
 ## What Aegis Guarantees
 

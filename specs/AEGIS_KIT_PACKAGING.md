@@ -58,7 +58,7 @@ Plus a kit manifest at `~/.aegis/kits/agent.json` (created on first use or by po
     {
       "path": ".aegis/agent.json",
       "label": "Agent",
-      "example": { "model": "openai/gpt-4.1", "mcp": {}, "disabled_tools": [] }
+      "default": { "model": "openai/gpt-4.1", "mcp": {}, "disabled_tools": [] }
     }
   ],
   "instance_daemons": [
@@ -67,7 +67,7 @@ Plus a kit manifest at `~/.aegis/kits/agent.json` (created on first use or by po
       "config": {
         "path": "gateway.json",
         "label": "Gateway",
-        "example": { "telegram": { "bot_token_secret": "TELEGRAM_BOT_TOKEN", "allowed_chats": ["*"] } }
+        "default": { "telegram": { "bot_token_env": "TELEGRAM_BOT_TOKEN", "allowed_chats": ["*"] } }
       }
     }
   ],
@@ -101,7 +101,7 @@ Config files are declared in two places — location is implicit from structure:
 
 ```json
 "config": [
-  { "path": ".aegis/agent.json", "label": "Agent", "example": {...} }
+  { "path": ".aegis/agent.json", "label": "Agent", "default": {...} }
 ]
 ```
 
@@ -109,7 +109,7 @@ Config files are declared in two places — location is implicit from structure:
 
 ```json
 "instance_daemons": [
-  { "binary": "aegis-gateway", "config": { "path": "gateway.json", "label": "Gateway", "example": {...} } }
+  { "binary": "aegis-gateway", "config": { "path": "gateway.json", "label": "Gateway", "default": {...} } }
 ]
 ```
 
@@ -117,7 +117,7 @@ Config files are declared in two places — location is implicit from structure:
 |-------|----------|-------------|
 | `path` | yes | File path relative to the location root |
 | `label` | no | Short display name for the UI sub-tab (defaults to `path`) |
-| `example` | no | Example config object shown as ghost preview in the editor when the file doesn't exist yet |
+| `default` | no | Default config written on instance creation if the file doesn't exist. Shown as ghost preview in the UI editor for reset. |
 
 No `location` field needed — the structure determines it:
 - Kit-level `config[]` → workspace. Read/write via `GET/POST /v1/instances/{id}/workspace?path=...`. "Save + Restart" sends tether message prompting `self_restart`.
@@ -151,7 +151,7 @@ No kits installed.
 Creates an instance using a kit's defaults. The kit manifest provides command, image, capabilities. The user provides the name, secrets, and workspace.
 
 ```bash
-aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
+aegis instance start --kit agent --name my-agent --env OPENAI_API_KEY
 ```
 
 Equivalent to:
@@ -160,7 +160,7 @@ Equivalent to:
 aegis instance start \
   --name my-agent \
   --image python:3.12-alpine \
-  --secret OPENAI_API_KEY \
+  --env OPENAI_API_KEY \
   --workspace my-agent \
   --capabilities '{"spawn":true,"spawn_depth":2,...}' \
   -- aegis-agent
@@ -169,7 +169,7 @@ aegis instance start \
 Behavior:
 - `--kit` is a **preset** — it supplies defaults for command, image, and capabilities from the manifest
 - `--name` is required (used as workspace name if `--workspace` not given)
-- `--secret` / `--env` / `--workspace` / `--expose` can be specified and override kit defaults
+- `--env` / `--workspace` / `--expose` can be specified and override kit defaults
 - `-- <command>` can be specified to override the kit's default command (useful for debugging, e.g. `--kit agent -- sh` to get a shell in a kit-configured VM)
 - Precedence: explicit flags > kit defaults > global defaults
 

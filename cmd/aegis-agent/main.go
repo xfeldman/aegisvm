@@ -93,24 +93,36 @@ func main() {
 		}
 	}
 
-	claudeKey := os.Getenv("ANTHROPIC_API_KEY")
-	openaiKey := os.Getenv("OPENAI_API_KEY")
+	// Resolve API key from config.api_key_env — no magic env var sniffing
+	var apiKey string
+	if config.APIKeyEnv != "" {
+		apiKey = os.Getenv(config.APIKeyEnv)
+		if apiKey == "" {
+			log.Printf("WARNING: api_key_env=%q is set but env var is empty", config.APIKeyEnv)
+		}
+		// Auto-detect provider from env var name if not set via model prefix
+		if provider == "" {
+			switch {
+			case strings.Contains(strings.ToLower(config.APIKeyEnv), "anthropic"):
+				provider = "anthropic"
+			case strings.Contains(strings.ToLower(config.APIKeyEnv), "openai"):
+				provider = "openai"
+			}
+		}
+	}
 
 	switch {
 	case provider == "claude" || provider == "anthropic":
-		agent.llm = &ClaudeLLM{apiKey: claudeKey, model: modelName, maxTokens: maxTokens}
+		agent.llm = &ClaudeLLM{apiKey: apiKey, model: modelName, maxTokens: maxTokens}
 		log.Printf("LLM provider: Claude (model=%s)", modelName)
 	case provider == "openai":
-		agent.llm = &OpenAILLM{apiKey: openaiKey, model: modelName, maxTokens: maxTokens}
+		agent.llm = &OpenAILLM{apiKey: apiKey, model: modelName, maxTokens: maxTokens}
 		log.Printf("LLM provider: OpenAI (model=%s)", modelName)
-	case claudeKey != "":
-		agent.llm = &ClaudeLLM{apiKey: claudeKey, model: modelName, maxTokens: maxTokens}
-		log.Println("LLM provider: Claude")
-	case openaiKey != "":
-		agent.llm = &OpenAILLM{apiKey: openaiKey, model: modelName, maxTokens: maxTokens}
-		log.Println("LLM provider: OpenAI")
+	case apiKey != "":
+		agent.llm = &OpenAILLM{apiKey: apiKey, model: modelName, maxTokens: maxTokens}
+		log.Printf("LLM provider: OpenAI-compatible (model=%s)", modelName)
 	default:
-		log.Println("WARNING: no LLM API key set (ANTHROPIC_API_KEY or OPENAI_API_KEY)")
+		log.Println("WARNING: no LLM API key — set api_key_env in agent.json and pass the key via --env")
 	}
 
 	agent.systemPrompt = config.SystemPrompt

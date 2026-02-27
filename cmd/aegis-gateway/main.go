@@ -97,17 +97,18 @@ func runLegacy(socketPath string) {
 	cfg := loadLegacyConfig(socketPath)
 	client := newAegisClient(cfg.AegisSocket)
 
-	// Resolve bot token
-	if cfg.Telegram.BotToken == "" && cfg.Telegram.BotTokenSecret != "" {
-		val, err := client.getSecret(cfg.Telegram.BotTokenSecret)
-		if err != nil {
-			log.Fatalf("resolve bot token secret %q: %v", cfg.Telegram.BotTokenSecret, err)
+	// Bot token: config literal → env var declared in config → TELEGRAM_BOT_TOKEN fallback
+	if cfg.Telegram.BotToken == "" {
+		envKey := cfg.Telegram.BotTokenEnv
+		if envKey == "" {
+			envKey = "TELEGRAM_BOT_TOKEN"
 		}
-		cfg.Telegram.BotToken = val
-		log.Printf("bot token resolved from secret %q", cfg.Telegram.BotTokenSecret)
+		if v := os.Getenv(envKey); v != "" {
+			cfg.Telegram.BotToken = v
+		}
 	}
 	if cfg.Telegram.BotToken == "" {
-		log.Fatal("telegram bot token not configured")
+		log.Fatal("telegram bot token not configured (use --env TELEGRAM_BOT_TOKEN on the instance)")
 	}
 
 	gw := &Gateway{
@@ -138,10 +139,10 @@ type LegacyConfig struct {
 }
 
 type TelegramConfig struct {
-	BotToken       string   `json:"bot_token"`
-	BotTokenSecret string   `json:"bot_token_secret"`
-	Instance       string   `json:"instance"`
-	AllowedChats   []string `json:"allowed_chats"`
+	BotToken    string   `json:"bot_token"`
+	BotTokenEnv string   `json:"bot_token_env"` // env var name to read token from (e.g. "TELEGRAM_BOT_TOKEN")
+	Instance    string   `json:"instance"`
+	AllowedChats []string `json:"allowed_chats"`
 }
 
 // InstanceGatewayConfig is the per-instance config at ~/.aegis/kits/{handle}/gateway.json.
@@ -300,16 +301,16 @@ func (gw *Gateway) applyConfig(ctx context.Context) {
 		return
 	}
 
-	// Resolve bot token from secret store
+	// Bot token: config literal → env var declared in config → TELEGRAM_BOT_TOKEN fallback
 	tc := cfg.Telegram
-	if tc.BotToken == "" && tc.BotTokenSecret != "" {
-		val, err := gw.aegisClient.getSecret(tc.BotTokenSecret)
-		if err != nil {
-			log.Printf("resolve bot token secret %q: %v (keeping last-known-good)", tc.BotTokenSecret, err)
-			return
+	if tc.BotToken == "" {
+		envKey := tc.BotTokenEnv
+		if envKey == "" {
+			envKey = "TELEGRAM_BOT_TOKEN"
 		}
-		tc.BotToken = val
-		log.Printf("bot token resolved from secret %q", tc.BotTokenSecret)
+		if v := os.Getenv(envKey); v != "" {
+			tc.BotToken = v
+		}
 	}
 
 	if tc.BotToken == "" {
@@ -1014,24 +1015,6 @@ func newAegisClient(socketPath string) *aegisClient {
 	}
 }
 
-func (c *aegisClient) getSecret(name string) (string, error) {
-	url := fmt.Sprintf("http://aegis/v1/secrets/%s", name)
-	resp, err := c.httpClient.Get(url)
-	if err != nil {
-		return "", fmt.Errorf("get secret: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("get secret %d: %s", resp.StatusCode, string(body))
-	}
-	var result struct {
-		Value string `json:"value"`
-	}
-	json.NewDecoder(resp.Body).Decode(&result)
-	return result.Value, nil
-}
-
 func (c *aegisClient) getInstanceWorkspace(instanceID string) (string, error) {
 	url := fmt.Sprintf("http://aegis/v1/instances/%s", instanceID)
 	resp, err := c.httpClient.Get(url)
@@ -1112,12 +1095,6 @@ func loadLegacyConfig(socketPath string) *LegacyConfig {
 	if inst := os.Getenv("AEGIS_GATEWAY_INSTANCE"); inst != "" {
 		cfg.Telegram.Instance = inst
 	}
-	if cfg.Telegram.BotTokenSecret == "" {
-		if secretName := os.Getenv("TELEGRAM_BOT_TOKEN_SECRET"); secretName != "" {
-			cfg.Telegram.BotTokenSecret = secretName
-		}
-	}
-
 	return cfg
 }
 

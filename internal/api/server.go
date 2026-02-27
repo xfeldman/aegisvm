@@ -175,9 +175,6 @@ func (s *Server) handleListKits(w http.ResponseWriter, r *http.Request) {
 		if m.Image.Base != "" {
 			entry["image"] = m.Image.Base
 		}
-		if len(m.RequiredSecrets) > 0 {
-			entry["required_secrets"] = m.RequiredSecrets
-		}
 		if len(m.Defaults.Command) > 0 {
 			entry["defaults"] = map[string]interface{}{
 				"command": m.Defaults.Command,
@@ -194,8 +191,8 @@ func (s *Server) handleListKits(w http.ResponseWriter, r *http.Request) {
 				if d.Config.Label != "" {
 					cfg["label"] = d.Config.Label
 				}
-				if d.Config.Example != nil {
-					cfg["example"] = json.RawMessage(d.Config.Example)
+				if d.Config.Default != nil {
+					cfg["default"] = json.RawMessage(d.Config.Default)
 				}
 				cfgs = append(cfgs, cfg)
 			}
@@ -208,17 +205,67 @@ func (s *Server) handleListKits(w http.ResponseWriter, r *http.Request) {
 			if c.Label != "" {
 				cfg["label"] = c.Label
 			}
-			if c.Example != nil {
-				cfg["example"] = json.RawMessage(c.Example)
+			if c.Default != nil {
+				cfg["default"] = json.RawMessage(c.Default)
 			}
 			cfgs = append(cfgs, cfg)
 		}
 		if len(cfgs) > 0 {
 			entry["config"] = cfgs
 		}
+		// Extract env vars referenced by configs (any *_env field value)
+		if envRefs := extractReferencedEnv(m); len(envRefs) > 0 {
+			entry["referenced_env"] = envRefs
+		}
 		result = append(result, entry)
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// extractReferencedEnv scans all config defaults in a kit manifest for fields
+// ending in "_env" and returns the unique string values. This tells callers
+// (MCP, UI) which env vars the kit's configs expect.
+func extractReferencedEnv(m *kit.Manifest) []string {
+	seen := make(map[string]bool)
+	var result []string
+
+	collect := func(raw json.RawMessage) {
+		if raw == nil {
+			return
+		}
+		scanEnvFields(raw, seen, &result)
+	}
+
+	for _, c := range m.Config {
+		collect(c.Default)
+	}
+	for _, d := range m.InstanceDaemons {
+		if d.Config != nil {
+			collect(d.Config.Default)
+		}
+	}
+	return result
+}
+
+// scanEnvFields recursively scans a JSON value for keys ending in "_env"
+// and collects their string values.
+func scanEnvFields(raw json.RawMessage, seen map[string]bool, result *[]string) {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil {
+		return
+	}
+	for key, val := range obj {
+		if strings.HasSuffix(key, "_env") {
+			var s string
+			if json.Unmarshal(val, &s) == nil && s != "" && !seen[s] {
+				seen[s] = true
+				*result = append(*result, s)
+			}
+		} else {
+			// Recurse into nested objects
+			scanEnvFields(val, seen, result)
+		}
+	}
 }
 
 // Instance API types
@@ -309,6 +356,11 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		opts = append(opts, lifecycle.WithKit(req.Kit))
 	}
 
+	// Write default kit configs if they don't exist yet
+	if req.Kit != "" {
+		s.writeDefaultKitConfigs(req.Kit, req.Workspace, req.Handle, id)
+	}
+
 	// Create in lifecycle manager.
 	// This triggers onInstanceCreated which handles router port allocation
 	// and registry persistence — same path as guest API spawns.
@@ -320,7 +372,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		if handle == "" {
 			handle = id
 		}
-		if err := s.daemons.StartDaemons(id, handle, req.Kit); err != nil {
+		if err := s.daemons.StartDaemons(id, handle, req.Kit, env); err != nil {
 			log.Printf("instance %s start daemons: %v", id, err)
 		}
 	}
@@ -369,7 +421,7 @@ func (s *Server) handleRestartOrConflict(w http.ResponseWriter, inst *lifecycle.
 		if handle == "" {
 			handle = inst.ID
 		}
-		if err := s.daemons.StartDaemons(inst.ID, handle, inst.Kit); err != nil {
+		if err := s.daemons.StartDaemons(inst.ID, handle, inst.Kit, inst.Env); err != nil {
 			log.Printf("instance %s start daemons: %v", inst.ID, err)
 		}
 	}
@@ -838,7 +890,7 @@ func (s *Server) handleStartInstance(w http.ResponseWriter, r *http.Request) {
 		if handle == "" {
 			handle = inst.ID
 		}
-		if err := s.daemons.StartDaemons(inst.ID, handle, inst.Kit); err != nil {
+		if err := s.daemons.StartDaemons(inst.ID, handle, inst.Kit, inst.Env); err != nil {
 			log.Printf("instance %s start daemons: %v", inst.ID, err)
 		}
 	}
@@ -1237,6 +1289,56 @@ func (s *Server) handleWorkspaceWrite(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// writeDefaultKitConfigs writes default config files from the kit manifest
+// if they don't already exist. Called on instance creation.
+func (s *Server) writeDefaultKitConfigs(kitName, workspacePath, handle, id string) {
+	manifest, err := kit.LoadManifest(kitName)
+	if err != nil {
+		return
+	}
+
+	// Workspace configs (guest-side)
+	for _, c := range manifest.Config {
+		if c.Default == nil || workspacePath == "" {
+			continue
+		}
+		fullPath := filepath.Join(workspacePath, filepath.Clean(c.Path))
+		if _, err := os.Stat(fullPath); err == nil {
+			continue // already exists
+		}
+		os.MkdirAll(filepath.Dir(fullPath), 0755)
+		formatted, err := json.MarshalIndent(json.RawMessage(c.Default), "", "  ")
+		if err != nil {
+			continue
+		}
+		os.WriteFile(fullPath, append(formatted, '\n'), 0644)
+		log.Printf("kit %s: wrote default config %s", kitName, c.Path)
+	}
+
+	// Host configs (daemon-side)
+	h := handle
+	if h == "" {
+		h = id
+	}
+	for _, d := range manifest.InstanceDaemons {
+		if d.Config == nil || d.Config.Default == nil {
+			continue
+		}
+		dir := filepath.Join(kit.KitsDir(), h)
+		fullPath := filepath.Join(dir, d.Config.Path)
+		if _, err := os.Stat(fullPath); err == nil {
+			continue // already exists
+		}
+		os.MkdirAll(dir, 0755)
+		formatted, err := json.MarshalIndent(json.RawMessage(d.Config.Default), "", "  ")
+		if err != nil {
+			continue
+		}
+		os.WriteFile(fullPath, append(formatted, '\n'), 0644)
+		log.Printf("kit %s: wrote default config %s/%s", kitName, h, d.Config.Path)
+	}
+}
+
 // Kit config handlers — host-side config at ~/.aegis/kits/{handle}/{file}
 
 func (s *Server) kitConfigDir(inst *lifecycle.Instance) string {
@@ -1570,9 +1672,10 @@ func (s *Server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
 // resolveEnv builds the final env map for an instance by resolving secrets
 // from the allowlist and merging explicit env vars on top.
 //
-//   - secretKeys == nil or []  → inject no secrets
-//   - secretKeys == ["*"]      → inject all secrets
-//   - secretKeys == ["A","B"]  → inject only named secrets
+//   - secretKeys == nil or []                      → inject no secrets
+//   - secretKeys == ["*"]                          → inject all secrets
+//   - secretKeys == ["KEY"]                        → inject secret.KEY as KEY
+//   - secretKeys == ["ENV_VAR=secret.secret_name"]  → inject secret.secret_name as ENV_VAR
 //
 // Explicit env vars always override secrets on name collision.
 func (s *Server) resolveEnv(secretKeys []string, explicitEnv map[string]string) map[string]string {
@@ -1580,19 +1683,36 @@ func (s *Server) resolveEnv(secretKeys []string, explicitEnv map[string]string) 
 
 	if s.secretStore != nil && len(secretKeys) > 0 {
 		injectAll := len(secretKeys) == 1 && secretKeys[0] == "*"
-		var allowlist map[string]bool
+
+		// Parse mappings:
+		//   "KEY"                    → envName=KEY, storeName=KEY
+		//   "ENV_VAR=secret.name"    → envName=ENV_VAR, storeName=name
+		allowlist := make(map[string]string) // storeName → envName
 		if !injectAll {
-			allowlist = make(map[string]bool, len(secretKeys))
 			for _, k := range secretKeys {
-				allowlist[k] = true
+				if eq := strings.Index(k, "="); eq > 0 && strings.HasPrefix(k[eq+1:], "secret.") {
+					envName := k[:eq]
+					storeName := k[eq+1+len("secret."):]
+					if storeName != "" {
+						allowlist[storeName] = envName
+					}
+				} else {
+					allowlist[k] = k
+				}
 			}
 		}
+
 		secrets, _ := s.registry.ListSecrets()
 		for _, sec := range secrets {
-			if injectAll || allowlist[sec.Name] {
+			if injectAll {
 				val, err := s.secretStore.DecryptString(sec.EncryptedValue)
 				if err == nil {
 					env[sec.Name] = val
+				}
+			} else if envName, ok := allowlist[sec.Name]; ok {
+				val, err := s.secretStore.DecryptString(sec.EncryptedValue)
+				if err == nil {
+					env[envName] = val
 				}
 			}
 		}

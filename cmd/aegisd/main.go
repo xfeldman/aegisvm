@@ -232,7 +232,7 @@ func main() {
 				if handle == "" {
 					handle = ri.ID
 				}
-				if err := dm.StartDaemons(ri.ID, handle, ri.Kit); err != nil {
+				if err := dm.StartDaemons(ri.ID, handle, ri.Kit, inst.Env); err != nil {
 					log.Printf("start daemons for %s: %v", ri.ID, err)
 				}
 			}

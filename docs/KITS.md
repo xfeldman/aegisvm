@@ -21,7 +21,7 @@ The `--kit` flag on `aegis instance start` is a preset. It supplies default comm
 
 ```bash
 # Create an instance using kit defaults
-aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY
+aegis instance start --kit agent --name my-agent --env OPENAI_API_KEY
 
 # Override the command (e.g. debug shell in a kit-configured VM)
 aegis instance start --kit agent --name debug -- sh
