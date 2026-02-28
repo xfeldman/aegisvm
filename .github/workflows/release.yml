@@ -83,9 +83,16 @@ jobs:
         run: |
           APP="bin/AegisVM.app"
 
-          # Sign Resources binaries (bottom-up)
-          for bin in ${APP}/Contents/Resources/aegis-*; do
-            if [ "$bin" = "${APP}/Contents/Resources/aegis-vmm-worker" ]; then
+          # Sign all Mach-O binaries in Resources (bottom-up)
+          # Linux binaries (aegis-harness, aegis-agent, aegis-mcp-guest) are skipped
+          for bin in ${APP}/Contents/Resources/*; do
+            [ -f "$bin" ] || continue
+            # Skip non-Mach-O files (Linux ELF binaries, JSON, etc.)
+            if ! file "$bin" | grep -q "Mach-O"; then
+              echo "Skipping non-Mach-O: $bin"
+              continue
+            fi
+            if [ "$(basename "$bin")" = "aegis-vmm-worker" ]; then
               codesign --sign "${MACOS_SIGNING_IDENTITY}" --entitlements entitlements.plist \
                 --options runtime --timestamp --force "$bin"
             else
@@ -140,11 +147,25 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           NOTARIZATION_PWD: ${{ secrets.NOTARIZATION_PWD }}
         run: |
-          xcrun notarytool submit "${DMG_NAME}" \
+          SUBMIT_OUT=$(xcrun notarytool submit "${DMG_NAME}" \
             --apple-id "${APPLE_ID}" \
             --team-id "${APPLE_TEAM_ID}" \
             --password "${NOTARIZATION_PWD}" \
-            --wait
+            --wait 2>&1) || true
+          echo "${SUBMIT_OUT}"
+
+          SUBMISSION_ID=$(echo "${SUBMIT_OUT}" | grep "id:" | head -1 | awk '{print $2}')
+
+          if echo "${SUBMIT_OUT}" | grep -q "status: Invalid"; then
+            echo "::error::Notarization failed. Fetching log..."
+            xcrun notarytool log "${SUBMISSION_ID}" \
+              --apple-id "${APPLE_ID}" \
+              --team-id "${APPLE_TEAM_ID}" \
+              --password "${NOTARIZATION_PWD}" \
+              notarization-log.json
+            cat notarization-log.json
+            exit 1
+          fi
 
           xcrun stapler staple "${DMG_NAME}"
 
