@@ -1504,13 +1504,8 @@ func (s *Server) handleTetherStream(w http.ResponseWriter, r *http.Request) {
 		f.Flush()
 	}
 
-	// Stream recent frames first
-	recent := ts.Recent(inst.ID, 50)
-	for _, frame := range recent {
-		streamJSON(w, frame)
-	}
-
-	// Subscribe to live frames
+	// Subscribe to live frames only — no history replay.
+	// Clients that need history should use the poll endpoint with after_seq=0.
 	ch, unsub := ts.Subscribe(inst.ID)
 	defer unsub()
 
