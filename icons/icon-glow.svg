@@ -1,0 +1,12 @@
+<svg width="1024" height="1024" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="gy" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3"/></filter>
+    <filter id="gg" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3"/></filter>
+  </defs>
+  <rect width="100" height="100" rx="20" fill="#0a1628"/>
+  <circle cx="19" cy="50" r="11" fill="#fbbf24" filter="url(#gy)" opacity="0.25"/>
+  <circle cx="41" cy="50" r="11" fill="#34d399" filter="url(#gg)" opacity="0.25"/>
+  <circle cx="19" cy="50" r="9" fill="#fbbf24"/>
+  <circle cx="41" cy="50" r="9" fill="#34d399"/>
+  <text x="73" y="62" text-anchor="middle" font-family="'GFS Neohellenic', serif" font-weight="700" font-style="italic" font-size="68" fill="#f0f0f0">α</text>
+</svg>

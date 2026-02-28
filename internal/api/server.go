@@ -550,13 +550,18 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 	instances := s.lifecycle.ListInstances()
 
 	// Stable sort: running → paused → stopped → disabled, then oldest first within each group.
-	sort.SliceStable(instances, func(i, j int) bool {
+	// Uses CreatedAt (immutable) as secondary key instead of UpdatedAt (changes on state transitions).
+	// ID as final tiebreaker since ListInstances() iterates a map (non-deterministic order).
+	sort.Slice(instances, func(i, j int) bool {
 		si := instanceSortKey(instances[i].State, instances[i].Enabled)
 		sj := instanceSortKey(instances[j].State, instances[j].Enabled)
 		if si != sj {
 			return si < sj
 		}
-		return instances[i].UpdatedAt.Before(instances[j].UpdatedAt)
+		if !instances[i].CreatedAt.Equal(instances[j].CreatedAt) {
+			return instances[i].CreatedAt.Before(instances[j].CreatedAt)
+		}
+		return instances[i].ID < instances[j].ID
 	})
 
 	// Optional state filter: ?state=stopped or ?state=running
