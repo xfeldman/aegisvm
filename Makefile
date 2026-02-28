@@ -138,7 +138,8 @@ package-mac: all desktop
 	cp /opt/homebrew/opt/libepoxy/lib/libepoxy.0.dylib $(APP_DIR)/Contents/Frameworks/
 	cp /opt/homebrew/opt/virglrenderer/lib/libvirglrenderer.1.dylib $(APP_DIR)/Contents/Frameworks/
 	cp /opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib $(APP_DIR)/Contents/Frameworks/
-	cp -L /opt/homebrew/opt/libkrunfw/lib/libkrunfw.dylib $(APP_DIR)/Contents/Frameworks/
+	cp /opt/homebrew/opt/libkrunfw/lib/libkrunfw.5.dylib $(APP_DIR)/Contents/Frameworks/
+	cd $(APP_DIR)/Contents/Frameworks && ln -sf libkrunfw.5.dylib libkrunfw.dylib
 	# Rewrite vmm-worker: libkrun load path → @rpath, add rpaths for .app and ~/.aegis/
 	install_name_tool -change /opt/homebrew/opt/libkrun/lib/libkrun.1.dylib @rpath/libkrun.1.dylib \
 		$(APP_DIR)/Contents/Resources/aegis-vmm-worker
@@ -161,7 +162,7 @@ package-mac: all desktop
 	# Rewrite remaining dylibs: set id only (no Homebrew cross-refs)
 	install_name_tool -id @rpath/libepoxy.0.dylib $(APP_DIR)/Contents/Frameworks/libepoxy.0.dylib
 	install_name_tool -id @rpath/libMoltenVK.dylib $(APP_DIR)/Contents/Frameworks/libMoltenVK.dylib
-	install_name_tool -id @rpath/libkrunfw.dylib $(APP_DIR)/Contents/Frameworks/libkrunfw.dylib
+	install_name_tool -id @rpath/libkrunfw.5.dylib $(APP_DIR)/Contents/Frameworks/libkrunfw.5.dylib
 	# Sign vmm-worker with entitlements (after install_name_tool rewrites)
 	@if [ -f $(APP_DIR)/Contents/Resources/aegis-vmm-worker ]; then \
 		codesign --sign - --entitlements entitlements.plist --force $(APP_DIR)/Contents/Resources/aegis-vmm-worker; \
