@@ -20,11 +20,18 @@ jobs:
           go-version: '1.23'
           cache: false
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Install dependencies
         run: brew tap slp/krun && brew install libkrun e2fsprogs
 
       - name: Set version from tag
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+
+      - name: Build frontend
+        run: make ui-frontend
 
       - name: Build all binaries
         run: make all VERSION=${{ env.VERSION }}
@@ -48,17 +55,123 @@ jobs:
           echo "KIT_TARBALL=${KIT_TARBALL}" >> $GITHUB_ENV
           shasum -a 256 "${KIT_TARBALL}" | awk '{print $1}' > "${KIT_TARBALL}.sha256"
 
+      # --- Desktop App (DMG) ---
+      - name: Build desktop app
+        run: make package-mac VERSION=${VERSION}
+
+      - name: Import signing certificate
+        if: env.MACOS_CERTIFICATE != ''
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PWD: ${{ secrets.KEYCHAIN_PWD }}
+        run: |
+          CERT_FILE=$(mktemp /tmp/cert.XXXXXX.p12)
+          echo "${MACOS_CERTIFICATE}" | base64 --decode > "${CERT_FILE}"
+          security create-keychain -p "${KEYCHAIN_PWD}" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "${KEYCHAIN_PWD}" build.keychain
+          security import "${CERT_FILE}" -k build.keychain -P "${MACOS_CERTIFICATE_PWD}" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${KEYCHAIN_PWD}" build.keychain
+          rm -f "${CERT_FILE}"
+
+      - name: Sign .app bundle
+        if: env.MACOS_CERTIFICATE != ''
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          APP="bin/AegisVM.app"
+
+          # Sign Resources binaries (bottom-up)
+          for bin in ${APP}/Contents/Resources/aegis-*; do
+            if [ "$bin" = "${APP}/Contents/Resources/aegis-vmm-worker" ]; then
+              codesign --sign "${MACOS_SIGNING_IDENTITY}" --entitlements entitlements.plist \
+                --options runtime --timestamp --force "$bin"
+            else
+              codesign --sign "${MACOS_SIGNING_IDENTITY}" \
+                --options runtime --timestamp --force "$bin"
+            fi
+          done
+
+          # Sign main executable
+          codesign --sign "${MACOS_SIGNING_IDENTITY}" \
+            --options runtime --timestamp --force "${APP}/Contents/MacOS/aegis-ui"
+
+          # Sign the bundle
+          codesign --sign "${MACOS_SIGNING_IDENTITY}" \
+            --options runtime --timestamp --force "${APP}"
+
+      - name: Create DMG
+        if: env.MACOS_CERTIFICATE != ''
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          brew install create-dmg
+          DMG_NAME="AegisVM-${VERSION}.dmg"
+
+          # create-dmg expects a folder containing the .app
+          mkdir -p /tmp/dmg-staging
+          cp -R bin/AegisVM.app /tmp/dmg-staging/
+
+          create-dmg \
+            --volname "AegisVM" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "AegisVM.app" 150 190 \
+            --app-drop-link 450 190 \
+            "${DMG_NAME}" \
+            "/tmp/dmg-staging"
+
+          rm -rf /tmp/dmg-staging
+
+          # Sign the DMG
+          codesign --sign "${MACOS_SIGNING_IDENTITY}" --timestamp --force "${DMG_NAME}"
+
+          echo "DMG_NAME=${DMG_NAME}" >> $GITHUB_ENV
+
+      - name: Notarize DMG
+        if: env.MACOS_CERTIFICATE != ''
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          NOTARIZATION_PWD: ${{ secrets.NOTARIZATION_PWD }}
+        run: |
+          xcrun notarytool submit "${DMG_NAME}" \
+            --apple-id "${APPLE_ID}" \
+            --team-id "${APPLE_TEAM_ID}" \
+            --password "${NOTARIZATION_PWD}" \
+            --wait
+
+          xcrun stapler staple "${DMG_NAME}"
+
+      - name: Checksum DMG
+        if: env.DMG_NAME != ''
+        run: |
+          shasum -a 256 "${DMG_NAME}" | awk '{print $1}' > "${DMG_NAME}.sha256"
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          ASSETS=("${TARBALL}" "${TARBALL}.sha256" "${KIT_TARBALL}" "${KIT_TARBALL}.sha256")
+          if [ -n "${DMG_NAME}" ] && [ -f "${DMG_NAME}" ]; then
+            ASSETS+=("${DMG_NAME}" "${DMG_NAME}.sha256")
+          fi
+
           gh release create "${VERSION}" \
             --title "AegisVM ${VERSION}" \
             --generate-notes \
-            "${TARBALL}" \
-            "${TARBALL}.sha256" \
-            "${KIT_TARBALL}" \
-            "${KIT_TARBALL}.sha256"
+            "${ASSETS[@]}"
+
+      - name: Cleanup signing keychain
+        if: always()
+        run: |
+          security delete-keychain build.keychain 2>/dev/null || true
+          security default-keychain -s login.keychain 2>/dev/null || true
 
       - name: Update Homebrew tap
         env:
@@ -83,10 +196,22 @@ jobs:
           sed -i '' "s|sha256 \".*\"|sha256 \"${KIT_SHA256}\"|" Formula/aegisvm-agent-kit.rb
           sed -i '' "s|version \".*\"|version \"${VERSION#v}\"|" Formula/aegisvm-agent-kit.rb
 
+          # Update desktop cask (only if DMG was built)
+          if [ -n "${DMG_NAME}" ] && [ -f "${DMG_NAME}.sha256" ]; then
+            DMG_SHA256=$(cat "${DMG_NAME}.sha256")
+            DMG_URL="https://github.com/xfeldman/aegisvm/releases/download/${VERSION}/${DMG_NAME}"
+            mkdir -p Casks
+            if [ -f Casks/aegisvm-desktop.rb ]; then
+              sed -i '' "s|url \".*\"|url \"${DMG_URL}\"|" Casks/aegisvm-desktop.rb
+              sed -i '' "s|sha256 \".*\"|sha256 \"${DMG_SHA256}\"|" Casks/aegisvm-desktop.rb
+              sed -i '' "s|version \".*\"|version \"${VERSION#v}\"|" Casks/aegisvm-desktop.rb
+            fi
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/aegisvm.rb Formula/aegisvm-agent-kit.rb
-          git commit -m "${VERSION}"
+          git add -A
+          git diff --cached --quiet || git commit -m "${VERSION}"
           git push
 
   release-linux:

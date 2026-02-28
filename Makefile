@@ -126,7 +126,7 @@ BUNDLED_BINS := aegisd aegis-harness aegis-vmm-worker aegis-gateway aegis-agent 
 
 package-mac: all desktop
 	@mkdir -p $(APP_DIR)/Contents/MacOS $(APP_DIR)/Contents/Resources/kits
-	cp cmd/aegis-ui/Info.plist $(APP_DIR)/Contents/
+	sed 's/1.0.0/$(VERSION)/g' cmd/aegis-ui/Info.plist > $(APP_DIR)/Contents/Info.plist
 	cp cmd/aegis-ui/appicon.icns $(APP_DIR)/Contents/Resources/
 	cp $(BIN_DIR)/aegis-ui $(APP_DIR)/Contents/MacOS/
 	@for bin in $(BUNDLED_BINS); do \
