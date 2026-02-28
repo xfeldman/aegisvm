@@ -570,8 +570,8 @@ Build `aegis ui` (web mode) first — validates the full stack without Wails com
 8. ~~**New Instance page** — form with kit/secret selection, port exposure, auto-fills from kit defaults~~ **DONE**
 9. ~~**Secrets page** — list/add/delete with inline form~~ **DONE**
 10. ~~**Kit Config editor** — kit-manifest-driven JSON editor with syntax highlighting, ghost example preview, workspace + host config support~~ **DONE**
-11. **Wails wrapper** — `cmd/aegis-ui/` native app using same frontend + backend
-12. **System tray** — when Wails v3 stabilizes or via third-party lib
+11. ~~**Wails wrapper** — `cmd/aegis-ui/` native app using same frontend + backend~~ **DONE**
+12. ~~**System tray** — when Wails v3 stabilizes or via third-party lib~~ **DONE**
 13. **Polish** — reconnect overlay, keyboard shortcuts, busy button states
 
 ### Implementation notes

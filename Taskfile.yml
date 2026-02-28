@@ -1,0 +1,61 @@
+# Taskfile for Wails v3 build configuration.
+# Used by `wails3 build` and `wails3 dev` for the desktop app.
+# Can also be run directly with `task` (https://taskfile.dev).
+version: '3'
+
+vars:
+  APP_NAME: "AegisVM"
+  BIN_DIR: "bin"
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo "dev"
+
+tasks:
+  # Build frontend assets (Svelte + Vite).
+  build:frontend:
+    dir: ui/frontend
+    cmds:
+      - npm install
+      - npm run build
+    sources:
+      - ui/frontend/src/**/*
+      - ui/frontend/package.json
+      - ui/frontend/vite.config.ts
+    generates:
+      - ui/frontend/dist/**/*
+
+  # Build the desktop app binary.
+  build:
+    deps: [build:frontend]
+    cmds:
+      - >
+        go build -trimpath
+        -ldflags "-X github.com/xfeldman/aegisvm/internal/version.version={{.VERSION}}"
+        -o {{.BIN_DIR}}/aegis-ui ./cmd/aegis-ui
+
+  # Run the Vite dev server (for frontend development).
+  dev:frontend:
+    dir: ui/frontend
+    cmds:
+      - npm run dev
+
+  # Package macOS .app bundle with all binaries.
+  package:mac:
+    deps: [build]
+    vars:
+      APP_DIR: "{{.BIN_DIR}}/AegisVM.app"
+    cmds:
+      - mkdir -p {{.APP_DIR}}/Contents/{MacOS,Resources/kits}
+      - cp cmd/aegis-ui/Info.plist {{.APP_DIR}}/Contents/
+      - cp {{.BIN_DIR}}/aegis-ui {{.APP_DIR}}/Contents/MacOS/
+      # Copy platform binaries into Resources/
+      - |
+        for bin in aegisd aegis-harness aegis-vmm-worker aegis-gateway aegis-agent aegis-mcp aegis-mcp-guest; do
+          [ -f {{.BIN_DIR}}/$bin ] && cp {{.BIN_DIR}}/$bin {{.APP_DIR}}/Contents/Resources/ || true
+        done
+      - cp kits/agent.json {{.APP_DIR}}/Contents/Resources/kits/
+      # Sign the vmm-worker with hypervisor entitlement (required for libkrun)
+      - |
+        if [ -f {{.APP_DIR}}/Contents/Resources/aegis-vmm-worker ]; then
+          codesign --sign - --entitlements entitlements.plist --force {{.APP_DIR}}/Contents/Resources/aegis-vmm-worker
+        fi
+      - echo "Built {{.APP_DIR}}"

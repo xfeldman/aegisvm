@@ -51,7 +51,7 @@ else
 ALL_TARGETS := aegisd aegis harness vmm-worker mcp mcp-guest gateway agent
 endif
 
-.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent base-rootfs clean test test-unit test-m2 test-m3 test-network integration install-kit release-tarball release-kit-tarball cloud-hypervisor kernel kernel-build deb deb-agent-kit release-linux-tarball ui ui-frontend
+.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent base-rootfs clean test test-unit test-m2 test-m3 test-network integration install-kit release-tarball release-kit-tarball cloud-hypervisor kernel kernel-build deb deb-agent-kit release-linux-tarball ui ui-frontend aegis-ui package-mac
 
 all: $(ALL_TARGETS)
 
@@ -110,6 +110,30 @@ ui-frontend:
 	cd ui/frontend && npm install && npm run build
 
 ui: ui-frontend aegis
+
+# aegis-ui — native desktop app (Wails v3, requires WebKit/WebKitGTK)
+# Not part of `make all` — opt-in build target.
+aegis-ui: ui-frontend
+	@mkdir -p $(BIN_DIR)
+	$(GO) build $(GOFLAGS) -o $(BIN_DIR)/aegis-ui ./cmd/aegis-ui
+
+# Package macOS .app bundle with all platform binaries.
+# Requires: make all aegis-ui (all binaries must be built first)
+APP_DIR := $(BIN_DIR)/AegisVM.app
+BUNDLED_BINS := aegisd aegis-harness aegis-vmm-worker aegis-gateway aegis-agent aegis-mcp aegis-mcp-guest
+
+package-mac: all aegis-ui
+	@mkdir -p $(APP_DIR)/Contents/MacOS $(APP_DIR)/Contents/Resources/kits
+	cp cmd/aegis-ui/Info.plist $(APP_DIR)/Contents/
+	cp $(BIN_DIR)/aegis-ui $(APP_DIR)/Contents/MacOS/
+	@for bin in $(BUNDLED_BINS); do \
+		[ -f $(BIN_DIR)/$$bin ] && cp $(BIN_DIR)/$$bin $(APP_DIR)/Contents/Resources/ || true; \
+	done
+	sed 's/"version": *"[^"]*"/"version": "$(VERSION)"/' kits/agent.json > $(APP_DIR)/Contents/Resources/kits/agent.json
+	@if [ -f $(APP_DIR)/Contents/Resources/aegis-vmm-worker ]; then \
+		codesign --sign - --entitlements entitlements.plist --force $(APP_DIR)/Contents/Resources/aegis-vmm-worker; \
+	fi
+	@echo "Built $(APP_DIR)"
 
 # Base rootfs — Alpine with harness baked in
 # Requires: brew install e2fsprogs (for mkfs.ext4)
