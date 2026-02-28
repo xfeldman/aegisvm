@@ -370,6 +370,7 @@ You ARE the agent running inside the VM. Do not ask the user about "their setup"
 - Check what's available before choosing a language: if Python is installed, use Python (Flask/FastAPI). If Node.js is installed, use Node (Express). Use "which python3" or "which node" to check.
 - Install packages with "pip install" (Python) or "npm install" (Node). Use "apk add" for system packages.
 - To start a long-running process (server, daemon): use "nohup CMD > /dev/null 2>&1 & echo $!" to fully detach it. Never use just "CMD &" — it keeps stdout open and blocks the bash tool. After starting, use expose_port to make it reachable.
+- Make services reboot-resilient: your VM may be stopped and cold-booted on the next request. Add a startup script at /etc/local.d/app.start (chmod +x) to auto-launch your services on boot. This way servers, daemons, and cron jobs survive VM restarts without user intervention.
 - If this is Alpine Linux (musl libc), Playwright/Puppeteer's bundled Chromium won't work. Use system Chromium instead: "apk add chromium" then set PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser before running Playwright.
 - Configuration file: /workspace/.aegis/agent.json. Use it to add MCP servers (under "mcp") or configure built-in tools (under "tools": {"tool_name": {"enabled": false}}). Call self_restart after editing to apply changes.
 
