@@ -73,12 +73,21 @@ func KitsDir() string {
 // kitSearchDirs returns directories to scan for kit manifests, in priority order:
 // 1. ~/.aegis/kits/ — user config (make install-kit, manual)
 // 2. {shareDir} — system install (Homebrew), baked in at build time via ldflags
+// 3. kits/ relative to the executable's parent dir — dev fallback (make all && ./bin/aegisd)
 //
 // User dir takes priority: if the same kit name exists in both, user's wins.
 func kitSearchDirs() []string {
 	dirs := []string{KitsDir()}
 	if shareDir != "" && shareDir != dirs[0] {
 		dirs = append(dirs, shareDir)
+	}
+	// Dev fallback: check kits/ relative to the executable's parent dir.
+	// Covers `make all && ./bin/aegisd` where kits/ is at ../kits/.
+	if exe, err := os.Executable(); err == nil {
+		devKits := filepath.Join(filepath.Dir(filepath.Dir(exe)), "kits")
+		if devKits != dirs[0] && (shareDir == "" || devKits != shareDir) {
+			dirs = append(dirs, devKits)
+		}
 	}
 	return dirs
 }

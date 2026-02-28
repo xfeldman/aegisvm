@@ -1143,7 +1143,11 @@ func (m *Manager) prepareImageRootfs(ctx context.Context, inst *Instance) (strin
 		return "", fmt.Errorf("image cache or overlay not configured")
 	}
 
-	cachedDir, _, err := m.imageCache.GetOrPull(ctx, inst.ImageRef)
+	progress := func(stage, detail string) {
+		m.logStore.GetOrCreate(inst.ID).Append("stderr",
+			fmt.Sprintf("[aegis] image %s: %s", stage, detail), "", logstore.SourceSystem)
+	}
+	cachedDir, _, err := m.imageCache.GetOrPull(ctx, inst.ImageRef, progress)
 	if err != nil {
 		return "", fmt.Errorf("pull image: %w", err)
 	}

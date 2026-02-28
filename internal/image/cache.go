@@ -37,10 +37,16 @@ func NewCache(cacheDir string, guestArch string) *Cache {
 	}
 }
 
+// ProgressFunc is called during GetOrPull to report image pull progress.
+// stage is one of "resolving", "downloading", "ready".
+// detail is typically the image reference.
+type ProgressFunc func(stage, detail string)
+
 // GetOrPull returns the path to the unpacked rootfs for the given image reference.
 // If the image is already cached (by digest), the cached path is returned
 // without any network calls. Otherwise, the image is pulled, unpacked, and cached.
-func (c *Cache) GetOrPull(ctx context.Context, imageRef string) (rootfsDir string, digest string, err error) {
+// An optional progress callback reports pull stages to the caller.
+func (c *Cache) GetOrPull(ctx context.Context, imageRef string, progress ProgressFunc) (rootfsDir string, digest string, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -70,6 +76,9 @@ func (c *Cache) GetOrPull(ctx context.Context, imageRef string) (rootfsDir strin
 
 	// Pull to get the digest (remote HEAD + manifest fetch)
 	log.Printf("image: resolving %s (network)", imageRef)
+	if progress != nil {
+		progress("resolving", imageRef)
+	}
 	result, err := Pull(ctx, imageRef, c.guestArch)
 	if err != nil {
 		return "", "", fmt.Errorf("pull %s: %w", imageRef, err)
@@ -92,6 +101,9 @@ func (c *Cache) GetOrPull(ctx context.Context, imageRef string) (rootfsDir strin
 
 	// Unpack into cache
 	log.Printf("image: unpacking %s (%s)", imageRef, digest)
+	if progress != nil {
+		progress("downloading", imageRef)
+	}
 	tmpDir := cachedDir + ".tmp"
 	os.RemoveAll(tmpDir)
 	if err := os.MkdirAll(tmpDir, 0755); err != nil {
@@ -116,6 +128,9 @@ func (c *Cache) GetOrPull(ctx context.Context, imageRef string) (rootfsDir strin
 	c.writeImageEnv(result.Image, cachedDir)
 
 	log.Printf("image: cached %s at %s", imageRef, cachedDir)
+	if progress != nil {
+		progress("ready", imageRef)
+	}
 	return cachedDir, digest, nil
 }
 
