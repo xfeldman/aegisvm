@@ -1450,12 +1450,12 @@ func (s *Server) handleTetherIngress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Assign ingress seq for cursor tracking
+	// Store ingress frame (assigns seq). User messages are persisted so all
+	// clients (desktop app, browser, MCP) see the full conversation history.
 	ts := s.lifecycle.TetherStore()
 	var ingressSeq int64
 	if ts != nil {
-		ingressSeq = ts.NextSeq(inst.ID)
-		frame.Seq = ingressSeq
+		ingressSeq = ts.Append(inst.ID, frame)
 	}
 
 	if err := s.lifecycle.SendTetherFrame(inst.ID, frame); err != nil {

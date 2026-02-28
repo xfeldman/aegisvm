@@ -11,8 +11,9 @@ import (
 const defaultRingSize = 1000
 
 // Store is a per-instance pub/sub ring buffer for tether frames.
-// Egress frames (assistant.*, status.*, event.*) are stored and queryable.
-// Ingress frames (user.*) only bump the seq counter (not stored).
+// Both ingress (user.*) and egress (assistant.*, status.*, event.*)
+// frames are stored and queryable, giving all clients the full
+// conversation history.
 type Store struct {
 	mu      sync.RWMutex
 	buffers map[string]*ringBuffer
@@ -52,11 +53,11 @@ func NewStore() *Store {
 	}
 }
 
-// Append adds an egress frame to the instance's ring buffer, assigns a seq,
-// and notifies subscribers and poll waiters.
-func (s *Store) Append(instanceID string, frame Frame) {
+// Append adds a frame to the instance's ring buffer, assigns a seq,
+// and notifies subscribers and poll waiters. Returns the assigned seq.
+func (s *Store) Append(instanceID string, frame Frame) int64 {
 	rb := s.getOrCreate(instanceID)
-	rb.append(frame)
+	return rb.append(frame)
 }
 
 // NextSeq bumps the seq counter for an instance and returns the assigned seq.
@@ -177,7 +178,7 @@ func newRingBuffer(capacity int) *ringBuffer {
 	}
 }
 
-func (rb *ringBuffer) append(frame Frame) {
+func (rb *ringBuffer) append(frame Frame) int64 {
 	seq := atomic.AddInt64(&rb.seqCounter, 1)
 	frame.Seq = seq
 
@@ -209,6 +210,8 @@ func (rb *ringBuffer) append(frame Frame) {
 		default:
 		}
 	}
+
+	return seq
 }
 
 // waitChan returns a channel that will be closed when the next frame is appended.

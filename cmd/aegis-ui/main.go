@@ -38,19 +38,18 @@ func main() {
 		log.Fatalf("embedded frontend not found (run 'make ui-frontend' first): %v", err)
 	}
 
-	// Serve via real HTTP on a dedicated port. This avoids the WebKit
-	// WKURLSchemeHandler limitation where POST bodies are dropped for
-	// custom URL schemes. Fixed port preserves localStorage across restarts.
-	const uiAddr = "127.0.0.1:7701"
-
+	// Serve via real HTTP. This avoids the WebKit WKURLSchemeHandler
+	// limitation where POST bodies are dropped for custom URL schemes.
+	// Chat history lives in tether (server-side), so any port works.
 	mux := http.NewServeMux()
 	mux.Handle("/api/", newAegisdProxy())
 	mux.Handle("/", spaHandler(http.FileServer(http.FS(distFS)), distFS))
 
-	listener, err := net.Listen("tcp", uiAddr)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		log.Fatalf("aegis-ui: port %s is in use by another process — cannot start (changing port would lose chat history)", uiAddr)
+		log.Fatalf("aegis-ui: listen: %v", err)
 	}
+	uiAddr := listener.Addr().String()
 	go http.Serve(listener, mux)
 
 	app := application.New(application.Options{

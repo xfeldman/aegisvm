@@ -44,7 +44,17 @@
     let changed = false
 
     for (const frame of frames) {
-      if (frame.type === 'status.presence') {
+      if (frame.type === 'user.message') {
+        const text = frame.content?.text || frame.payload?.text || ''
+        if (text) {
+          messages.push({
+            role: 'user',
+            text,
+            ts: frame.ts || new Date().toISOString(),
+          })
+          changed = true
+        }
+      } else if (frame.type === 'status.presence') {
         thinking = frame.payload?.state || 'thinking'
         changed = true
       } else if (frame.type === 'assistant.delta') {
@@ -163,16 +173,19 @@
     }
   }
 
-  // On mount: restore from localStorage, catch up on new frames since saved cursor.
-  // Chat history (including user messages) lives in localStorage — tether only
-  // has agent-side frames. We poll from the saved cursor to pick up any new
-  // agent responses, looping to drain all pages (API may paginate).
+  // On mount: reload full conversation from tether (server is authoritative).
+  // Tether stores both user.message and assistant.* frames, so all clients
+  // (desktop app, browser, MCP) see the same history.
   onMount(() => {
     initChatState(instanceId)
 
     async function catchUp() {
-      let cursor = getChatState(instanceId).cursor
+      // Start from 0 — tether has the complete conversation.
+      let cursor = 0
+      updateChatState(instanceId, { messages: [], cursor: 0, thinking: null })
+
       try {
+        // Drain all available frames (API paginates at ~50)
         while (true) {
           const result = await tetherPoll(instanceId, SESSION_ID, cursor, 0)
           if (result.frames.length > 0) {
