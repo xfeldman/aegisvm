@@ -22,6 +22,7 @@ import (
 // bundledBinaries are the binary names extracted from the .app bundle
 // to ~/.aegis/bin/ on first launch or version mismatch.
 var bundledBinaries = []string{
+	"aegis",
 	"aegisd",
 	"aegis-harness",
 	"aegis-vmm-worker",

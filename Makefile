@@ -122,7 +122,7 @@ desktop: ui-frontend
 # Package macOS .app bundle with all platform binaries.
 # Requires: make all aegis-ui (all binaries must be built first)
 APP_DIR := $(BIN_DIR)/AegisVM.app
-BUNDLED_BINS := aegisd aegis-harness aegis-vmm-worker aegis-gateway aegis-agent aegis-mcp aegis-mcp-guest
+BUNDLED_BINS := aegis aegisd aegis-harness aegis-vmm-worker aegis-gateway aegis-agent aegis-mcp aegis-mcp-guest
 
 package-mac: all desktop
 	@mkdir -p $(APP_DIR)/Contents/MacOS $(APP_DIR)/Contents/Resources/kits
