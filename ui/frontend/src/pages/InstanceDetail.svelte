@@ -178,6 +178,9 @@
   .detail {
     max-width: 960px;
     margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
   }
 
   .breadcrumb {
@@ -265,6 +268,14 @@
     gap: 0;
     border-bottom: 1px solid var(--border);
     margin-bottom: 16px;
+    flex-shrink: 0;
+  }
+
+  .tab-content {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
 
   .tab {

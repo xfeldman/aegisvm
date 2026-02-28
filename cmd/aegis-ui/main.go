@@ -2,13 +2,16 @@
 //
 // It wraps the same web frontend used by "aegis ui" in a native webview
 // via Wails v3, adding a system tray and daemon lifecycle management.
-// The frontend is served from an embedded filesystem, and API requests
-// are proxied to aegisd over the unix socket — identical to the CLI's
-// web UI, just in a native window instead of a browser.
+//
+// Architecture: a local HTTP server handles all requests (API proxy + SPA),
+// and the Wails webview points to http://localhost:PORT. This avoids the
+// WebKit WKURLSchemeHandler limitation where POST request bodies are dropped
+// for custom URL schemes (wails://).
 package main
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"log"
 	"net"
@@ -36,20 +39,27 @@ func main() {
 		log.Fatalf("embedded frontend not found (run 'make ui-frontend' first): %v", err)
 	}
 
-	// Build HTTP handler: API proxy + SPA (same pattern as "aegis ui").
+	// Start a real HTTP server on a random port. This avoids the WebKit
+	// WKURLSchemeHandler limitation where POST bodies are dropped for
+	// custom URL schemes. The webview loads from http://localhost:PORT.
 	mux := http.NewServeMux()
 	mux.Handle("/api/", newAegisdProxy())
 	mux.Handle("/", spaHandler(http.FileServer(http.FS(distFS)), distFS))
 
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		log.Fatalf("listen: %v", err)
+	}
+	addr := listener.Addr().String()
+	go http.Serve(listener, mux)
+
 	app := application.New(application.Options{
 		Name: "AegisVM",
-		Assets: application.AssetOptions{
-			Handler: mux,
-		},
 	})
 
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:  "AegisVM",
+		URL:    fmt.Sprintf("http://%s", addr),
 		Width:  1100,
 		Height: 700,
 		Mac: application.MacWindow{

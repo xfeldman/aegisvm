@@ -118,6 +118,12 @@
     flex: 1;
     overflow-y: auto;
     padding: 24px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .content > :global(*) {
+    width: 100%;
   }
 
   /* --- Desktop app overrides (active when html has class="desktop-app") --- */

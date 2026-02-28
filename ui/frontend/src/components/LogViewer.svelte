@@ -119,7 +119,8 @@
   .log-viewer {
     display: flex;
     flex-direction: column;
-    height: 500px;
+    flex: 1;
+    min-height: 300px;
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     overflow: hidden;

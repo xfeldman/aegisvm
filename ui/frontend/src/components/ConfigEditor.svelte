@@ -278,6 +278,8 @@
   .config-wrapper {
     display: flex;
     flex-direction: column;
+    flex: 1;
+    min-height: 0;
     gap: 12px;
   }
 
@@ -318,7 +320,8 @@
   .editor {
     display: flex;
     flex-direction: column;
-    height: 400px;
+    flex: 1;
+    min-height: 300px;
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     overflow: hidden;
