@@ -19,19 +19,6 @@ import (
 	"github.com/xfeldman/aegisvm/internal/version"
 )
 
-// bundledBinaries are the binary names extracted from the .app bundle
-// to ~/.aegis/bin/ on first launch or version mismatch.
-var bundledBinaries = []string{
-	"aegis",
-	"aegisd",
-	"aegis-harness",
-	"aegis-vmm-worker",
-	"aegis-gateway",
-	"aegis-agent",
-	"aegis-mcp",
-	"aegis-mcp-guest",
-}
-
 func aegisDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".aegis")
@@ -64,12 +51,18 @@ func isDaemonRunning() bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
-// ensureBinaries extracts bundled binaries from the .app bundle (macOS)
-// to ~/.aegis/bin/ on first launch or when the version changes.
+// ensureDesktopSetup creates symlinks and extracts config from the .app bundle.
+//
+// Unlike the old ensureBinaries() which copied all executables + dylibs to
+// ~/.aegis/bin/ and ~/.aegis/lib/, this follows the macOS convention of running
+// binaries directly from the .app bundle (like Docker Desktop). Only two
+// symlinks are created for CLI/MCP access, plus the kit manifest is extracted
+// as user config. Dragging the .app to Trash cleanly removes all executables.
+//
 // No-op when not running from a bundle (dev mode).
-func ensureBinaries() {
+func ensureDesktopSetup() {
 	if runtime.GOOS != "darwin" {
-		return // Only macOS .app bundles for now
+		return
 	}
 
 	exe, err := os.Executable()
@@ -83,11 +76,10 @@ func ensureBinaries() {
 		return // Not in a bundle (dev mode)
 	}
 
-	// Target directory
 	binDir := filepath.Join(aegisDir(), "bin")
 	os.MkdirAll(binDir, 0755)
 
-	// Version check: skip extraction if already at current version
+	// Version check: skip setup if already at current version
 	versionFile := filepath.Join(binDir, ".version")
 	currentVersion := version.Version()
 	if data, err := os.ReadFile(versionFile); err == nil {
@@ -96,43 +88,43 @@ func ensureBinaries() {
 		}
 	}
 
-	// Extract binaries
-	extracted := 0
-	for _, name := range bundledBinaries {
+	// Create symlinks for CLI and MCP server.
+	// These are the only binaries users invoke directly; everything else
+	// (aegisd, vmm-worker, harness, gateway, agent) runs from the .app bundle.
+	for _, name := range []string{"aegis", "aegis-mcp"} {
 		src := filepath.Join(resourcesDir, name)
 		if _, err := os.Stat(src); err != nil {
-			continue // Binary not in bundle (optional component)
-		}
-		dst := filepath.Join(binDir, name)
-		if err := copyFile(src, dst); err != nil {
-			log.Printf("aegis-ui: extract %s: %v", name, err)
 			continue
 		}
-		os.Chmod(dst, 0755)
-		extracted++
-	}
-
-	// Extract bundled dylibs (libkrun and dependencies) to ~/.aegis/lib/
-	frameworksDir := filepath.Join(filepath.Dir(exe), "..", "Frameworks")
-	if entries, err := os.ReadDir(frameworksDir); err == nil {
-		libDir := filepath.Join(aegisDir(), "lib")
-		os.MkdirAll(libDir, 0755)
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".dylib") {
-				continue
-			}
-			src := filepath.Join(frameworksDir, e.Name())
-			dst := filepath.Join(libDir, e.Name())
-			if err := copyFile(src, dst); err != nil {
-				log.Printf("aegis-ui: extract lib %s: %v", e.Name(), err)
-				continue
-			}
-			os.Chmod(dst, 0755)
-			extracted++
+		dst := filepath.Join(binDir, name)
+		os.Remove(dst) // Remove old copy or stale symlink
+		if err := os.Symlink(src, dst); err != nil {
+			log.Printf("aegis-ui: symlink %s: %v", name, err)
 		}
 	}
 
-	// Extract kit manifest
+	// Clean up old binary copies from previous versions that used ensureBinaries().
+	// These are no longer needed — aegisd runs from the .app bundle now.
+	for _, name := range []string{"aegisd", "aegis-harness", "aegis-vmm-worker", "aegis-gateway", "aegis-agent", "aegis-mcp-guest"} {
+		old := filepath.Join(binDir, name)
+		if info, err := os.Lstat(old); err == nil && info.Mode().IsRegular() {
+			os.Remove(old)
+		}
+	}
+
+	// Clean up old dylib copies from previous versions.
+	oldLibDir := filepath.Join(aegisDir(), "lib")
+	if entries, err := os.ReadDir(oldLibDir); err == nil {
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".dylib") {
+				os.Remove(filepath.Join(oldLibDir, e.Name()))
+			}
+		}
+		// Remove the directory if empty
+		os.Remove(oldLibDir)
+	}
+
+	// Extract kit manifest (config, not a binary — belongs in user dir)
 	kitSrc := filepath.Join(resourcesDir, "kits", "agent.json")
 	if _, err := os.Stat(kitSrc); err == nil {
 		kitDir := filepath.Join(aegisDir(), "kits")
@@ -143,27 +135,37 @@ func ensureBinaries() {
 	// Write version marker
 	os.WriteFile(versionFile, []byte(currentVersion), 0644)
 
-	if extracted > 0 {
-		log.Printf("aegis-ui: extracted %d binaries + libs (version %s)", extracted, currentVersion)
-	}
+	log.Printf("aegis-ui: desktop setup complete (version %s)", currentVersion)
 }
 
 // findAegisdBinary locates the aegisd binary.
 // Search order:
-//  1. ~/.aegis/bin/aegisd (extracted binaries — primary for desktop app)
-//  2. Next to this executable (dev mode — all binaries in bin/)
+//  1. .app/Contents/Resources/aegisd (primary for desktop app — run from bundle)
+//  2. ~/.aegis/bin/aegisd (backwards compat with old binary copies)
+//  3. Next to this executable (dev mode — all binaries in bin/)
 func findAegisdBinary() string {
-	// 1. Extracted/installed binaries
+	exe, _ := os.Executable()
+
+	// 1. Inside .app bundle (primary for desktop app)
+	if exe != "" {
+		candidate := filepath.Join(filepath.Dir(exe), "..", "Resources", "aegisd")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+
+	// 2. Extracted/installed binaries (backwards compat, Homebrew symlinks)
 	candidate := filepath.Join(aegisDir(), "bin", "aegisd")
 	if _, err := os.Stat(candidate); err == nil {
 		return candidate
 	}
 
-	// 2. Next to this executable (dev mode)
-	exe, _ := os.Executable()
-	candidate = filepath.Join(filepath.Dir(exe), "aegisd")
-	if _, err := os.Stat(candidate); err == nil {
-		return candidate
+	// 3. Next to this executable (dev mode)
+	if exe != "" {
+		candidate = filepath.Join(filepath.Dir(exe), "aegisd")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
 	}
 
 	return ""

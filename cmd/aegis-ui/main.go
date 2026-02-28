@@ -28,9 +28,9 @@ import (
 )
 
 func main() {
-	// Extract bundled binaries from .app bundle (macOS) on first launch
-	// or version mismatch. No-op in dev mode (binaries next to executable).
-	ensureBinaries()
+	// Set up CLI symlinks and extract kit config from .app bundle (macOS).
+	// No-op in dev mode (binaries next to executable).
+	ensureDesktopSetup()
 
 	// Start aegisd if not running.
 	ensureDaemon()

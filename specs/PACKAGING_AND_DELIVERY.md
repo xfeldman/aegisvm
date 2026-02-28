@@ -68,12 +68,11 @@ AegisVM.app/Contents/
 └── Info.plist                              Version-stamped
 ```
 
-On first launch, `aegis-ui` extracts to stable paths:
-- Binaries → `~/.aegis/bin/`
-- Dylibs → `~/.aegis/lib/`
-- Kit manifest → `~/.aegis/kits/agent.json`
+All binaries and dylibs run directly from the .app bundle (like Docker Desktop). Nothing is copied to `~/`. On first launch, `aegis-ui` only:
+- Creates symlinks in `~/.aegis/bin/` for CLI access: `aegis` and `aegis-mcp` → `.app/Contents/Resources/`
+- Extracts kit manifest (`agent.json`) to `~/.aegis/kits/` (config, not a binary)
 
-Extraction is version-gated (`~/.aegis/bin/.version` marker). Skipped if already current.
+Dragging AegisVM.app to Trash cleanly removes all executables and dylibs. Only runtime data (`~/.aegis/data/`) and config remain — standard for macOS apps.
 
 ---
 
@@ -134,19 +133,22 @@ aegis-vmm-worker
 
 ### Rpath resolution
 
-| Binary/Dylib | Rpath | Resolves to (in .app) | Resolves to (extracted) |
-|-------------|-------|----------------------|------------------------|
-| vmm-worker | `@executable_path/../Frameworks` | `Contents/Frameworks/` | — |
-| vmm-worker | `@executable_path/../lib` | — | `~/.aegis/lib/` |
-| libkrun | `@loader_path` | `Contents/Frameworks/` | `~/.aegis/lib/` |
-| virglrenderer | `@loader_path` | `Contents/Frameworks/` | `~/.aegis/lib/` |
+vmm-worker runs from `Contents/Resources/` inside the .app bundle. Rpaths resolve dylibs from the sibling `Contents/Frameworks/` directory.
+
+| Binary/Dylib | Rpath | Resolves to |
+|-------------|-------|------------|
+| vmm-worker | `@executable_path/../Frameworks` | `Contents/Frameworks/` |
+| libkrun | `@loader_path` | `Contents/Frameworks/` (same dir) |
+| virglrenderer | `@loader_path` | `Contents/Frameworks/` (same dir) |
+
+The second rpath on vmm-worker (`@executable_path/../lib`) is kept for Homebrew/dev compatibility but unused in desktop mode.
 
 ### dlopen (libkrunfw)
 
 libkrun loads libkrunfw via `dlopen("libkrunfw.dylib")` at runtime. Resolution chain:
 
-1. Caller's (libkrun) LC_RPATH → `@loader_path` → same directory as libkrun ✓
-2. `DYLD_FALLBACK_LIBRARY_PATH` → `~/.aegis/lib:/opt/homebrew/lib:...` ✓
+1. Caller's (libkrun) LC_RPATH → `@loader_path` → `Contents/Frameworks/` ✓
+2. `DYLD_FALLBACK_LIBRARY_PATH` → `Contents/Frameworks/:/opt/homebrew/lib:...` ✓
 
 The `com.apple.security.cs.allow-dyld-environment-variables` entitlement ensures DYLD vars work under hardened runtime (required for notarization).
 
@@ -212,26 +214,24 @@ Agent kit adds:
 ~/.aegis/kits/agent.json             (created on first use)
 ```
 
-### Desktop App (after extraction)
+### Desktop App
+
+All executables and dylibs live inside the .app bundle (run in-place, not copied). Only symlinks and config in `~/`.
 
 ```
-/Applications/AegisVM.app/           (immutable, signed)
-~/.aegis/bin/aegis                   (extracted)
-~/.aegis/bin/aegisd
-~/.aegis/bin/aegis-vmm-worker
-~/.aegis/bin/aegis-mcp
-~/.aegis/bin/aegis-harness
-~/.aegis/bin/aegis-mcp-guest
-~/.aegis/bin/aegis-gateway
-~/.aegis/bin/aegis-agent
-~/.aegis/bin/.version                (extraction marker)
-~/.aegis/lib/libkrun.1.dylib        (extracted)
-~/.aegis/lib/libkrunfw.dylib
-~/.aegis/lib/libepoxy.0.dylib
-~/.aegis/lib/libvirglrenderer.1.dylib
-~/.aegis/lib/libMoltenVK.dylib
-~/.aegis/kits/agent.json
+/Applications/AegisVM.app/                                              (signed, notarized)
+├── Contents/MacOS/aegis-ui                                             (Wails native app)
+├── Contents/Resources/{aegis,aegisd,aegis-vmm-worker,...}              (all binaries)
+├── Contents/Frameworks/{libkrun.1.dylib,libkrunfw.dylib,...}           (all dylibs)
+└── Contents/Resources/kits/agent.json                                  (kit manifest source)
+
+~/.aegis/bin/aegis → /Applications/AegisVM.app/Contents/Resources/aegis       (symlink)
+~/.aegis/bin/aegis-mcp → /Applications/AegisVM.app/Contents/Resources/aegis-mcp  (symlink)
+~/.aegis/bin/.version                                                         (setup marker)
+~/.aegis/kits/agent.json                                                      (extracted config)
 ```
+
+Uninstall: drag .app to Trash. All executables and dylibs are removed. Symlinks become dangling (harmless). Runtime data in `~/.aegis/data/` persists (user data, standard for macOS apps).
 
 ### Debian
 
@@ -276,9 +276,8 @@ Shared across all install methods:
 │   ├── agent.json           Kit manifest
 │   └── {handle}/            Per-instance daemon configs
 │       └── gateway.json
-├── bin/                     (desktop app only) Extracted binaries
+├── bin/                     (desktop app only) CLI symlinks → .app bundle
 │   └── .version
-└── lib/                     (desktop app only) Extracted dylibs
 ```
 
 ---
