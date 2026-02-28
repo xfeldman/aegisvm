@@ -112,7 +112,25 @@ func main() {
 	// Pass secret store, registry, and tether store to lifecycle manager
 	lm.SetSecretStore(ss)
 	lm.SetRegistry(reg)
-	lm.SetTetherStore(tether.NewStore())
+
+	ts := tether.NewStore(func(instanceID string, seq int64, data []byte) {
+		if err := reg.SaveTetherFrame(instanceID, seq, data); err != nil {
+			log.Printf("persist tether frame: %v", err)
+		}
+	})
+	lm.SetTetherStore(ts)
+
+	// Restore persisted tether frames
+	if frames, err := reg.LoadAllTetherFrames(1000); err == nil {
+		for id, ff := range frames {
+			ts.Load(id, ff)
+		}
+		if len(frames) > 0 {
+			log.Printf("restored tether frames for %d instance(s)", len(frames))
+		}
+	} else {
+		log.Printf("load tether frames: %v", err)
+	}
 
 	// Start router (handle-based routing, no app resolver)
 	rtr := router.New(lm, cfg.RouterAddr)

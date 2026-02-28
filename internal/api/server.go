@@ -984,6 +984,7 @@ func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 
 	if s.registry != nil {
 		s.registry.DeleteInstance(resolvedID)
+		s.registry.DeleteTetherFrames(resolvedID)
 	}
 
 	// Delete auto-created workspace (user-provided workspaces are kept)
@@ -1023,6 +1024,7 @@ func (s *Server) handlePruneInstances(w http.ResponseWriter, r *http.Request) {
 			if err := s.lifecycle.DeleteInstance(inst.ID); err == nil {
 				if s.registry != nil {
 					s.registry.DeleteInstance(inst.ID)
+					s.registry.DeleteTetherFrames(inst.ID)
 				}
 				pruned = append(pruned, inst.ID)
 			}

@@ -10,6 +10,11 @@ import (
 
 const defaultRingSize = 1000
 
+// PersistFunc is called after each frame is appended to the ring buffer.
+// It receives the instance ID, assigned sequence number, and JSON-encoded frame.
+// Can be nil (tests, no DB).
+type PersistFunc func(instanceID string, seq int64, frameJSON []byte)
+
 // Store is a per-instance pub/sub ring buffer for tether frames.
 // Both ingress (user.*) and egress (assistant.*, status.*, event.*)
 // frames are stored and queryable, giving all clients the full
@@ -17,6 +22,7 @@ const defaultRingSize = 1000
 type Store struct {
 	mu      sync.RWMutex
 	buffers map[string]*ringBuffer
+	persist PersistFunc
 }
 
 // QueryOpts filters frames in Query and WaitForFrames.
@@ -46,10 +52,12 @@ func (r QueryResult) MarshalJSON() ([]byte, error) {
 	return json.Marshal(a)
 }
 
-// NewStore creates a new tether store.
-func NewStore() *Store {
+// NewStore creates a new tether store. The persist callback is called for each
+// appended frame (can be nil for tests or when no DB is available).
+func NewStore(persist PersistFunc) *Store {
 	return &Store{
 		buffers: make(map[string]*ringBuffer),
+		persist: persist,
 	}
 }
 
@@ -57,11 +65,20 @@ func NewStore() *Store {
 // and notifies subscribers and poll waiters. Returns the assigned seq.
 func (s *Store) Append(instanceID string, frame Frame) int64 {
 	rb := s.getOrCreate(instanceID)
-	return rb.append(frame)
+	seq := rb.append(frame)
+
+	if s.persist != nil {
+		frame.Seq = seq
+		if data, err := json.Marshal(frame); err == nil {
+			s.persist(instanceID, seq, data)
+		}
+	}
+
+	return seq
 }
 
 // NextSeq bumps the seq counter for an instance and returns the assigned seq.
-// Used for ingress frames (not stored, but need a seq for cursor tracking).
+// Used for control frames that need a seq for cursor tracking but aren't stored.
 func (s *Store) NextSeq(instanceID string) int64 {
 	rb := s.getOrCreate(instanceID)
 	return atomic.AddInt64(&rb.seqCounter, 1)
@@ -136,6 +153,33 @@ func (s *Store) Remove(instanceID string) {
 		delete(s.buffers, instanceID)
 	}
 	s.mu.Unlock()
+}
+
+// Load restores persisted frames into the ring buffer for an instance.
+// Frames must be ordered by seq. Sets seqCounter to max seq.
+// No persist callback, no subscriber notification — bulk load only.
+func (s *Store) Load(instanceID string, frames []Frame) {
+	if len(frames) == 0 {
+		return
+	}
+
+	rb := s.getOrCreate(instanceID)
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+
+	for _, f := range frames {
+		if rb.count >= rb.cap {
+			rb.head = (rb.head + 1) % rb.cap
+		} else {
+			rb.count++
+		}
+		idx := (rb.head + rb.count - 1) % rb.cap
+		rb.frames[idx] = f
+
+		if f.Seq > rb.seqCounter {
+			rb.seqCounter = f.Seq
+		}
+	}
 }
 
 func (s *Store) getOrCreate(instanceID string) *ringBuffer {

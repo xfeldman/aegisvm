@@ -66,6 +66,12 @@ func (d *DB) migrate() error {
 			value      BLOB NOT NULL,
 			created_at TEXT NOT NULL DEFAULT (datetime('now'))
 		)`,
+		`CREATE TABLE IF NOT EXISTS tether_frames (
+			instance_id TEXT NOT NULL,
+			seq         INTEGER NOT NULL,
+			frame       TEXT NOT NULL,
+			PRIMARY KEY (instance_id, seq)
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := d.db.Exec(stmt); err != nil {

@@ -97,7 +97,7 @@ Send a tether frame. Triggers wake-on-message if instance is paused or stopped. 
 GET /v1/instances/{id}/tether/poll?channel=host&session_id=default&after_seq=0&limit=50&wait_ms=10000
 ```
 
-Read egress frames with filtering and long-poll support. Returns `{frames, next_seq, timed_out}`.
+Read frames with filtering and long-poll support. Returns both ingress (user.message) and egress (assistant.*) frames. Returns `{frames, next_seq, timed_out}`.
 
 | Parameter | Description |
 |-----------|-------------|
@@ -115,7 +115,7 @@ Read egress frames with filtering and long-poll support. Returns `{frames, next_
 GET /v1/instances/{id}/tether/stream
 ```
 
-NDJSON stream of all egress frames. Used by the gateway for Telegram integration. For host agents, prefer the poll endpoint.
+NDJSON stream of all stored frames (ingress + egress). Used by the gateway for Telegram integration. For host agents, prefer the poll endpoint.
 
 ## Frame types
 
@@ -144,7 +144,7 @@ Every frame gets a monotonic `seq` number, per instance. Sequences are:
 
 - **Global**: all channels share one counter per instance
 - **Stable**: safe to use as cursors for pagination and resume
-- **Persistent**: do not reset on instance restart
+- **Persisted**: stored in a per-instance ring buffer (1000 frames) with SQLite write-through — history survives daemon restarts
 
 Use `after_seq` + `next_seq` for reliable cursor-based reading. No missed frames, no duplicates.
 
@@ -159,6 +159,8 @@ The guest agent (`aegis-agent`) handles tether frames automatically. When a `use
 5. Agent emits `status.presence`, `assistant.delta`, and `assistant.done` frames back through the harness
 6. Harness sends them to aegisd via the control channel
 7. aegisd stores them in the tether store (with `seq` assigned)
+
+Both ingress (`user.message`) and egress frames are stored in the tether ring buffer. This gives all clients — desktop app, browser UI, MCP — a complete conversation history via the poll endpoint.
 
 The agent maintains independent session histories per `channel:session_id`. A host session (`host:debug-1`) doesn't interfere with a Telegram session (`telegram:12345`).
 

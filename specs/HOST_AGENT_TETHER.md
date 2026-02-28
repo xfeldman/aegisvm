@@ -73,7 +73,7 @@ Read response frames from an in-VM agent. Supports long-polling.
 ```
 
 **Behavior:**
-1. Query tether store for egress frames matching `(instance, channel="host", session_id)` with `seq > after_seq`
+1. Query tether store for frames matching `(instance, channel="host", session_id)` with `seq > after_seq`
 2. Apply `types` filter if specified
 3. If frames found → return immediately (up to `limit`)
 4. If none and `wait_ms > 0` → block until frame arrives or timeout

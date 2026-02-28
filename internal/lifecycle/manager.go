@@ -1444,6 +1444,9 @@ func (m *Manager) DeleteInstance(id string) error {
 	m.mu.Unlock()
 
 	m.logStore.Remove(id)
+	if m.tetherStore != nil {
+		m.tetherStore.Remove(id)
+	}
 
 	return nil
 }
