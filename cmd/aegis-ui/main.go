@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -45,6 +46,7 @@ func main() {
 	// Chat history lives in tether (server-side), so any port works.
 	mux := http.NewServeMux()
 	mux.Handle("/api/", newAegisdProxy())
+	mux.HandleFunc("POST /open-url", handleOpenURL)
 	mux.Handle("/", spaHandler(http.FileServer(http.FS(distFS)), distFS))
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -63,6 +65,12 @@ func main() {
 		URL:    "http://" + uiAddr,
 		Width:  1100,
 		Height: 700,
+		// JS injected into the webview to fix WKWebView limitations:
+		// 1. window.confirm() — WKWebView silently returns false without a WKUIDelegate handler.
+		//    Replace with a synchronous prompt using a blocking overlay + buttons.
+		// 2. target="_blank" links — WKWebView ignores them without createWebView delegate.
+		//    Intercept clicks and open in the system browser via a local endpoint.
+		JS: desktopJS,
 		Mac: application.MacWindow{
 			Backdrop:                application.MacBackdropNormal,
 			TitleBar:                application.MacTitleBarHidden,
@@ -134,3 +142,25 @@ func newAegisdProxy() *httputil.ReverseProxy {
 		},
 	}
 }
+
+// handleOpenURL opens a URL in the system browser.
+func handleOpenURL(w http.ResponseWriter, r *http.Request) {
+	url := r.FormValue("url")
+	if url == "" || (!strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://")) {
+		http.Error(w, "invalid url", http.StatusBadRequest)
+		return
+	}
+	exec.Command("open", url).Start()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// desktopJS opens target="_blank" links in the system browser.
+// Confirm dialogs are handled by a Svelte ConfirmDialog component (shared with web UI).
+const desktopJS = `
+document.addEventListener('click', function(e) {
+  const a = e.target.closest('a[target="_blank"]');
+  if (!a) return;
+  e.preventDefault();
+  fetch('/open-url', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'url='+encodeURIComponent(a.href)});
+});
+`

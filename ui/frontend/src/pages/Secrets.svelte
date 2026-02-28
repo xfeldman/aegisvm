@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { listSecrets, setSecret, deleteSecret, type SecretInfo } from '../lib/api'
-  import { addToast } from '../lib/store.svelte'
+  import { addToast, showConfirm } from '../lib/store.svelte'
 
   let secrets: SecretInfo[] = $state([])
   let loading = $state(true)
@@ -41,7 +41,7 @@
   }
 
   async function remove(name: string) {
-    if (!confirm(`Delete secret "${name}"?`)) return
+    if (!await showConfirm(`Delete secret "${name}"?`)) return
     try {
       await deleteSecret(name)
       addToast(`Deleted "${name}"`, 'success')

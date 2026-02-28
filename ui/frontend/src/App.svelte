@@ -4,6 +4,7 @@
   import NewInstance from './pages/NewInstance.svelte'
   import Secrets from './pages/Secrets.svelte'
   import Toast from './components/Toast.svelte'
+  import ConfirmDialog from './components/ConfirmDialog.svelte'
 
   let hash = $state(window.location.hash || '#/')
 
@@ -59,6 +60,7 @@
 </div>
 
 <Toast />
+<ConfirmDialog />
 
 <style>
   .layout {

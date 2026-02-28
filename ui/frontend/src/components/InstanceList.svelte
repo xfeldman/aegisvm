@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Instance } from '../lib/api'
   import { startInstance, disableInstance, deleteInstance } from '../lib/api'
-  import { addToast, refreshInstances } from '../lib/store.svelte'
+  import { addToast, refreshInstances, showConfirm } from '../lib/store.svelte'
 
   interface Props {
     instances: Instance[]
@@ -51,7 +51,7 @@
         case 'enable': await startInstance(ref); break
         case 'disable': await disableInstance(ref); break
         case 'delete':
-          if (!confirm(`Delete instance "${name}"?`)) return
+          if (!await showConfirm(`Delete instance "${name}"?`)) return
           await deleteInstance(ref)
           break
       }

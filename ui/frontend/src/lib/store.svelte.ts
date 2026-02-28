@@ -33,6 +33,20 @@ export function addToast(message: string, type: Toast['type'] = 'info') {
   }, 4000)
 }
 
+// Async confirm dialog — replacement for window.confirm() (broken in WKWebView)
+let _confirmMessage: string = $state('')
+let _confirmResolve: ((v: boolean) => void) | null = $state(null)
+
+export function getConfirmMessage(): string { return _confirmMessage }
+export function getConfirmResolve(): ((v: boolean) => void) | null { return _confirmResolve }
+
+export function showConfirm(message: string): Promise<boolean> {
+  return new Promise(resolve => {
+    _confirmMessage = message
+    _confirmResolve = (v: boolean) => { _confirmMessage = ''; _confirmResolve = null; resolve(v) }
+  })
+}
+
 // Exec history — persists across tab switches, keyed by instance ID
 export interface ExecEntry {
   command: string

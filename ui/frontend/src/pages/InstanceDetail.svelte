@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { getInstance, startInstance, disableInstance, deleteInstance, type Instance } from '../lib/api'
-  import { addToast } from '../lib/store.svelte'
+  import { addToast, showConfirm } from '../lib/store.svelte'
   import LogViewer from '../components/LogViewer.svelte'
   import CommandRunner from '../components/CommandRunner.svelte'
   import ChatPanel from '../components/ChatPanel.svelte'
@@ -36,7 +36,7 @@
         case 'enable': await startInstance(ref); break
         case 'disable': await disableInstance(ref); break
         case 'delete':
-          if (!confirm(`Delete instance "${ref}"?`)) return
+          if (!await showConfirm(`Delete instance "${ref}"?`)) return
           await deleteInstance(ref)
           window.location.hash = '#/'
           break
