@@ -125,7 +125,7 @@ APP_DIR := $(BIN_DIR)/AegisVM.app
 BUNDLED_BINS := aegis aegisd aegis-harness aegis-vmm-worker aegis-gateway aegis-agent aegis-mcp aegis-mcp-guest
 
 package-mac: all desktop
-	@mkdir -p $(APP_DIR)/Contents/MacOS $(APP_DIR)/Contents/Resources/kits
+	@mkdir -p $(APP_DIR)/Contents/MacOS $(APP_DIR)/Contents/Resources/kits $(APP_DIR)/Contents/Frameworks
 	sed 's/1.0.0/$(VERSION)/g' cmd/aegis-ui/Info.plist > $(APP_DIR)/Contents/Info.plist
 	cp cmd/aegis-ui/appicon.icns $(APP_DIR)/Contents/Resources/
 	cp $(BIN_DIR)/aegis-ui $(APP_DIR)/Contents/MacOS/
@@ -133,6 +133,36 @@ package-mac: all desktop
 		[ -f $(BIN_DIR)/$$bin ] && cp $(BIN_DIR)/$$bin $(APP_DIR)/Contents/Resources/ || true; \
 	done
 	sed 's/"version": *"[^"]*"/"version": "$(VERSION)"/' kits/agent.json > $(APP_DIR)/Contents/Resources/kits/agent.json
+	# Bundle Homebrew dylibs for self-contained distribution
+	cp /opt/homebrew/opt/libkrun/lib/libkrun.1.dylib $(APP_DIR)/Contents/Frameworks/
+	cp /opt/homebrew/opt/libepoxy/lib/libepoxy.0.dylib $(APP_DIR)/Contents/Frameworks/
+	cp /opt/homebrew/opt/virglrenderer/lib/libvirglrenderer.1.dylib $(APP_DIR)/Contents/Frameworks/
+	cp /opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib $(APP_DIR)/Contents/Frameworks/
+	cp -L /opt/homebrew/opt/libkrunfw/lib/libkrunfw.dylib $(APP_DIR)/Contents/Frameworks/
+	# Rewrite vmm-worker: libkrun load path → @rpath, add rpaths for .app and ~/.aegis/
+	install_name_tool -change /opt/homebrew/opt/libkrun/lib/libkrun.1.dylib @rpath/libkrun.1.dylib \
+		$(APP_DIR)/Contents/Resources/aegis-vmm-worker
+	install_name_tool -add_rpath @executable_path/../Frameworks $(APP_DIR)/Contents/Resources/aegis-vmm-worker
+	install_name_tool -add_rpath @executable_path/../lib $(APP_DIR)/Contents/Resources/aegis-vmm-worker
+	# Rewrite libkrun: set id, fix cross-refs, add @loader_path for dlopen'd libkrunfw
+	install_name_tool -id @rpath/libkrun.1.dylib $(APP_DIR)/Contents/Frameworks/libkrun.1.dylib
+	install_name_tool -change /opt/homebrew/opt/libepoxy/lib/libepoxy.0.dylib @rpath/libepoxy.0.dylib \
+		$(APP_DIR)/Contents/Frameworks/libkrun.1.dylib
+	install_name_tool -change /opt/homebrew/opt/virglrenderer/lib/libvirglrenderer.1.dylib @rpath/libvirglrenderer.1.dylib \
+		$(APP_DIR)/Contents/Frameworks/libkrun.1.dylib
+	install_name_tool -add_rpath @loader_path $(APP_DIR)/Contents/Frameworks/libkrun.1.dylib
+	# Rewrite libvirglrenderer: set id, fix cross-refs
+	install_name_tool -id @rpath/libvirglrenderer.1.dylib $(APP_DIR)/Contents/Frameworks/libvirglrenderer.1.dylib
+	install_name_tool -change /opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib @rpath/libMoltenVK.dylib \
+		$(APP_DIR)/Contents/Frameworks/libvirglrenderer.1.dylib
+	install_name_tool -change /opt/homebrew/opt/libepoxy/lib/libepoxy.0.dylib @rpath/libepoxy.0.dylib \
+		$(APP_DIR)/Contents/Frameworks/libvirglrenderer.1.dylib
+	install_name_tool -add_rpath @loader_path $(APP_DIR)/Contents/Frameworks/libvirglrenderer.1.dylib
+	# Rewrite remaining dylibs: set id only (no Homebrew cross-refs)
+	install_name_tool -id @rpath/libepoxy.0.dylib $(APP_DIR)/Contents/Frameworks/libepoxy.0.dylib
+	install_name_tool -id @rpath/libMoltenVK.dylib $(APP_DIR)/Contents/Frameworks/libMoltenVK.dylib
+	install_name_tool -id @rpath/libkrunfw.dylib $(APP_DIR)/Contents/Frameworks/libkrunfw.dylib
+	# Sign vmm-worker with entitlements (after install_name_tool rewrites)
 	@if [ -f $(APP_DIR)/Contents/Resources/aegis-vmm-worker ]; then \
 		codesign --sign - --entitlements entitlements.plist --force $(APP_DIR)/Contents/Resources/aegis-vmm-worker; \
 	fi

@@ -227,10 +227,15 @@ func (l *LibkrunVMM) StartVM(h Handle) (ControlChannel, error) {
 	cmd.Stdin = nil
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	// Build DYLD_FALLBACK_LIBRARY_PATH: bundled libs (desktop app) first, then Homebrew (dev).
+	// libkrun dynamically loads libkrunfw at runtime via dlopen;
+	// the entitlement com.apple.security.cs.allow-dyld-environment-variables
+	// ensures this works under hardened runtime (notarized builds).
+	homeDir, _ := os.UserHomeDir()
+	aegisLib := filepath.Join(homeDir, ".aegis", "lib")
 	cmd.Env = append(os.Environ(),
 		"AEGIS_VMM_CONFIG="+string(wcJSON),
-		// libkrun dynamically loads libkrunfw at runtime via dlopen.
-		"DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib:/usr/local/lib:/usr/lib",
+		"DYLD_FALLBACK_LIBRARY_PATH="+aegisLib+":/opt/homebrew/lib:/usr/local/lib:/usr/lib",
 	)
 
 	if err := cmd.Start(); err != nil {

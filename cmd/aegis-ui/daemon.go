@@ -112,6 +112,26 @@ func ensureBinaries() {
 		extracted++
 	}
 
+	// Extract bundled dylibs (libkrun and dependencies) to ~/.aegis/lib/
+	frameworksDir := filepath.Join(filepath.Dir(exe), "..", "Frameworks")
+	if entries, err := os.ReadDir(frameworksDir); err == nil {
+		libDir := filepath.Join(aegisDir(), "lib")
+		os.MkdirAll(libDir, 0755)
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".dylib") {
+				continue
+			}
+			src := filepath.Join(frameworksDir, e.Name())
+			dst := filepath.Join(libDir, e.Name())
+			if err := copyFile(src, dst); err != nil {
+				log.Printf("aegis-ui: extract lib %s: %v", e.Name(), err)
+				continue
+			}
+			os.Chmod(dst, 0755)
+			extracted++
+		}
+	}
+
 	// Extract kit manifest
 	kitSrc := filepath.Join(resourcesDir, "kits", "agent.json")
 	if _, err := os.Stat(kitSrc); err == nil {
@@ -124,7 +144,7 @@ func ensureBinaries() {
 	os.WriteFile(versionFile, []byte(currentVersion), 0644)
 
 	if extracted > 0 {
-		log.Printf("aegis-ui: extracted %d binaries (version %s)", extracted, currentVersion)
+		log.Printf("aegis-ui: extracted %d binaries + libs (version %s)", extracted, currentVersion)
 	}
 }
 

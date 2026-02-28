@@ -83,7 +83,14 @@ jobs:
         run: |
           APP="bin/AegisVM.app"
 
-          # Sign all Mach-O binaries in Resources (bottom-up)
+          # Sign bundled dylibs in Frameworks (bottom-up: dylibs before binaries)
+          for lib in ${APP}/Contents/Frameworks/*.dylib; do
+            [ -f "$lib" ] || continue
+            codesign --sign "${MACOS_SIGNING_IDENTITY}" \
+              --options runtime --timestamp --force "$lib"
+          done
+
+          # Sign all Mach-O binaries in Resources
           # Linux binaries (aegis-harness, aegis-agent, aegis-mcp-guest) are skipped
           for bin in ${APP}/Contents/Resources/*; do
             [ -f "$bin" ] || continue
