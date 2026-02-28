@@ -1,3 +1,5 @@
+//go:build uifrontend
+
 // aegis-ui is the native desktop app for AegisVM.
 //
 // It wraps the same web frontend used by "aegis ui" in a native webview

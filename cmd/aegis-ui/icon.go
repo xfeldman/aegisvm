@@ -1,3 +1,5 @@
+//go:build uifrontend
+
 package main
 
 import (
