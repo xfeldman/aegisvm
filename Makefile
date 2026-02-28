@@ -109,13 +109,15 @@ agent:
 ui-frontend:
 	cd ui/frontend && npm install && npm run build
 
-ui: ui-frontend aegis
+ui: ui-frontend
+	@mkdir -p $(BIN_DIR)
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -tags uifrontend -o $(BIN_DIR)/aegis ./cmd/aegis
 
 # desktop — native desktop app (Wails v3, requires WebKit/WebKitGTK)
 # Not part of `make all` — opt-in build target.
 desktop: ui-frontend
 	@mkdir -p $(BIN_DIR)
-	$(GO) build $(GOFLAGS) -o $(BIN_DIR)/aegis-ui ./cmd/aegis-ui
+	$(GO) build $(GOFLAGS) -tags uifrontend -o $(BIN_DIR)/aegis-ui ./cmd/aegis-ui
 
 # Package macOS .app bundle with all platform binaries.
 # Requires: make all aegis-ui (all binaries must be built first)

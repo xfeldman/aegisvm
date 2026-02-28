@@ -1,11 +1,10 @@
+//go:build !uifrontend
+
 // Package ui embeds the frontend build output for production serving.
 package ui
 
 import "embed"
 
-// Frontend holds the compiled Svelte app from ui/frontend/dist/.
-// In development (before npm run build), this will be empty — the
-// aegis ui --dev flag proxies to the Vite dev server instead.
-//
-//go:embed all:frontend/dist
+// Frontend is an empty FS when building without the frontend.
+// Run 'make ui' to build with the embedded Svelte app.
 var Frontend embed.FS
