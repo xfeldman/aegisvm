@@ -163,26 +163,31 @@
     }
   }
 
-  // On mount: restore from localStorage, catch up on new frames
+  // On mount: restore from localStorage, catch up on new frames since saved cursor.
+  // Chat history (including user messages) lives in localStorage — tether only
+  // has agent-side frames. We poll from the saved cursor to pick up any new
+  // agent responses, looping to drain all pages (API may paginate).
   onMount(() => {
     initChatState(instanceId)
 
     async function catchUp() {
-      const { cursor } = getChatState(instanceId)
+      let cursor = getChatState(instanceId).cursor
       try {
-        const result = await tetherPoll(instanceId, SESSION_ID, cursor, 0)
-        if (result.frames.length > 0) {
-          processFrames(result.frames)
-          updateChatState(instanceId, { cursor: result.next_seq })
-        } else if (result.next_seq > cursor) {
-          updateChatState(instanceId, { cursor: result.next_seq })
+        while (true) {
+          const result = await tetherPoll(instanceId, SESSION_ID, cursor, 0)
+          if (result.frames.length > 0) {
+            processFrames(result.frames)
+          }
+          cursor = result.next_seq
+          updateChatState(instanceId, { cursor })
+          if (result.frames.length === 0 || result.timed_out) break
         }
 
         // If last message is streaming (interrupted mid-stream), resume polling
         const { messages } = getChatState(instanceId)
         const last = messages[messages.length - 1]
         if (last && last.role === 'assistant' && last.streaming) {
-          startPollLoop(getChatState(instanceId).cursor)
+          startPollLoop(cursor)
         }
       } catch {
         // Instance may not support tether — ignore
@@ -190,7 +195,7 @@
     }
 
     scrollToBottom()
-    catchUp()
+    catchUp().then(scrollToBottom)
 
     return () => stopPolling()
   })

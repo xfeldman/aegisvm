@@ -11,7 +11,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"io/fs"
 	"log"
 	"net"
@@ -39,18 +38,19 @@ func main() {
 		log.Fatalf("embedded frontend not found (run 'make ui-frontend' first): %v", err)
 	}
 
-	// Start a real HTTP server on a random port. This avoids the WebKit
+	// Serve via real HTTP on a dedicated port. This avoids the WebKit
 	// WKURLSchemeHandler limitation where POST bodies are dropped for
-	// custom URL schemes. The webview loads from http://localhost:PORT.
+	// custom URL schemes. Fixed port preserves localStorage across restarts.
+	const uiAddr = "127.0.0.1:7701"
+
 	mux := http.NewServeMux()
 	mux.Handle("/api/", newAegisdProxy())
 	mux.Handle("/", spaHandler(http.FileServer(http.FS(distFS)), distFS))
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", uiAddr)
 	if err != nil {
-		log.Fatalf("listen: %v", err)
+		log.Fatalf("aegis-ui: port %s is in use by another process — cannot start (changing port would lose chat history)", uiAddr)
 	}
-	addr := listener.Addr().String()
 	go http.Serve(listener, mux)
 
 	app := application.New(application.Options{
@@ -59,7 +59,7 @@ func main() {
 
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:  "AegisVM",
-		URL:    fmt.Sprintf("http://%s", addr),
+		URL:    "http://" + uiAddr,
 		Width:  1100,
 		Height: 700,
 		Mac: application.MacWindow{
