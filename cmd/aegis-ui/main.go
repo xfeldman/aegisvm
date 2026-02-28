@@ -53,8 +53,9 @@ func main() {
 		Width:  1100,
 		Height: 700,
 		Mac: application.MacWindow{
-			Backdrop: application.MacBackdropNormal,
-			TitleBar: application.MacTitleBarDefault,
+			Backdrop:                application.MacBackdropNormal,
+			TitleBar:                application.MacTitleBarHidden,
+			InvisibleTitleBarHeight: 38, // matches .topbar height — drag zone
 		},
 	})
 
@@ -66,18 +67,25 @@ func main() {
 }
 
 // spaHandler serves static files, falling back to index.html for SPA routing.
-// Identical to the handler in cmd/aegis/ui.go.
+// Unlike the CLI's handler, this injects class="desktop-app" on <html> so the
+// frontend can apply desktop-only styles (compact toolbar, traffic-light padding).
 func spaHandler(fileServer http.Handler, fsys fs.FS) http.Handler {
+	// Read and patch index.html once at startup.
+	indexData, _ := fs.ReadFile(fsys, "index.html")
+	indexHTML := strings.Replace(string(indexData), "<html", `<html class="desktop-app"`, 1)
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/")
-		if path == "" {
-			path = "index.html"
+		if path == "" || path == "index.html" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write([]byte(indexHTML))
+			return
 		}
 		f, err := fsys.Open(path)
 		if err != nil {
-			// SPA fallback: serve index.html for unknown paths
-			r.URL.Path = "/"
-			fileServer.ServeHTTP(w, r)
+			// SPA fallback: serve patched index.html for unknown paths
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write([]byte(indexHTML))
 			return
 		}
 		f.Close()

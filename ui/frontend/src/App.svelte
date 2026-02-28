@@ -23,6 +23,7 @@
   }
 
   let route = $derived(getRoute(hash))
+  let isDesktop = document.documentElement.classList.contains('desktop-app')
 </script>
 
 <svelte:window onhashchange={onHashChange} />
@@ -32,6 +33,12 @@
     <a href="#/" class="logo">
       <span class="logo-text">aegis</span>
     </a>
+    {#if isDesktop}
+      <div class="nav-buttons">
+        <button class="nav-btn" onclick={() => history.back()} title="Back">&#x2039;</button>
+        <button class="nav-btn" onclick={() => history.forward()} title="Forward">&#x203A;</button>
+      </div>
+    {/if}
     <nav>
       <a href="#/" class="nav-link" class:active={route.page === 'dashboard'}>Dashboard</a>
       <a href="#/secrets" class="nav-link" class:active={route.page === 'secrets'}>Secrets</a>
@@ -111,5 +118,39 @@
     flex: 1;
     overflow-y: auto;
     padding: 24px;
+  }
+
+  /* --- Desktop app overrides (active when html has class="desktop-app") --- */
+
+  :global(html.desktop-app) .topbar {
+    gap: 12px;
+    padding: 0 16px 0 88px;
+    height: 38px;
+    -webkit-user-select: none;
+    user-select: none;
+    cursor: default;
+  }
+
+  :global(html.desktop-app) .nav-link {
+    padding: 4px 10px;
+  }
+
+  .nav-buttons {
+    display: flex;
+    gap: 2px;
+  }
+  .nav-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 20px;
+    line-height: 1;
+    padding: 2px 6px;
+    border-radius: var(--radius);
+    cursor: pointer;
+  }
+  .nav-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--text);
   }
 </style>
