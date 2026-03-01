@@ -23,8 +23,11 @@ import (
 func setupSystemTray(app *application.App, window *application.WebviewWindow) {
 	tray := app.SystemTray.New()
 
-	// Template icon: macOS tints it for dark/light mode automatically.
-	tray.SetTemplateIcon(generateTrayIcon())
+	// macOS: template icon (system tints for dark/light mode).
+	// Linux: regular icon (libappindicator doesn't support template icons).
+	icon := generateTrayIcon()
+	tray.SetTemplateIcon(icon)
+	tray.SetIcon(icon)
 	tray.SetTooltip("AegisVM")
 
 	// Build initial menu (updated every 10s with live instance data).

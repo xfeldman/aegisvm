@@ -18,7 +18,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -29,6 +31,14 @@ import (
 )
 
 func main() {
+	// Single-instance guard: if another instance is running, activate it and exit.
+	// macOS handles this natively via NSApplication; Linux needs explicit locking.
+	if runtime.GOOS != "darwin" {
+		if activateExisting() {
+			return
+		}
+	}
+
 	// Set up CLI access and extract kit config from the app bundle.
 	// macOS: symlinks into .app. Linux: copies from AppImage to ~/.aegis/.
 	ensureDesktopSetup()
@@ -80,6 +90,11 @@ func main() {
 	})
 
 	setupSystemTray(app, window)
+
+	// Listen for activation requests from new instances (Linux single-instance).
+	if runtime.GOOS != "darwin" {
+		go listenForActivation(window)
+	}
 
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
@@ -170,3 +185,52 @@ document.addEventListener('click', function(e) {
   fetch('/open-url', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'url='+encodeURIComponent(a.href)});
 });
 `
+
+// uiSocketPath returns the path for the single-instance unix socket.
+func uiSocketPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".aegis", "aegis-ui.sock")
+}
+
+// activateExisting tries to connect to an already-running instance.
+// If successful, sends "show" to bring its window to front and returns true.
+// If no instance is running, returns false so the caller proceeds normally.
+func activateExisting() bool {
+	conn, err := net.DialTimeout("unix", uiSocketPath(), 500*time.Millisecond)
+	if err != nil {
+		// No existing instance — clean up stale socket and proceed.
+		os.Remove(uiSocketPath())
+		return false
+	}
+	conn.Write([]byte("show"))
+	conn.Close()
+	log.Println("aegis-ui: activated existing instance")
+	return true
+}
+
+// listenForActivation listens on a unix socket for "show" commands from
+// new instances and brings the window to front.
+func listenForActivation(window *application.WebviewWindow) {
+	sock := uiSocketPath()
+	os.Remove(sock) // clean up from previous run
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		log.Printf("aegis-ui: activation listener: %v", err)
+		return
+	}
+	defer ln.Close()
+	defer os.Remove(sock)
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		buf := make([]byte, 16)
+		n, _ := conn.Read(buf)
+		conn.Close()
+		if string(buf[:n]) == "show" {
+			window.Show()
+		}
+	}
+}

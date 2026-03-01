@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"image/png"
 	"math"
+	"runtime"
 )
 
 // generateTrayIcon creates a 22x22 shield-shaped PNG for the system tray.
@@ -18,6 +19,12 @@ import (
 // This is a placeholder; replace with a designed icon for production.
 func generateTrayIcon() []byte {
 	const size = 22
+	// macOS: black on transparent — system tints it for dark/light via SetTemplateIcon.
+	// Linux: white on transparent — libappindicator uses the icon as-is, most panels are dark.
+	shieldColor := color.NRGBA{A: 255} // black template
+	if runtime.GOOS == "linux" {
+		shieldColor = color.NRGBA{R: 255, G: 255, B: 255, A: 255} // white
+	}
 	img := image.NewNRGBA(image.Rect(0, 0, size, size))
 
 	cx := float64(size) / 2 // center x = 11
@@ -28,7 +35,7 @@ func generateTrayIcon() []byte {
 			py := float64(y) + 0.5
 
 			if isInShield(px, py, cx) {
-				img.SetNRGBA(x, y, color.NRGBA{A: 255}) // black, full opacity
+				img.SetNRGBA(x, y, shieldColor) // template (macOS) or white (Linux)
 			}
 		}
 	}

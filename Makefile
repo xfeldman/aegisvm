@@ -191,7 +191,8 @@ package-linux-appimage: all desktop
 		$(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis-agent ./cmd/aegis-agent
 	$(GO) build $(DEB_GOFLAGS) -tags uifrontend -o $(BIN_DIR)/aegis-ui ./cmd/aegis-ui
 	@rm -rf $(APPDIR)
-	@mkdir -p $(APPDIR)/usr/bin $(APPDIR)/usr/share/aegisvm/kernel $(APPDIR)/usr/share/aegisvm/kits
+	@mkdir -p $(APPDIR)/usr/bin $(APPDIR)/usr/share/aegisvm/kernel $(APPDIR)/usr/share/aegisvm/kits \
+		$(APPDIR)/usr/share/icons/hicolor/256x256/apps
 	cp $(BIN_DIR)/aegis-ui $(APPDIR)/usr/bin/
 	@for bin in $(APPIMAGE_BINS); do \
 		[ -f $(BIN_DIR)/$$bin ] && cp $(BIN_DIR)/$$bin $(APPDIR)/usr/bin/ || true; \
@@ -206,6 +207,7 @@ package-linux-appimage: all desktop
 	chmod +x $(APPDIR)/AppRun
 	cp cmd/aegis-ui/aegisvm.desktop $(APPDIR)/
 	cp icons/icon-noglow-1024.png $(APPDIR)/aegisvm.png
+	cp icons/icon-noglow-1024.png $(APPDIR)/usr/share/icons/hicolor/256x256/apps/aegisvm.png
 	ARCH=$(shell uname -m) appimagetool $(APPDIR) AegisVM-$(VERSION)-$(HOST_ARCH).AppImage
 	@rm -rf $(APPDIR)
 	@echo "==> Built AegisVM-$(VERSION)-$(HOST_ARCH).AppImage"
