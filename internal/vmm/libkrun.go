@@ -447,7 +447,7 @@ func (l *LibkrunVMM) StopVM(h Handle) error {
 func (l *LibkrunVMM) Capabilities() BackendCaps {
 	return BackendCaps{
 		Pause:           true,
-		PersistentPause: true,
+		PersistentPause: false, // stop idle instances to free resources (no snapshots)
 		RootFSType:      RootFSDirectory,
 		Name:            "libkrun",
 		GuestArch:       "arm64",
