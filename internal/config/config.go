@@ -72,9 +72,6 @@ type Config struct {
 	// VirtiofsdBin is the path to the virtiofsd binary.
 	// Empty means search PATH.
 	VirtiofsdBin string
-
-	// SnapshotsDir is the directory for VM memory snapshots (Linux only).
-	SnapshotsDir string
 }
 
 // DefaultConfig returns the default configuration.
@@ -117,8 +114,7 @@ func DefaultConfig() *Config {
 		PauseAfterIdle:     60 * time.Second,
 		StopAfterIdle:      5 * time.Minute,
 		NetworkBackend:     "auto",
-		KernelPath:         kernelPath,
-		SnapshotsDir:       filepath.Join(aegisDir, "data", "snapshots"),
+		KernelPath: kernelPath,
 	}
 }
 
@@ -134,7 +130,7 @@ func (c *Config) EnsureDirs() error {
 		c.LogsDir,
 	}
 	if runtime.GOOS == "linux" {
-		dirs = append(dirs, filepath.Dir(c.KernelPath), c.SnapshotsDir)
+		dirs = append(dirs, filepath.Dir(c.KernelPath))
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0700); err != nil {

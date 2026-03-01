@@ -138,13 +138,8 @@ type harnessRPC struct {
 	// Used by ports_changed notifications to start/stop proxies.
 	portProxy *portProxy
 
-	// tracker manages child processes across reconnects. Lives on harnessRPC
-	// (not handleConnection) so the primary process survives quiesce/reconnect.
+	// tracker manages child processes.
 	tracker *processTracker
-
-	// quiesced is set by quiesce.stop RPC — suppresses optional traffic
-	// (activity probes, log flushes) until the next reconnect.
-	quiesced bool
 }
 
 func newHarnessRPC(conn net.Conn) *harnessRPC {
@@ -316,19 +311,6 @@ func dispatch(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *proc
 			ID:      req.ID,
 		}
 
-	case "quiesce.stop":
-		// Daemon is about to close the channel, snapshot, and stop the VM.
-		// Suppress optional traffic. The primary process keeps running —
-		// it will be frozen by vm.pause and captured in the snapshot.
-		// After ACK, any frames we send may be dropped.
-		log.Println("quiesce.stop: entering quiesced mode")
-		hrpc.quiesced = true
-		return &rpcResponse{
-			JSONRPC: "2.0",
-			Result:  map[string]string{"status": "ready"},
-			ID:      req.ID,
-		}
-
 	case "shutdown":
 		log.Println("shutdown requested")
 		return &rpcResponse{
@@ -479,9 +461,6 @@ func monitorActivity(ctx context.Context, pid int, conn net.Conn, hrpc *harnessR
 		// net_bytes threshold filters out background ARP/keepalive noise (~70 bytes/5s).
 		const netBytesThreshold = 512
 		log.Printf("activity probe: tcp=%d cpu_ms=%d net_bytes=%d (threshold=%d)", tcp, cpuMs, netDelta, netBytesThreshold)
-		if hrpc.quiesced {
-			continue // suppressed — daemon is about to snapshot
-		}
 		if tcp > 0 || cpuMs > 0 || netDelta > netBytesThreshold {
 			err := sendNotification(conn, "activity", map[string]interface{}{
 				"tcp":       tcp,

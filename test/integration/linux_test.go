@@ -4,8 +4,6 @@ package integration
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -13,19 +11,14 @@ import (
 )
 
 // Linux-specific integration tests for the Cloud Hypervisor backend.
-// These tests exercise snapshot/restore, stop/cold-restart with state
-// preservation, and tap networking. They are skipped on non-Linux platforms.
+// These tests exercise stop/cold-restart and tap networking.
+// They are skipped on non-Linux platforms.
 
 func skipIfNotLinux(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux-only test (Cloud Hypervisor backend)")
 	}
-}
-
-func snapshotsDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".aegis", "data", "snapshots")
 }
 
 // TestLinux_RunEcho — basic smoke test: boot VM via CH, run command, verify output.
@@ -69,9 +62,7 @@ func TestLinux_PauseResume(t *testing.T) {
 	}
 }
 
-// TestLinux_StopStart — stop a running instance, then start it again (cold restart).
-// On Linux/CH, the stop path triggers snapshot (via idle timer or explicit stop).
-// The start path detects the snapshot and restores from it.
+// TestLinux_StopStart — stop a running instance, then start it again (cold boot).
 func TestLinux_StopStart(t *testing.T) {
 	skipIfNotLinux(t)
 	if testing.Short() {
@@ -87,125 +78,22 @@ func TestLinux_StopStart(t *testing.T) {
 
 	waitForState(t, id, "running", 60*time.Second)
 
-	// Verify running
 	out := aegisExec(t, id, "echo", "before-stop")
 	if !strings.Contains(out, "before-stop") {
 		t.Fatalf("exec before stop failed, got: %s", out)
 	}
 
-	// Pause first (snapshot requires paused state for CH)
-	apiPost(t, fmt.Sprintf("/v1/instances/%s/pause", id), nil)
-	waitForState(t, id, "paused", 10*time.Second)
-
-	// Disable (stops the VM — lifecycle manager snapshots before stopping on CH)
+	// Disable (stops the VM)
 	apiPost(t, fmt.Sprintf("/v1/instances/%s/disable", id), nil)
 	waitForState(t, id, "stopped", 30*time.Second)
 
-	// Start again — should restore from snapshot if available
+	// Start again — cold boot
 	apiPost(t, fmt.Sprintf("/v1/instances/%s/start", id), nil)
 	waitForState(t, id, "running", 60*time.Second)
 
-	// Verify VM is functional after restart
 	out = aegisExec(t, id, "echo", "after-restart")
 	if !strings.Contains(out, "after-restart") {
 		t.Fatalf("exec after restart failed, got: %s", out)
-	}
-}
-
-// TestLinux_SnapshotCreatedOnIdleStop — verify that the lifecycle manager creates
-// a snapshot when an idle instance is stopped. Uses short idle/stop timeouts.
-func TestLinux_SnapshotCreatedOnIdleStop(t *testing.T) {
-	skipIfNotLinux(t)
-	if testing.Short() {
-		t.Skip("snapshot idle test skipped in short mode")
-	}
-
-	inst := apiPost(t, "/v1/instances", map[string]interface{}{
-		"command": []string{"sleep", "300"},
-		"handle":  "linux-snap-idle",
-	})
-	id := inst["id"].(string)
-	t.Cleanup(func() {
-		apiDeleteAllowFail(t, "/v1/instances/"+id)
-		// Clean up snapshot dir
-		os.RemoveAll(filepath.Join(snapshotsDir(), id))
-	})
-
-	waitForState(t, id, "running", 60*time.Second)
-
-	// Explicitly pause (simulates what idle timer does)
-	apiPost(t, fmt.Sprintf("/v1/instances/%s/pause", id), nil)
-	waitForState(t, id, "paused", 10*time.Second)
-
-	// Disable to trigger stop path (which should snapshot on CH)
-	apiPost(t, fmt.Sprintf("/v1/instances/%s/disable", id), nil)
-	waitForState(t, id, "stopped", 30*time.Second)
-
-	// Check if snapshot directory was created
-	snapDir := filepath.Join(snapshotsDir(), id)
-	if _, err := os.Stat(snapDir); os.IsNotExist(err) {
-		t.Log("snapshot directory not created (backend may not support snapshots)")
-		// This is acceptable — snapshot is optional capability
-	} else if err == nil {
-		t.Logf("snapshot directory created at %s", snapDir)
-		// Verify it has content
-		entries, _ := os.ReadDir(snapDir)
-		if len(entries) == 0 {
-			t.Fatal("snapshot directory is empty")
-		}
-		t.Logf("snapshot contains %d entries", len(entries))
-	}
-}
-
-// TestLinux_SnapshotCleanedOnCrash — verify that snapshot is removed when the
-// primary process crashes (snapshot is stale after crash).
-func TestLinux_SnapshotCleanedOnCrash(t *testing.T) {
-	skipIfNotLinux(t)
-	if testing.Short() {
-		t.Skip("snapshot crash test skipped in short mode")
-	}
-
-	inst := apiPost(t, "/v1/instances", map[string]interface{}{
-		"command": []string{"sleep", "300"},
-		"handle":  "linux-snap-crash",
-	})
-	id := inst["id"].(string)
-	t.Cleanup(func() {
-		apiDeleteAllowFail(t, "/v1/instances/"+id)
-		os.RemoveAll(filepath.Join(snapshotsDir(), id))
-	})
-
-	waitForState(t, id, "running", 60*time.Second)
-
-	// Pause, disable to create snapshot
-	apiPost(t, fmt.Sprintf("/v1/instances/%s/pause", id), nil)
-	waitForState(t, id, "paused", 10*time.Second)
-	apiPost(t, fmt.Sprintf("/v1/instances/%s/disable", id), nil)
-	waitForState(t, id, "stopped", 30*time.Second)
-
-	snapDir := filepath.Join(snapshotsDir(), id)
-	snapshotExists := false
-	if _, err := os.Stat(snapDir); err == nil {
-		snapshotExists = true
-		t.Log("snapshot exists after stop")
-	}
-
-	// Start again (restores from snapshot)
-	apiPost(t, fmt.Sprintf("/v1/instances/%s/start", id), nil)
-	waitForState(t, id, "running", 60*time.Second)
-
-	// Kill the process inside the VM (simulate crash)
-	aegisExec(t, id, "sh", "-c", "kill 1")
-
-	// Wait for instance to go to stopped state (process exited)
-	waitForState(t, id, "stopped", 30*time.Second)
-
-	// Snapshot should be cleaned up after crash
-	if snapshotExists {
-		if _, err := os.Stat(snapDir); err == nil {
-			t.Fatal("snapshot directory should have been cleaned up after process exit")
-		}
-		t.Log("snapshot correctly cleaned up after crash")
 	}
 }
 

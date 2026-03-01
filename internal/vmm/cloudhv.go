@@ -27,11 +27,10 @@ type CloudHypervisorVMM struct {
 	mu        sync.Mutex
 	instances map[string]*chInstance
 
-	chBin       string // path to cloud-hypervisor binary
+	chBin        string // path to cloud-hypervisor binary
 	virtiofsdBin string // path to virtiofsd binary
-	kernelPath  string // path to vmlinux
-	snapshotsDir string // base dir for VM memory snapshots
-	cfg         *config.Config
+	kernelPath   string // path to vmlinux
+	cfg          *config.Config
 
 	subnetCounter uint32 // monotonic counter for /30 subnet allocation
 }
@@ -58,9 +57,6 @@ type chInstance struct {
 
 	// Resolved endpoints
 	endpoints []HostEndpoint
-
-	// Snapshot
-	snapshotDir string // set if a snapshot exists for restore
 }
 
 // chClient is an HTTP client that dials a unix socket for the CH REST API.
@@ -141,7 +137,6 @@ func NewCloudHypervisorVMM(cfg *config.Config) (*CloudHypervisorVMM, error) {
 		chBin:        chBin,
 		virtiofsdBin: virtiofsdBin,
 		kernelPath:   cfg.KernelPath,
-		snapshotsDir: cfg.SnapshotsDir,
 		cfg:          cfg,
 	}, nil
 }
@@ -189,73 +184,11 @@ func (v *CloudHypervisorVMM) CreateVM(cfg VMConfig) (Handle, error) {
 		})
 	}
 
-	// Check if a snapshot exists for this VM (set by lifecycle manager)
-	// The snapshot dir is looked up by instance ID in the snapshots directory
-	// This is set later by the lifecycle manager before calling StartVM
-
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.instances[id] = inst
 
 	return Handle{ID: id}, nil
-}
-
-// SetSnapshotDir sets the snapshot directory for a VM handle.
-// Called by the lifecycle manager before StartVM to trigger restore path.
-// Reads the snapshot's config.json to override tap, subnet, and vsock paths
-// so the restored CH process finds matching network config.
-func (v *CloudHypervisorVMM) SetSnapshotDir(h Handle, dir string) error {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	inst, ok := v.instances[h.ID]
-	if !ok {
-		return fmt.Errorf("vm %s not found", h.ID)
-	}
-	inst.snapshotDir = dir
-
-	// Read the snapshot's config to restore original tap/subnet/vsock paths.
-	// CH's vm.restore uses the config.json from the snapshot — the host-side
-	// resources (tap device, vsock socket) must match.
-	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
-	if err != nil {
-		return nil // proceed without overrides
-	}
-	var snapCfg struct {
-		Net []struct {
-			Tap string `json:"tap"`
-		} `json:"net"`
-		Vsock struct {
-			Socket string `json:"socket"`
-		} `json:"vsock"`
-	}
-	if json.Unmarshal(data, &snapCfg) != nil {
-		return nil
-	}
-
-	// Override tap name — must match snapshot so CH finds the device
-	if len(snapCfg.Net) > 0 && snapCfg.Net[0].Tap != "" {
-		oldTap := inst.tapName
-		inst.tapName = snapCfg.Net[0].Tap
-		// Derive subnet from tap index (same scheme as CreateVM)
-		var idx uint32
-		fmt.Sscanf(inst.tapName, "aegis%d", &idx)
-		thirdOctet := idx / 64
-		fourthBase := (idx % 64) * 4
-		inst.hostIP = fmt.Sprintf("172.16.%d.%d", thirdOctet, fourthBase+1)
-		inst.guestIP = fmt.Sprintf("172.16.%d.%d", thirdOctet, fourthBase+2)
-		// Update any pre-allocated endpoints to use the restored guest IP
-		for i := range inst.endpoints {
-			inst.endpoints[i].BackendAddr = inst.guestIP
-		}
-		log.Printf("vmm: restore override tap %s→%s (guest %s)", oldTap, inst.tapName, inst.guestIP)
-	}
-
-	// Override vsock socket path
-	if snapCfg.Vsock.Socket != "" {
-		inst.vsockSocket = snapCfg.Vsock.Socket
-	}
-
-	return nil
 }
 
 func (v *CloudHypervisorVMM) StartVM(h Handle) (ControlChannel, error) {
@@ -292,8 +225,6 @@ func (v *CloudHypervisorVMM) StartVM(h Handle) (ControlChannel, error) {
 	}
 
 	// 4. Pre-create vsock unix socket listener for harness connection.
-	// On restore, inst.vsockSocket was already overridden by SetSnapshotDir
-	// to match the snapshot's original path.
 	vsockListenPath := fmt.Sprintf("%s_%d", inst.vsockSocket, harnessVsockPort)
 	os.Remove(vsockListenPath) // clean stale
 	os.Remove(inst.vsockSocket) // clean base socket (CH binds this)
@@ -332,19 +263,7 @@ func (v *CloudHypervisorVMM) StartVM(h Handle) (ControlChannel, error) {
 
 	client := newCHClient(inst.apiSocket)
 
-	// 7. Create and boot VM (or restore from snapshot)
-	if inst.snapshotDir != "" {
-		// Restore path
-		ch, err := v.restoreVM(client, inst, vsockLn)
-		if err != nil {
-			vsockLn.Close()
-			v.cleanupInstance(inst)
-			return nil, fmt.Errorf("restore VM: %w", err)
-		}
-		return ch, nil
-	}
-
-	// Fresh boot path
+	// 7. Create and boot VM
 	ch, err := v.freshBoot(client, inst, cfg, vsockLn)
 	if err != nil {
 		vsockLn.Close()
@@ -441,36 +360,6 @@ func (v *CloudHypervisorVMM) freshBoot(client *chClient, inst *chInstance, cfg V
 	return v.acceptHarness(vsockLn, 90*time.Second)
 }
 
-func (v *CloudHypervisorVMM) restoreVM(client *chClient, inst *chInstance, vsockLn net.Listener) (ControlChannel, error) {
-	// PUT /api/v1/vm.restore
-	restorePayload := map[string]interface{}{
-		"source_url": "file://" + inst.snapshotDir,
-	}
-	resp, err := client.put("/api/v1/vm.restore", restorePayload)
-	if err != nil {
-		return nil, fmt.Errorf("vm.restore: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("vm.restore returned %d: %s", resp.StatusCode, body)
-	}
-
-	// PUT /api/v1/vm.resume
-	resp, err = client.put("/api/v1/vm.resume", nil)
-	if err != nil {
-		return nil, fmt.Errorf("vm.resume after restore: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("vm.resume returned %d: %s", resp.StatusCode, body)
-	}
-
-	// Wait for harness reconnect via vsock (harness reconnect loop handles vsock reset)
-	return v.acceptHarness(vsockLn, 90*time.Second)
-}
-
 func (v *CloudHypervisorVMM) acceptHarness(ln net.Listener, timeout time.Duration) (ControlChannel, error) {
 	if unixLn, ok := ln.(*net.UnixListener); ok {
 		unixLn.SetDeadline(time.Now().Add(timeout))
@@ -541,76 +430,6 @@ func (v *CloudHypervisorVMM) StopVM(h Handle) error {
 	v.mu.Unlock()
 
 	return nil
-}
-
-// SnapshotVM snapshots the VM's memory to the given directory.
-// Not on the VMM interface — accessed via structural type assertion.
-// Pauses the VM if running before taking the snapshot.
-func (v *CloudHypervisorVMM) SnapshotVM(h Handle, dir string) error {
-	v.mu.Lock()
-	inst, ok := v.instances[h.ID]
-	v.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("vm %s not found", h.ID)
-	}
-
-	// Ensure snapshot directory exists
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return fmt.Errorf("create snapshot dir: %w", err)
-	}
-
-	client := newCHClient(inst.apiSocket)
-
-	// Pause first if running (snapshot requires paused state)
-	resp, err := client.put("/api/v1/vm.pause", nil)
-	if err != nil {
-		return fmt.Errorf("vm.pause before snapshot: %w", err)
-	}
-	resp.Body.Close()
-	// Ignore 4xx — might already be paused
-
-	// PUT /api/v1/vm.snapshot
-	snapshotPayload := map[string]interface{}{
-		"destination_url": "file://" + dir,
-	}
-	resp, err = client.put("/api/v1/vm.snapshot", snapshotPayload)
-	if err != nil {
-		return fmt.Errorf("vm.snapshot: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("vm.snapshot returned %d: %s", resp.StatusCode, body)
-	}
-
-	// Chown snapshot dir to invoking user (daemon runs as root via sudo)
-	chownToInvokingUser(dir)
-
-	log.Printf("vmm: snapshot saved to %s (vm %s)", dir, h.ID)
-	return nil
-}
-
-// chownToInvokingUser recursively chowns a path to the SUDO_UID/SUDO_GID user.
-// No-op when not running under sudo.
-func chownToInvokingUser(path string) {
-	if os.Geteuid() != 0 {
-		return
-	}
-	uidStr, gidStr := os.Getenv("SUDO_UID"), os.Getenv("SUDO_GID")
-	if uidStr == "" || gidStr == "" {
-		return
-	}
-	uid, _ := strconv.Atoi(uidStr)
-	gid, _ := strconv.Atoi(gidStr)
-	if uid == 0 {
-		return
-	}
-	filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
-		if err == nil {
-			os.Chown(p, uid, gid)
-		}
-		return nil
-	})
 }
 
 func (v *CloudHypervisorVMM) HostEndpoints(h Handle) ([]HostEndpoint, error) {
@@ -744,18 +563,15 @@ func enableIPForward() error {
 	return os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644)
 }
 
-// createTap creates a tap device and assigns an IP address.
+// createTap creates a tap device, assigns an IP address, and brings it up.
 func createTap(name, hostIP string) error {
-	// Create tap device
 	if err := runCmd("ip", "tuntap", "add", "dev", name, "mode", "tap"); err != nil {
 		return fmt.Errorf("ip tuntap add: %w", err)
 	}
-	// Assign IP to host side
 	if err := runCmd("ip", "addr", "add", hostIP+"/30", "dev", name); err != nil {
 		destroyTap(name)
 		return fmt.Errorf("ip addr add: %w", err)
 	}
-	// Bring up
 	if err := runCmd("ip", "link", "set", name, "up"); err != nil {
 		destroyTap(name)
 		return fmt.Errorf("ip link set up: %w", err)

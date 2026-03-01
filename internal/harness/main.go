@@ -52,68 +52,12 @@ func Run() {
 	go startGuestAPIServer(hrpc)
 
 	// Handle JSON-RPC from the host + responses to our guest API calls.
-	// On connection drop, attempt reconnect if vsock is available (handles
-	// snapshot/restore where the backend resets the vsock transport).
-	for {
-		handleConnection(ctx, conn, hrpc)
+	// On connection loss or shutdown signal, the harness exits and the VM stops.
+	handleConnection(ctx, conn, hrpc)
 
-		// Check if context is cancelled (shutdown signal)
-		select {
-		case <-ctx.Done():
-			log.Println("harness shutting down")
-			hrpc.tracker.killAll()
-			conn.Close()
-			return
-		default:
-		}
-
-		// Only attempt reconnect if using vsock (snapshot/restore scenario)
-		vsockPort := os.Getenv("AEGIS_VSOCK_PORT")
-		if vsockPort == "" {
-			log.Println("harness shutting down (connection lost, no vsock reconnect)")
-			hrpc.tracker.killAll()
-			conn.Close()
-			return
-		}
-
-		log.Println("control channel lost, attempting vsock reconnect...")
-		conn.Close()
-
-		// Reconnect — retry indefinitely since we're inside a restored VM
-		// and the host may take time to start a new CH process.
-		newConn := reconnectVsock()
-		conn = newConn
-
-		// Re-wire the harnessRPC to use the new connection
-		hrpc.mu.Lock()
-		hrpc.conn = newConn
-		hrpc.mu.Unlock()
-		hrpc.quiesced = false
-
-		log.Println("reconnected to host via vsock")
-	}
-}
-
-// reconnectVsock retries vsock connection indefinitely with backoff.
-// Used after snapshot/restore when the host may take time to start a new VM process.
-func reconnectVsock() net.Conn {
-	vsockPort := os.Getenv("AEGIS_VSOCK_PORT")
-	vsockCID := os.Getenv("AEGIS_VSOCK_CID")
-
-	delay := 500 * time.Millisecond
-	for attempt := 1; ; attempt++ {
-		conn, err := dialVsock(vsockPort, vsockCID)
-		if err == nil {
-			return conn
-		}
-		if attempt%20 == 0 {
-			log.Printf("vsock reconnect attempt %d: %v (retrying...)", attempt, err)
-		}
-		time.Sleep(delay)
-		if delay < 5*time.Second {
-			delay = delay * 3 / 2 // backoff up to 5s
-		}
-	}
+	log.Println("harness shutting down")
+	hrpc.tracker.killAll()
+	conn.Close()
 }
 
 // connectToHost establishes the control channel to the host.
