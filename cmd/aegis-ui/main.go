@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -28,8 +29,8 @@ import (
 )
 
 func main() {
-	// Set up CLI symlinks and extract kit config from .app bundle (macOS).
-	// No-op in dev mode (binaries next to executable).
+	// Set up CLI access and extract kit config from the app bundle.
+	// macOS: symlinks into .app. Linux: copies from AppImage to ~/.aegis/.
 	ensureDesktopSetup()
 
 	// Start aegisd if not running.
@@ -150,7 +151,12 @@ func handleOpenURL(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid url", http.StatusBadRequest)
 		return
 	}
-	exec.Command("open", url).Start()
+	switch runtime.GOOS {
+	case "linux":
+		exec.Command("xdg-open", url).Start()
+	default:
+		exec.Command("open", url).Start()
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

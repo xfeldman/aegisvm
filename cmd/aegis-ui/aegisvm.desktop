@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=AegisVM
+Comment=Local agent runtime platform
+Exec=aegis-ui
+Icon=aegisvm
+Categories=Development;System;
+Terminal=false
+StartupWMClass=AegisVM

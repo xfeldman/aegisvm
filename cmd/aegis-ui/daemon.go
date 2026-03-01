@@ -51,20 +51,25 @@ func isDaemonRunning() bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
-// ensureDesktopSetup creates symlinks and extracts config from the .app bundle.
+// ensureDesktopSetup installs bundled binaries and config for CLI access.
 //
-// Unlike the old ensureBinaries() which copied all executables + dylibs to
-// ~/.aegis/bin/ and ~/.aegis/lib/, this follows the macOS convention of running
-// binaries directly from the .app bundle (like Docker Desktop). Only two
-// symlinks are created for CLI/MCP access, plus the kit manifest is extracted
-// as user config. Dragging the .app to Trash cleanly removes all executables.
+// On macOS: creates symlinks from ~/.aegis/bin/ into the .app bundle.
+// On Linux: copies binaries from the AppImage to ~/.aegis/bin/ (FUSE mount is temporary).
 //
 // No-op when not running from a bundle (dev mode).
 func ensureDesktopSetup() {
-	if runtime.GOOS != "darwin" {
-		return
+	switch runtime.GOOS {
+	case "darwin":
+		ensureDesktopSetupDarwin()
+	case "linux":
+		ensureDesktopSetupLinux()
 	}
+}
 
+// ensureDesktopSetupDarwin creates symlinks from ~/.aegis/bin/ into the .app bundle.
+// macOS runs binaries directly from the bundle (like Docker Desktop). Only CLI
+// and MCP symlinks are created. Dragging the .app to Trash cleanly removes everything.
+func ensureDesktopSetupDarwin() {
 	exe, err := os.Executable()
 	if err != nil {
 		return
@@ -130,6 +135,101 @@ func ensureDesktopSetup() {
 		kitDir := filepath.Join(aegisDir(), "kits")
 		os.MkdirAll(kitDir, 0755)
 		copyFile(kitSrc, filepath.Join(kitDir, "agent.json"))
+	}
+
+	// Write version marker
+	os.WriteFile(versionFile, []byte(currentVersion), 0644)
+
+	log.Printf("aegis-ui: desktop setup complete (version %s)", currentVersion)
+}
+
+// ensureDesktopSetupLinux copies bundled binaries from the AppImage to ~/.aegis/.
+// Unlike macOS (which uses symlinks into a persistent .app bundle), Linux AppImage
+// mounts are temporary FUSE filesystems — binaries must be copied to a stable
+// location so the daemon survives app exit and the CLI works independently.
+func ensureDesktopSetupLinux() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+
+	// Detect AppImage: $APPDIR is set by the AppImage runtime to the FUSE mount root.
+	// Fall back to the directory containing the executable (dev mode).
+	appDir := os.Getenv("APPDIR")
+	var binSrc, shareSrc string
+	if appDir != "" {
+		binSrc = filepath.Join(appDir, "usr", "bin")
+		shareSrc = filepath.Join(appDir, "usr", "share", "aegisvm")
+	} else {
+		binSrc = filepath.Dir(exe)
+	}
+
+	// Verify we're in a bundle context (aegisd must be present).
+	if _, err := os.Stat(filepath.Join(binSrc, "aegisd")); err != nil {
+		return // Not in a bundle (dev mode without full binaries)
+	}
+
+	binDir := filepath.Join(aegisDir(), "bin")
+	os.MkdirAll(binDir, 0755)
+
+	// Version check: skip setup if already at current version
+	versionFile := filepath.Join(binDir, ".version")
+	currentVersion := version.Version()
+	if data, err := os.ReadFile(versionFile); err == nil {
+		if strings.TrimSpace(string(data)) == currentVersion {
+			return
+		}
+	}
+
+	// Copy runtime binaries to ~/.aegis/bin/.
+	// Required: daemon, CLI, harness, Cloud Hypervisor components.
+	for _, name := range []string{"aegis", "aegisd", "aegis-mcp", "aegis-harness", "aegis-mcp-guest", "cloud-hypervisor", "ch-remote"} {
+		src := filepath.Join(binSrc, name)
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		dst := filepath.Join(binDir, name)
+		if err := copyFile(src, dst); err != nil {
+			log.Printf("aegis-ui: copy %s: %v", name, err)
+			continue
+		}
+		os.Chmod(dst, 0755)
+	}
+
+	// Optional: agent kit binaries.
+	for _, name := range []string{"aegis-gateway", "aegis-agent"} {
+		src := filepath.Join(binSrc, name)
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		dst := filepath.Join(binDir, name)
+		if err := copyFile(src, dst); err != nil {
+			log.Printf("aegis-ui: copy %s: %v", name, err)
+			continue
+		}
+		os.Chmod(dst, 0755)
+	}
+
+	// Copy kernel (Cloud Hypervisor needs vmlinux).
+	if shareSrc != "" {
+		kernelSrc := filepath.Join(shareSrc, "kernel", "vmlinux")
+		if _, err := os.Stat(kernelSrc); err == nil {
+			kernelDir := filepath.Join(aegisDir(), "kernel")
+			os.MkdirAll(kernelDir, 0755)
+			if err := copyFile(kernelSrc, filepath.Join(kernelDir, "vmlinux")); err != nil {
+				log.Printf("aegis-ui: copy vmlinux: %v", err)
+			}
+		}
+	}
+
+	// Extract kit manifest.
+	if shareSrc != "" {
+		kitSrc := filepath.Join(shareSrc, "kits", "agent.json")
+		if _, err := os.Stat(kitSrc); err == nil {
+			kitDir := filepath.Join(aegisDir(), "kits")
+			os.MkdirAll(kitDir, 0755)
+			copyFile(kitSrc, filepath.Join(kitDir, "agent.json"))
+		}
 	}
 
 	// Write version marker

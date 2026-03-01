@@ -1,0 +1,20 @@
+#!/bin/bash
+# AppRun — entry point for the AegisVM AppImage.
+# Checks for WebKitGTK runtime dependency, then launches the desktop app.
+
+HERE="$(dirname "$(readlink -f "$0")")"
+
+# WebKitGTK 4.1 is required by Wails v3 on Linux.
+# Not bundled in the AppImage — must come from the system package manager.
+if ! ldconfig -p 2>/dev/null | grep -q libwebkit2gtk-4.1; then
+    echo "AegisVM requires WebKitGTK 4.1." >&2
+    echo "" >&2
+    echo "Install it for your distribution:" >&2
+    echo "  Ubuntu/Debian:  sudo apt install libwebkit2gtk-4.1-0" >&2
+    echo "  Fedora:         sudo dnf install webkit2gtk4.1" >&2
+    echo "  Arch:           sudo pacman -S webkit2gtk-4.1" >&2
+    echo "  openSUSE:       sudo zypper install libwebkit2gtk-4_1-0" >&2
+    exit 1
+fi
+
+exec "$HERE/usr/bin/aegis-ui" "$@"

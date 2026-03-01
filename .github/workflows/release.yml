@@ -293,6 +293,33 @@ jobs:
           cp debian/aegisvm_${DEB_VERSION}_${ARCH}.deb aegisvm-${ARCH}.deb
           cp debian/aegisvm-agent-kit_${DEB_VERSION}_${ARCH}.deb aegisvm-agent-kit-${ARCH}.deb
 
+      # --- Desktop App (AppImage) ---
+      - name: Install desktop app build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libfuse2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build frontend
+        run: make ui-frontend
+
+      - name: Install appimagetool
+        run: |
+          MACHINE=$(uname -m)
+          curl -sSL -o /tmp/appimagetool \
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${MACHINE}.AppImage"
+          chmod +x /tmp/appimagetool
+          # CI runners lack FUSE — extract and use directly
+          cd /tmp && ./appimagetool --appimage-extract > /dev/null 2>&1
+          sudo mv /tmp/squashfs-root /opt/appimagetool
+          sudo ln -sf /opt/appimagetool/AppRun /usr/local/bin/appimagetool
+
+      - name: Build AppImage
+        run: make package-linux-appimage VERSION=${VERSION}
+
       - name: Generate checksums
         run: |
           sha256sum debian/aegisvm_${DEB_VERSION}_${ARCH}.deb | awk '{print $1}' > debian/aegisvm_${DEB_VERSION}_${ARCH}.deb.sha256
@@ -300,6 +327,7 @@ jobs:
           sha256sum aegisvm-${ARCH}.deb | awk '{print $1}' > aegisvm-${ARCH}.deb.sha256
           sha256sum aegisvm-agent-kit-${ARCH}.deb | awk '{print $1}' > aegisvm-agent-kit-${ARCH}.deb.sha256
           sha256sum aegisvm-${VERSION}-linux-${ARCH}.tar.gz | awk '{print $1}' > aegisvm-${VERSION}-linux-${ARCH}.tar.gz.sha256
+          sha256sum AegisVM-${VERSION}-${ARCH}.AppImage | awk '{print $1}' > AegisVM-${VERSION}-${ARCH}.AppImage.sha256
 
       - name: Upload Linux artifacts to release
         env:
@@ -315,4 +343,6 @@ jobs:
             aegisvm-agent-kit-${ARCH}.deb \
             aegisvm-agent-kit-${ARCH}.deb.sha256 \
             aegisvm-${VERSION}-linux-${ARCH}.tar.gz \
-            aegisvm-${VERSION}-linux-${ARCH}.tar.gz.sha256
+            aegisvm-${VERSION}-linux-${ARCH}.tar.gz.sha256 \
+            AegisVM-${VERSION}-${ARCH}.AppImage \
+            AegisVM-${VERSION}-${ARCH}.AppImage.sha256

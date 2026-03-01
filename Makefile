@@ -51,7 +51,7 @@ else
 ALL_TARGETS := aegisd aegis harness vmm-worker mcp mcp-guest gateway agent
 endif
 
-.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent base-rootfs clean test test-unit test-m2 test-m3 test-network integration install-kit release-tarball release-kit-tarball cloud-hypervisor kernel kernel-build deb deb-agent-kit release-linux-tarball ui ui-frontend desktop package-mac
+.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent base-rootfs clean test test-unit test-m2 test-m3 test-network integration install-kit release-tarball release-kit-tarball cloud-hypervisor kernel kernel-build deb deb-agent-kit release-linux-tarball ui ui-frontend desktop package-mac package-linux-appimage
 
 all: $(ALL_TARGETS)
 
@@ -168,6 +168,47 @@ package-mac: all desktop
 		codesign --sign - --entitlements entitlements.plist --force $(APP_DIR)/Contents/Resources/aegis-vmm-worker; \
 	fi
 	@echo "Built $(APP_DIR)"
+
+# Linux AppImage — self-contained desktop app bundle.
+# Bundles aegis-ui + all runtime binaries + kernel + kit configs.
+# On first launch, the desktop app copies runtime binaries to ~/.aegis/.
+# Requires: appimagetool in PATH, WebKitGTK 4.1 dev headers for building.
+APPDIR := $(BIN_DIR)/AegisVM.AppDir
+APPIMAGE_BINS := aegis aegisd aegis-mcp aegis-harness aegis-mcp-guest cloud-hypervisor ch-remote
+APPIMAGE_KIT_BINS := aegis-gateway aegis-agent
+
+package-linux-appimage: all desktop
+	@echo "==> Rebuilding binaries with system paths for AppImage..."
+	CGO_ENABLED=0 $(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis ./cmd/aegis
+	CGO_ENABLED=0 $(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegisd ./cmd/aegisd
+	CGO_ENABLED=0 $(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis-mcp ./cmd/aegis-mcp
+	GOOS=$(HARNESS_OS) GOARCH=$(HARNESS_ARCH) CGO_ENABLED=0 \
+		$(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis-harness ./cmd/aegis-harness
+	GOOS=$(HARNESS_OS) GOARCH=$(HARNESS_ARCH) CGO_ENABLED=0 \
+		$(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis-mcp-guest ./cmd/aegis-mcp-guest
+	CGO_ENABLED=0 $(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis-gateway ./cmd/aegis-gateway
+	GOOS=$(HARNESS_OS) GOARCH=$(HARNESS_ARCH) CGO_ENABLED=0 \
+		$(GO) build $(DEB_GOFLAGS) -o $(BIN_DIR)/aegis-agent ./cmd/aegis-agent
+	$(GO) build $(DEB_GOFLAGS) -tags uifrontend -o $(BIN_DIR)/aegis-ui ./cmd/aegis-ui
+	@rm -rf $(APPDIR)
+	@mkdir -p $(APPDIR)/usr/bin $(APPDIR)/usr/share/aegisvm/kernel $(APPDIR)/usr/share/aegisvm/kits
+	cp $(BIN_DIR)/aegis-ui $(APPDIR)/usr/bin/
+	@for bin in $(APPIMAGE_BINS); do \
+		[ -f $(BIN_DIR)/$$bin ] && cp $(BIN_DIR)/$$bin $(APPDIR)/usr/bin/ || true; \
+	done
+	@for bin in $(APPIMAGE_KIT_BINS); do \
+		[ -f $(BIN_DIR)/$$bin ] && cp $(BIN_DIR)/$$bin $(APPDIR)/usr/bin/ || true; \
+	done
+	cp $(HOME)/.aegis/kernel/vmlinux $(APPDIR)/usr/share/aegisvm/kernel/
+	sed 's/"version": *"[^"]*"/"version": "$(VERSION)"/' kits/agent.json \
+		> $(APPDIR)/usr/share/aegisvm/kits/agent.json
+	cp packaging/linux/AppRun $(APPDIR)/
+	chmod +x $(APPDIR)/AppRun
+	cp cmd/aegis-ui/aegisvm.desktop $(APPDIR)/
+	cp icons/icon-noglow-1024.png $(APPDIR)/aegisvm.png
+	ARCH=$(shell uname -m) appimagetool $(APPDIR) AegisVM-$(VERSION)-$(HOST_ARCH).AppImage
+	@rm -rf $(APPDIR)
+	@echo "==> Built AegisVM-$(VERSION)-$(HOST_ARCH).AppImage"
 
 # Base rootfs — Alpine with harness baked in
 # Requires: brew install e2fsprogs (for mkfs.ext4)
