@@ -44,6 +44,9 @@ func main() {
 	ensureDesktopSetup()
 
 	// Start aegisd if not running.
+	// On Linux with pkexec, this blocks until the user enters their password.
+	// The app window appears after the daemon is ready — cleaner than showing
+	// a disconnected UI while the password dialog is up.
 	ensureDaemon()
 
 	// Extract embedded frontend (same FS used by "aegis ui").

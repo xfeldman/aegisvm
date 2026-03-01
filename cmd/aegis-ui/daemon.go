@@ -299,13 +299,28 @@ func startDaemon(aegisdBin string) {
 		return
 	}
 
-	// Some backends (Cloud Hypervisor on Linux) need root
+	// Some backends (Cloud Hypervisor on Linux) need root.
+	// Use pkexec for graphical privilege escalation (polkit dialog),
+	// falling back to sudo for terminal contexts.
 	platform, _ := config.DetectPlatform()
-	needsSudo := platform != nil && platform.NeedsRoot && os.Geteuid() != 0
+	needsElevation := platform != nil && platform.NeedsRoot && os.Geteuid() != 0
 
 	var cmd *exec.Cmd
-	if needsSudo {
-		cmd = exec.Command("sudo", "--preserve-env=HOME", aegisdBin)
+	if needsElevation {
+		if _, err := exec.LookPath("pkexec"); err == nil {
+			// Pass SUDO_UID/SUDO_GID so aegisd's chownToInvokingUser() can
+			// fix ownership of ~/.aegis/ (socket, DB, PID) for the non-root user.
+			uid := strconv.Itoa(os.Getuid())
+			gid := strconv.Itoa(os.Getgid())
+			cmd = exec.Command("pkexec", "--disable-internal-agent",
+				"env",
+				"HOME="+os.Getenv("HOME"),
+				"SUDO_UID="+uid,
+				"SUDO_GID="+gid,
+				aegisdBin)
+		} else {
+			cmd = exec.Command("sudo", "--preserve-env=HOME", aegisdBin)
+		}
 	} else {
 		cmd = exec.Command(aegisdBin)
 	}
@@ -319,23 +334,30 @@ func startDaemon(aegisdBin string) {
 		return
 	}
 
-	// Monitor for early exit
+	// Monitor for early exit (or pkexec dialog cancel).
 	exited := make(chan struct{})
 	go func() {
 		cmd.Wait()
 		close(exited)
 	}()
 
-	// Wait for daemon to be ready
+	// Wait for daemon to be ready.
+	// With pkexec, the user needs time to enter their password — wait up to 60s.
+	// Without elevation, the daemon should start within ~2.5s.
+	maxAttempts := 10 // ~2.5s for direct start
+	if needsElevation {
+		maxAttempts = 300 // ~60s for pkexec dialog
+	}
+
 	time.Sleep(500 * time.Millisecond)
-	for i := 0; i < 10; i++ {
+	for i := 0; i < maxAttempts; i++ {
 		if isDaemonRunning() {
 			log.Println("aegis-ui: aegisd started")
 			return
 		}
 		select {
 		case <-exited:
-			log.Println("aegis-ui: aegisd exited immediately — check ~/.aegis/data/aegisd.log")
+			log.Println("aegis-ui: aegisd exited — check ~/.aegis/data/aegisd.log")
 			return
 		default:
 		}
