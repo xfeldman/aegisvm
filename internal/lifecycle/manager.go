@@ -501,12 +501,20 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		rootfsPath = inst.RootfsPath
 	}
 
-	// If the backend needs a block image and we have a directory, convert it
+	// If the backend needs a block image and we have a directory, convert it.
+	// Reuse existing ext4 image if present — preserves in-VM changes (installed
+	// packages, /etc/local.d/app.start, etc.) across cold boots.
 	needsBlock := m.vmm.Capabilities().RootFSType == vmm.RootFSBlockImage
 	if needsBlock {
-		if info, err := os.Stat(rootfsPath); err == nil && info.IsDir() {
+		ext4Path := rootfsPath + ".ext4"
+		if _, err := os.Stat(ext4Path); err == nil {
+			// Existing ext4 image — reuse it (preserves in-VM state)
+			rootfsPath = ext4Path
+		} else if info, err := os.Stat(rootfsPath); err == nil && info.IsDir() {
+			// First boot — convert directory to ext4
 			log.Printf("instance %s: converting directory rootfs to ext4: %s", inst.ID, rootfsPath)
-			ext4Path, err := dirToExt4(rootfsPath, 512)
+			var err error
+			rootfsPath, err = dirToExt4(rootfsPath, 512)
 			if err != nil {
 				inst.mu.Lock()
 				inst.State = StateStopped
@@ -515,7 +523,6 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 				m.notifyStateChange(inst.ID, StateStopped)
 				return fmt.Errorf("convert rootfs to ext4: %w", err)
 			}
-			rootfsPath = ext4Path
 		}
 	}
 

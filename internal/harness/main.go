@@ -23,7 +23,7 @@ func Run() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("aegis-harness starting")
 
-	// Mount /proc, /sys, /tmp, network, workspace, then remount / read-only
+	// Mount /proc, /sys, /tmp, configure network, mount workspace
 	mountEssential()
 
 	ctx, cancel := context.WithCancel(context.Background())

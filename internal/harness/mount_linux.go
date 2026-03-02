@@ -5,6 +5,9 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -75,11 +78,8 @@ func mountWorkspace() {
 
 // mountEssential sets up the guest filesystem:
 //  1. Mount /proc, writable tmpfs on /tmp and /run
-//  2. Remount / read-only to preserve release rootfs immutability
-//
-// libkrun's krun_set_root() exposes the host directory via virtiofs read-write.
-// Without the read-only remount, any guest write to /usr, /etc, etc. would
-// mutate the release directory on the host, breaking immutability.
+//  2. Configure networking and DNS
+//  3. Mount workspace (virtiofs) if configured
 func mountEssential() {
 	// Parse kernel cmdline for AEGIS_* env vars and standard env (PATH, HOME, TERM).
 	// Safety net for backends that pass env via kernel cmdline rather than process env.
@@ -138,15 +138,36 @@ func mountEssential() {
 	// Mount workspace before read-only remount (needs to create /workspace dir)
 	mountWorkspace()
 
-	// Phase 2: Remount / read-only to protect the release rootfs.
-	// MS_REMOUNT | MS_RDONLY changes an existing mount to read-only.
-	// This only affects the root virtiofs — /tmp, /run, /var, /workspace
-	// are separate mounts and remain writable.
-	err := syscall.Mount("", "/", "", syscall.MS_REMOUNT|syscall.MS_RDONLY, "")
-	if err != nil {
-		log.Printf("remount / read-only: %v (non-fatal, rootfs writes will not be blocked)", err)
-	} else {
-		log.Println("rootfs remounted read-only")
+	// Rootfs stays writable. On both platforms the rootfs is a per-instance
+	// disposable copy (overlay directory on macOS, ext4 image on Linux).
+	// Agents need to install packages (apk add), write /etc/local.d/app.start
+	// for autostart, configure services, etc.
+
+	// Run /etc/local.d/*.start scripts (Alpine convention for startup tasks).
+	// There's no init system — the harness is PID 1 — so we run these directly.
+	runLocalStartScripts()
+}
+
+// runLocalStartScripts executes /etc/local.d/*.start scripts in alphabetical order.
+// This implements the Alpine /etc/local.d convention without requiring OpenRC.
+func runLocalStartScripts() {
+	entries, err := filepath.Glob("/etc/local.d/*.start")
+	if err != nil || len(entries) == 0 {
+		return
+	}
+	sort.Strings(entries)
+	for _, script := range entries {
+		info, err := os.Stat(script)
+		if err != nil || info.Mode()&0111 == 0 {
+			continue // skip non-executable
+		}
+		log.Printf("running startup script: %s", script)
+		cmd := exec.Command("/bin/sh", script)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			log.Printf("startup script %s: %v (non-fatal)", script, err)
+		}
 	}
 }
 
