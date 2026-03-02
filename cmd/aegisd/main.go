@@ -147,6 +147,16 @@ func main() {
 		return ports
 	})
 
+	// persistPublicPorts saves the current port mapping to the registry
+	// so it survives daemon restarts and disable/enable cycles.
+	persistPublicPorts := func(id string) {
+		ports := make(map[int]int)
+		for _, ep := range rtr.GetAllPublicPorts(id) {
+			ports[ep.GuestPort] = ep.PublicPort
+		}
+		reg.UpdatePublicPorts(id, ports)
+	}
+
 	// Router port allocation — called from CreateInstance for every new instance
 	lm.OnAllocatePorts(func(inst *lifecycle.Instance) {
 		for _, ep := range inst.ExposePorts {
@@ -154,14 +164,20 @@ func main() {
 				log.Printf("allocate port for %s guest:%d: %v", inst.ID, ep.GuestPort, err)
 			}
 		}
+		persistPublicPorts(inst.ID)
 	})
 
 	// Runtime port expose/unexpose — called from ExposePort/UnexposePort
 	lm.OnExposePort(func(id string, guestPort, publicPort int, protocol string) (int, error) {
-		return rtr.AllocatePort(id, guestPort, publicPort, protocol)
+		port, err := rtr.AllocatePort(id, guestPort, publicPort, protocol)
+		if err == nil {
+			persistPublicPorts(id)
+		}
+		return port, err
 	})
 	lm.OnUnexposePort(func(id string, guestPort int) {
 		rtr.FreePort(id, guestPort)
+		persistPublicPorts(id)
 	})
 
 	// Create daemon manager for per-instance sidecar processes (e.g., gateways)
@@ -242,6 +258,8 @@ func main() {
 						}
 					}
 				}
+				// Persist actual port assignments (may differ from requested if port was taken)
+				persistPublicPorts(ri.ID)
 			}
 
 			// Start instance daemons for enabled kit instances

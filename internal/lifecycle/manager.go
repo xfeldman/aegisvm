@@ -404,13 +404,9 @@ func (m *Manager) CreateInstance(id string, command []string, exposePorts []vmm.
 		m.onAllocatePorts(inst)
 	}
 
-	// Save to registry (after port allocation so public ports are captured)
+	// Save to registry
 	if m.registry != nil {
 		m.saveToRegistry(inst)
-		// Persist public port assignments so they survive daemon restarts
-		if m.getPublicPorts != nil {
-			m.registry.UpdatePublicPorts(id, m.getPublicPorts(id))
-		}
 	}
 
 	return inst
