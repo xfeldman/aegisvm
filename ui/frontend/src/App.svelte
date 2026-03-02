@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
+  import { getStatus } from './lib/api'
   import Dashboard from './pages/Dashboard.svelte'
   import InstanceDetail from './pages/InstanceDetail.svelte'
   import NewInstance from './pages/NewInstance.svelte'
@@ -7,6 +9,14 @@
   import ConfirmDialog from './components/ConfirmDialog.svelte'
 
   let hash = $state(window.location.hash || '#/')
+  let daemonVersion = $state('')
+
+  onMount(async () => {
+    try {
+      const s = await getStatus()
+      if (s.version) daemonVersion = s.version
+    } catch {}
+  })
 
   function onHashChange() {
     hash = window.location.hash || '#/'
@@ -44,6 +54,10 @@
       <a href="#/" class="nav-link" class:active={route.page === 'dashboard'}>Dashboard</a>
       <a href="#/secrets" class="nav-link" class:active={route.page === 'secrets'}>Secrets</a>
     </nav>
+    <div class="spacer"></div>
+    {#if daemonVersion}
+      <span class="version-badge">aegisd {daemonVersion}</span>
+    {/if}
   </header>
 
   <main class="content">
@@ -114,6 +128,13 @@
   .nav-link.active {
     background: var(--bg-tertiary);
     color: var(--text);
+  }
+
+  .spacer { flex: 1; }
+  .version-badge {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
   }
 
   .content {

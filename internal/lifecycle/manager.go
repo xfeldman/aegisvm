@@ -94,6 +94,9 @@ type Instance struct {
 	// Kit is the name of the kit used to create this instance (empty = no kit).
 	Kit string
 
+	// HarnessVersion is reported by the harness in the run RPC response.
+	HarnessVersion string
+
 	// Idle policy: "default" (heartbeat + lease + inbound), "leases_only" (lease + inbound only)
 	IdlePolicy string
 
@@ -683,6 +686,9 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		Error *struct {
 			Message string `json:"message"`
 		} `json:"error"`
+		Result struct {
+			Version string `json:"version"`
+		} `json:"result"`
 	}
 	if json.Unmarshal(resp, &respObj) == nil && respObj.Error != nil {
 		demux.Stop()
@@ -694,6 +700,11 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 		inst.mu.Unlock()
 		m.notifyStateChange(inst.ID, StateStopped)
 		return fmt.Errorf("run failed: %s", respObj.Error.Message)
+	}
+
+	// Capture harness version from run response
+	if respObj.Result.Version != "" {
+		inst.HarnessVersion = respObj.Result.Version
 	}
 
 	// Instance is RUNNING immediately after run RPC succeeds (no readiness wait)

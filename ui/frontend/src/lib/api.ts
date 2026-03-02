@@ -11,6 +11,8 @@ export interface Instance {
   handle?: string
   image_ref?: string
   kit?: string
+  kit_version?: string
+  harness_version?: string
   workspace?: string
   created_at: string
   stopped_at?: string
@@ -34,6 +36,7 @@ export interface SecretInfo {
 
 export interface DaemonStatus {
   status: string
+  version?: string
   backend: string
   capabilities: Record<string, unknown>
 }

@@ -16,14 +16,15 @@ import (
 	"time"
 
 	"github.com/xfeldman/aegisvm/internal/config"
-	"github.com/xfeldman/aegisvm/internal/kit"
 	"github.com/xfeldman/aegisvm/internal/daemon"
+	"github.com/xfeldman/aegisvm/internal/kit"
 	"github.com/xfeldman/aegisvm/internal/lifecycle"
 	"github.com/xfeldman/aegisvm/internal/logstore"
 	"github.com/xfeldman/aegisvm/internal/registry"
 	"github.com/xfeldman/aegisvm/internal/router"
 	"github.com/xfeldman/aegisvm/internal/secrets"
 	"github.com/xfeldman/aegisvm/internal/tether"
+	"github.com/xfeldman/aegisvm/internal/version"
 	"github.com/xfeldman/aegisvm/internal/vmm"
 )
 
@@ -137,6 +138,7 @@ func (s *Server) Stop(ctx context.Context) error {
 
 type statusResponse struct {
 	Status       string                 `json:"status"`
+	Version      string                 `json:"version"`
 	Backend      string                 `json:"backend"`
 	Capabilities map[string]interface{} `json:"capabilities"`
 }
@@ -146,6 +148,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, statusResponse{
 		Status:  "running",
+		Version: version.Version(),
 		Backend: caps.Name,
 		Capabilities: map[string]interface{}{
 			"pause_resume":          caps.Pause,
@@ -482,9 +485,15 @@ func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	if inst.Kit != "" {
 		resp["kit"] = inst.Kit
+		if m, err := kit.LoadManifest(inst.Kit); err == nil && m.Version != "" {
+			resp["kit_version"] = m.Version
+		}
 		if s.daemons != nil {
 			resp["gateway_running"] = s.daemons.IsRunning(inst.ID)
 		}
+	}
+	if inst.HarnessVersion != "" {
+		resp["harness_version"] = inst.HarnessVersion
 	}
 	if inst.WorkspacePath != "" {
 		resp["workspace"] = inst.WorkspacePath

@@ -64,12 +64,16 @@
   }
 
   let iframeEl: HTMLIFrameElement | undefined = $state(undefined)
+  let iframeUrl: string = $state('')
+  let addressInput: string = $state('')
 
   function openPort(port: number) {
     if (!openPorts.includes(port)) {
       openPorts = [...openPorts, port]
     }
     tab = `port:${port}`
+    iframeUrl = `http://127.0.0.1:${port}/`
+    addressInput = '/'
     saveOpenPorts(id, openPorts)
   }
 
@@ -81,6 +85,15 @@
 
   function activePort(): number | null {
     return tab.startsWith('port:') ? parseInt(tab.slice(5)) : null
+  }
+
+  function navigateTo(path: string) {
+    let p = path.trim()
+    if (!p.startsWith('/')) p = '/' + p
+    const port = activePort()
+    iframeUrl = `http://127.0.0.1:${port}${p}`
+    addressInput = p
+    iframeKey++
   }
 
   function refreshIframe() {
@@ -171,7 +184,7 @@
           {#if instance.kit}
             <div class="info-item">
               <span class="field-label">Kit</span>
-              <span>{instance.kit}</span>
+              <span>{instance.kit} {#if instance.kit_version}<span class="text-muted">{instance.kit_version}</span>{/if}</span>
             </div>
           {/if}
           {#if instance.image_ref}
@@ -188,6 +201,12 @@
             <span class="field-label">Created</span>
             <span>{new Date(instance.created_at).toLocaleString()}</span>
           </div>
+          {#if instance.harness_version}
+            <div class="info-item">
+              <span class="field-label">Harness</span>
+              <span>{instance.harness_version}</span>
+            </div>
+          {/if}
           {#if instance.workspace}
             <div class="info-item full-width">
               <span class="field-label">Workspace</span>
@@ -221,19 +240,19 @@
         <ConfigEditor instanceId={instance.handle || instance.id} kitName={instance.kit} />
       {:else if activePort()}
         {@const port = activePort()}
-        {@const url = `http://127.0.0.1:${port}`}
         <div class="iframe-toolbar">
           <div class="iframe-nav">
             <button class="iframe-btn" title="Back" onclick={iframeBack}>&lsaquo;</button>
             <button class="iframe-btn" title="Forward" onclick={iframeForward}>&rsaquo;</button>
             <button class="iframe-btn" title="Refresh" onclick={refreshIframe}>&#x21bb;</button>
           </div>
-          <code class="iframe-url">{url}</code>
-          <button class="iframe-btn" title="Open in browser" onclick={() => openInBrowser(url)}>&nearr;</button>
+          <input class="iframe-path-input" bind:value={addressInput} placeholder="/"
+            onkeydown={(e) => { if (e.key === 'Enter') navigateTo(addressInput) }} />
+          <button class="iframe-btn" title="Open in browser" onclick={() => openInBrowser(`http://127.0.0.1:${port}${addressInput}`)}>&nearr;</button>
         </div>
         <div class="iframe-container">
           {#key iframeKey}
-            <iframe bind:this={iframeEl} src={url} title="Port {port}"></iframe>
+            <iframe bind:this={iframeEl} src={iframeUrl || `http://127.0.0.1:${port}/`} title="Port {port}"></iframe>
           {/key}
         </div>
       {/if}
@@ -452,11 +471,19 @@
     display: flex;
     gap: 2px;
   }
-  .iframe-url {
+  .iframe-path-input {
     flex: 1;
+    font-family: var(--font-mono);
     font-size: 12px;
-    color: var(--text-muted);
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 4px 8px;
+    outline: none;
+    min-width: 0;
   }
+  .iframe-path-input:focus { border-color: var(--accent); }
   .iframe-btn {
     background: none;
     border: 1px solid transparent;
@@ -482,6 +509,8 @@
     border: none;
     background: var(--bg);
   }
+
+  .text-muted { color: var(--text-muted); font-size: 12px; }
 
   .error-msg {
     color: var(--red);

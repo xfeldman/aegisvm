@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/xfeldman/aegisvm/internal/version"
 )
 
 // JSON-RPC 2.0 message types
@@ -57,6 +59,7 @@ type runParams struct {
 type runResult struct {
 	PID       int    `json:"pid"`
 	StartedAt string `json:"started_at"`
+	Version   string `json:"version,omitempty"`
 }
 
 type healthResult struct {
@@ -420,6 +423,7 @@ func handleRun(ctx context.Context, req *rpcRequest, conn net.Conn, tracker *pro
 		Result: runResult{
 			PID:       cmd.Process.Pid,
 			StartedAt: time.Now().Format(time.RFC3339),
+			Version:   version.Version(),
 		},
 		ID: req.ID,
 	}
