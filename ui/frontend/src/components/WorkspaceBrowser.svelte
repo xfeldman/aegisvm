@@ -48,6 +48,7 @@
   let treeLoading = $state(true)
 
   // Editor state
+  let editorAreaEl: HTMLElement | null = $state(null)
   let currentFile: string | null = $state(null)
   let content = $state('')
   let original = $state('')
@@ -139,6 +140,51 @@
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   }
 
+  // Auto-scroll on text selection drag near edges
+  let autoScrollRAF = 0
+  let autoScrollMouse = { x: 0, y: 0 }
+  let selecting = false
+  const EDGE = 32  // pixels from edge to trigger scroll
+  const SPEED = 8  // pixels per frame
+
+  function onEditorMouseDown() {
+    selecting = true
+    document.addEventListener('mousemove', onSelectMove)
+    document.addEventListener('mouseup', onSelectUp)
+  }
+
+  function onSelectMove(e: MouseEvent) {
+    autoScrollMouse = { x: e.clientX, y: e.clientY }
+    if (!autoScrollRAF) autoScrollRAF = requestAnimationFrame(autoScrollLoop)
+  }
+
+  function onSelectUp() {
+    selecting = false
+    document.removeEventListener('mousemove', onSelectMove)
+    document.removeEventListener('mouseup', onSelectUp)
+    if (autoScrollRAF) { cancelAnimationFrame(autoScrollRAF); autoScrollRAF = 0 }
+  }
+
+  function autoScrollLoop() {
+    autoScrollRAF = 0
+    if (!selecting || !textareaEl || !editorAreaEl) return
+    const rect = editorAreaEl.getBoundingClientRect()
+    let dx = 0, dy = 0
+
+    if (autoScrollMouse.y < rect.top + EDGE) dy = -SPEED * (1 + (rect.top + EDGE - autoScrollMouse.y) / EDGE)
+    else if (autoScrollMouse.y > rect.bottom - EDGE) dy = SPEED * (1 + (autoScrollMouse.y - rect.bottom + EDGE) / EDGE)
+
+    if (autoScrollMouse.x < rect.left + EDGE) dx = -SPEED * (1 + (rect.left + EDGE - autoScrollMouse.x) / EDGE)
+    else if (autoScrollMouse.x > rect.right - EDGE) dx = SPEED * (1 + (autoScrollMouse.x - rect.right + EDGE) / EDGE)
+
+    if (dx || dy) {
+      textareaEl.scrollTop += dy
+      textareaEl.scrollLeft += dx
+      syncScroll()
+    }
+    autoScrollRAF = requestAnimationFrame(autoScrollLoop)
+  }
+
   function onKeydown(e: KeyboardEvent) {
     // Cmd/Ctrl+S to save
     if ((e.metaKey || e.ctrlKey) && e.key === 's') {
@@ -158,11 +204,80 @@
     }
   }
 
+  let vThumbTop = $state(0)
+  let vThumbHeight = $state(0)
+  let hThumbLeft = $state(0)
+  let hThumbWidth = $state(0)
+  let showVScroll = $state(false)
+  let showHScroll = $state(false)
+  let hovering = $state(false)
+  let scrollTimer: ReturnType<typeof setTimeout> | undefined
+
   function syncScroll() {
-    if (textareaEl && codeEl) {
-      codeEl.scrollTop = textareaEl.scrollTop
-      codeEl.scrollLeft = textareaEl.scrollLeft
+    if (!textareaEl || !codeEl) return
+    codeEl.scrollTop = textareaEl.scrollTop
+    codeEl.scrollLeft = textareaEl.scrollLeft
+    updateScrollIndicators()
+  }
+
+  function updateScrollIndicators() {
+    if (!textareaEl) return
+    const { scrollTop, scrollHeight, clientHeight, scrollLeft, scrollWidth, clientWidth } = textareaEl
+
+    showVScroll = scrollHeight > clientHeight
+    if (showVScroll) {
+      vThumbHeight = Math.max((clientHeight / scrollHeight) * clientHeight, 24)
+      vThumbTop = (scrollTop / scrollHeight) * clientHeight
     }
+
+    showHScroll = scrollWidth > clientWidth
+    if (showHScroll) {
+      hThumbWidth = Math.max((clientWidth / scrollWidth) * clientWidth, 24)
+      hThumbLeft = (scrollLeft / scrollWidth) * clientWidth
+    }
+
+    clearTimeout(scrollTimer)
+    scrollTimer = setTimeout(() => { if (!hovering) { showVScroll = false; showHScroll = false } }, 1500)
+  }
+
+  function startVDrag(e: MouseEvent) {
+    e.preventDefault()
+    if (!textareaEl) return
+    const startY = e.clientY
+    const startScroll = textareaEl.scrollTop
+    const ratio = textareaEl.scrollHeight / textareaEl.clientHeight
+
+    function onMove(ev: MouseEvent) {
+      if (!textareaEl) return
+      textareaEl.scrollTop = startScroll + (ev.clientY - startY) * ratio
+      syncScroll()
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  function startHDrag(e: MouseEvent) {
+    e.preventDefault()
+    if (!textareaEl) return
+    const startX = e.clientX
+    const startScroll = textareaEl.scrollLeft
+    const ratio = textareaEl.scrollWidth / textareaEl.clientWidth
+
+    function onMove(ev: MouseEvent) {
+      if (!textareaEl) return
+      textareaEl.scrollLeft = startScroll + (ev.clientX - startX) * ratio
+      syncScroll()
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
   }
 
   function formatSize(bytes: number): string {
@@ -223,16 +338,30 @@
         <span class="editor-filename">{currentFile}{#if dirty}<span class="dirty-dot">*</span>{/if}</span>
         <button class="editor-save" disabled={!dirty} onclick={saveFile}>Save</button>
       </div>
-      <div class="editor-area">
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="editor-area" bind:this={editorAreaEl} onmouseenter={() => { hovering = true; updateScrollIndicators() }} onmouseleave={() => { hovering = false; showVScroll = false; showHScroll = false }}>
         <pre class="editor-highlight" bind:this={codeEl}>{@html highlightCode(content, currentFile)}{'\n'}</pre>
         <textarea
           class="editor-textarea"
           bind:this={textareaEl}
           bind:value={content}
+          onmousedown={onEditorMouseDown}
           onkeydown={onKeydown}
           onscroll={syncScroll}
           spellcheck={false}
         ></textarea>
+        {#if showVScroll}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="scroll-track-v" onmousedown={startVDrag}>
+            <div class="scroll-thumb" style="top: {vThumbTop}px; height: {vThumbHeight}px" onmousedown={startVDrag}></div>
+          </div>
+        {/if}
+        {#if showHScroll}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="scroll-track-h" onmousedown={startHDrag}>
+            <div class="scroll-thumb" style="left: {hThumbLeft}px; width: {hThumbWidth}px" onmousedown={startHDrag}></div>
+          </div>
+        {/if}
       </div>
     {/if}
   </div>
@@ -346,7 +475,7 @@
   .editor-save:hover:not(:disabled) { border-color: var(--accent); }
   .editor-save:disabled { opacity: 0.3; cursor: default; }
 
-  /* Editor area: overlay textarea on highlighted pre */
+  /* Editor area: textarea scrolls, pre follows */
   .editor-area {
     flex: 1;
     min-height: 0;
@@ -371,7 +500,10 @@
     color: var(--text);
     pointer-events: none;
     z-index: 0;
+    /* Hide native scrollbar on the pre — textarea controls scrolling */
+    scrollbar-width: none;
   }
+  .editor-highlight::-webkit-scrollbar { display: none; }
   .editor-textarea {
     color: transparent;
     caret-color: var(--text);
@@ -380,7 +512,39 @@
     outline: none;
     z-index: 1;
     -webkit-text-fill-color: transparent;
+    /* Hide native scrollbar — custom indicator replaces it */
+    scrollbar-width: none;
   }
+  .editor-textarea::-webkit-scrollbar { display: none; }
+
+  /* Custom scroll indicators */
+  .scroll-track-v {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 10px;
+    z-index: 2;
+    cursor: default;
+  }
+  .scroll-track-h {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 10px;
+    z-index: 2;
+    cursor: default;
+  }
+  .scroll-thumb {
+    position: absolute;
+    border-radius: 3px;
+    background: rgba(139, 148, 158, 0.4);
+    cursor: default;
+  }
+  .scroll-thumb:hover { background: rgba(139, 148, 158, 0.6); }
+  .scroll-track-v .scroll-thumb { right: 2px; width: 6px; }
+  .scroll-track-h .scroll-thumb { bottom: 2px; height: 6px; }
 
   /* highlight.js token colors (GitHub dark theme) */
   .editor-highlight :global(.hljs-keyword) { color: #ff7b72; }
