@@ -131,6 +131,37 @@ export function updateChatState(id: string, patch: Partial<ChatState>) {
   saveChatState(id, updated)
 }
 
+// Pending port — for navigating from InstanceList to InstanceDetail with a port tab open
+let _pendingPort: number | null = $state(null)
+export function getPendingPort(): number | null { return _pendingPort }
+export function setPendingPort(port: number | null) { _pendingPort = port }
+export function consumePendingPort(): number | null {
+  const p = _pendingPort
+  _pendingPort = null
+  return p
+}
+
+// Open port tabs — persisted per instance
+const PORT_TABS_KEY = 'aegis-port-tabs-'
+
+export function loadOpenPorts(id: string): number[] {
+  try {
+    const raw = localStorage.getItem(PORT_TABS_KEY + id)
+    if (raw) return JSON.parse(raw)
+  } catch {}
+  return []
+}
+
+export function saveOpenPorts(id: string, ports: number[]) {
+  try {
+    if (ports.length === 0) {
+      localStorage.removeItem(PORT_TABS_KEY + id)
+    } else {
+      localStorage.setItem(PORT_TABS_KEY + id, JSON.stringify(ports))
+    }
+  } catch {}
+}
+
 export async function refreshInstances() {
   _loading = true
   _error = null

@@ -95,6 +95,19 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return JSON.parse(text)
 }
 
+// Open URL in system browser (works in both desktop app and browser contexts)
+export function openInBrowser(url: string) {
+  if (document.documentElement.classList.contains('desktop-app')) {
+    fetch('/open-url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'url=' + encodeURIComponent(url),
+    })
+  } else {
+    window.open(url, '_blank')
+  }
+}
+
 // Instances
 export const listInstances = (state?: string) =>
   request<Instance[]>('GET', '/instances' + (state ? `?state=${state}` : ''))

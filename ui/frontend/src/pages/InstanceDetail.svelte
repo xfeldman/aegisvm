@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { getInstance, startInstance, disableInstance, deleteInstance, type Instance } from '../lib/api'
-  import { addToast, showConfirm } from '../lib/store.svelte'
+  import { getInstance, startInstance, disableInstance, deleteInstance, openInBrowser, type Instance } from '../lib/api'
+  import { addToast, showConfirm, consumePendingPort, loadOpenPorts, saveOpenPorts } from '../lib/store.svelte'
   import LogViewer from '../components/LogViewer.svelte'
   import CommandRunner from '../components/CommandRunner.svelte'
   import ChatPanel from '../components/ChatPanel.svelte'
@@ -14,7 +14,9 @@
   let { id }: Props = $props()
   let instance: Instance | null = $state(null)
   let error: string | null = $state(null)
-  let tab: 'info' | 'logs' | 'exec' | 'chat' | 'config' = $state('info')
+  let tab: string = $state('info')
+  let openPorts: Set<number> = $state(new Set())
+  let iframeKey: number = $state(0)
   let pollTimer: ReturnType<typeof setInterval>
 
   let canExec = $derived(instance?.enabled !== false)
@@ -61,7 +63,47 @@
     return `${days}d ${hours % 24}h`
   }
 
+  let iframeEl: HTMLIFrameElement | undefined = $state(undefined)
+
+  function openPort(port: number) {
+    openPorts = new Set([...openPorts, port])
+    tab = `port:${port}`
+    saveOpenPorts(id, [...openPorts])
+  }
+
+  function closePort(port: number) {
+    const next = new Set(openPorts)
+    next.delete(port)
+    openPorts = next
+    if (tab === `port:${port}`) tab = 'info'
+    saveOpenPorts(id, [...openPorts])
+  }
+
+  function activePort(): number | null {
+    return tab.startsWith('port:') ? parseInt(tab.slice(5)) : null
+  }
+
+  function refreshIframe() {
+    iframeKey++
+  }
+
+  function iframeBack() {
+    try { iframeEl?.contentWindow?.history.back() } catch {}
+  }
+
+  function iframeForward() {
+    try { iframeEl?.contentWindow?.history.forward() } catch {}
+  }
+
   onMount(() => {
+    // Restore persisted port tabs
+    const saved = loadOpenPorts(id)
+    if (saved.length) openPorts = new Set(saved)
+
+    // Open port tab if navigated from InstanceList
+    const pending = consumePendingPort()
+    if (pending) openPort(pending)
+
     load()
     pollTimer = setInterval(load, 5000)
     return () => clearInterval(pollTimer)
@@ -106,6 +148,12 @@
       {#if instance.kit}
         <button class="tab" class:active={tab === 'config'} onclick={() => tab = 'config'}>Kit Config</button>
       {/if}
+      {#each [...openPorts] as port}
+        <div class="tab port-tab" class:active={tab === `port:${port}`}>
+          <button class="port-tab-select" onclick={() => tab = `port:${port}`}>:{port}</button>
+          <button class="port-tab-close" onclick={() => closePort(port)}>&times;</button>
+        </div>
+      {/each}
     </div>
 
     <div class="tab-content">
@@ -152,10 +200,13 @@
               <span class="field-label">Endpoints</span>
               <div class="endpoints">
                 {#each instance.endpoints as ep}
-                  <a href="http://127.0.0.1:{ep.public_port}" target="_blank" class="endpoint-link">
-                    http://127.0.0.1:{ep.public_port}
-                    <span class="endpoint-detail">→ :{ep.guest_port} ({ep.protocol})</span>
-                  </a>
+                  <div class="endpoint-row">
+                    <button class="endpoint-link" onclick={() => openPort(ep.public_port)}>
+                      http://127.0.0.1:{ep.public_port}
+                      <span class="endpoint-detail">&rarr; :{ep.guest_port} ({ep.protocol})</span>
+                    </button>
+                    <button class="open-external" title="Open in browser" onclick={() => openInBrowser(`http://127.0.0.1:${ep.public_port}`)}>&nearr;</button>
+                  </div>
                 {/each}
               </div>
             </div>
@@ -169,6 +220,23 @@
         <ChatPanel instanceId={instance.handle || instance.id} disabled={!canExec} />
       {:else if tab === 'config' && instance.kit}
         <ConfigEditor instanceId={instance.handle || instance.id} kitName={instance.kit} />
+      {:else if activePort()}
+        {@const port = activePort()}
+        {@const url = `http://127.0.0.1:${port}`}
+        <div class="iframe-toolbar">
+          <div class="iframe-nav">
+            <button class="iframe-btn" title="Back" onclick={iframeBack}>&lsaquo;</button>
+            <button class="iframe-btn" title="Forward" onclick={iframeForward}>&rsaquo;</button>
+            <button class="iframe-btn" title="Refresh" onclick={refreshIframe}>&#x21bb;</button>
+          </div>
+          <code class="iframe-url">{url}</code>
+          <button class="iframe-btn" title="Open in browser" onclick={() => openInBrowser(url)}>&nearr;</button>
+        </div>
+        <div class="iframe-container">
+          {#key iframeKey}
+            <iframe bind:this={iframeEl} src={url} title="Port {port}"></iframe>
+          {/key}
+        </div>
       {/if}
     </div>
   {/if}
@@ -328,14 +396,117 @@
     flex-direction: column;
     gap: 4px;
   }
+  .endpoint-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
   .endpoint-link {
     font-family: var(--font-mono);
     font-size: 13px;
+    background: none;
+    border: none;
+    color: var(--accent);
+    padding: 0;
+    cursor: pointer;
+    text-align: left;
   }
+  .endpoint-link:hover { text-decoration: underline; }
   .endpoint-detail {
     color: var(--text-muted);
     font-size: 11px;
     margin-left: 6px;
+  }
+  .open-external {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 14px;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: var(--radius);
+    line-height: 1;
+  }
+  .open-external:hover { color: var(--accent); background: var(--bg-tertiary); }
+
+  /* Port tabs */
+  .port-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .port-tab.active { border-bottom-color: var(--accent); }
+  .port-tab-select {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 500;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    padding: 8px 4px 8px 16px;
+    cursor: pointer;
+  }
+  .port-tab.active .port-tab-select, .port-tab-select:hover { color: var(--text); }
+  .port-tab-close {
+    font-size: 14px;
+    line-height: 1;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    opacity: 0.5;
+    cursor: pointer;
+    padding: 4px 10px 4px 4px;
+    border-radius: 3px;
+  }
+  .port-tab-close:hover { opacity: 1; color: var(--red); }
+
+  /* Iframe preview */
+  .iframe-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    flex-shrink: 0;
+  }
+  .iframe-nav {
+    display: flex;
+    gap: 2px;
+  }
+  .iframe-url {
+    flex: 1;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .iframe-btn {
+    background: none;
+    border: 1px solid transparent;
+    color: var(--text-muted);
+    font-size: 15px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: var(--radius);
+    line-height: 1;
+  }
+  .iframe-btn:hover { color: var(--text); background: var(--bg-tertiary); border-color: var(--border); }
+  .iframe-container {
+    flex: 1;
+    min-height: 0;
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+    overflow: hidden;
+  }
+  .iframe-container iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    background: #fff;
   }
 
   .error-msg {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Instance } from '../lib/api'
   import { startInstance, disableInstance, deleteInstance } from '../lib/api'
-  import { addToast, refreshInstances, showConfirm } from '../lib/store.svelte'
+  import { addToast, refreshInstances, showConfirm, setPendingPort } from '../lib/store.svelte'
 
   interface Props {
     instances: Instance[]
@@ -97,9 +97,9 @@
       <div class="col-ports">
         {#if inst.endpoints && inst.endpoints.length > 0}
           {#each inst.endpoints as ep}
-            <a href="http://127.0.0.1:{ep.public_port}" target="_blank" class="port-link">
+            <button class="port-link" onclick={() => { setPendingPort(ep.public_port); window.location.hash = `#/instance/${inst.handle || inst.id}` }}>
               :{ep.public_port}
-            </a>
+            </button>
           {/each}
         {/if}
       </div>
@@ -192,7 +192,13 @@
     font-family: var(--font-mono);
     font-size: 12px;
     margin-right: 4px;
+    background: none;
+    border: none;
+    color: var(--accent);
+    padding: 0;
+    cursor: pointer;
   }
+  .port-link:hover { text-decoration: underline; }
 
   .uptime {
     font-family: var(--font-mono);
