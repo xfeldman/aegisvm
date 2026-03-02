@@ -148,25 +148,31 @@ func mountEssential() {
 	runLocalStartScripts()
 }
 
-// runLocalStartScripts executes /etc/local.d/*.start scripts in alphabetical order.
-// This implements the Alpine /etc/local.d convention without requiring OpenRC.
+// runLocalStartScripts executes startup scripts from two locations:
+//  1. /workspace/.aegis/startup/*.start — recommended for agents (persists across rootfs rebuilds)
+//  2. /etc/local.d/*.start — Alpine convention fallback
+//
+// Scripts run in alphabetical order within each location. Non-executable files are skipped.
 func runLocalStartScripts() {
-	entries, err := filepath.Glob("/etc/local.d/*.start")
-	if err != nil || len(entries) == 0 {
-		return
-	}
-	sort.Strings(entries)
-	for _, script := range entries {
-		info, err := os.Stat(script)
-		if err != nil || info.Mode()&0111 == 0 {
-			continue // skip non-executable
+	dirs := []string{"/workspace/.aegis/startup", "/etc/local.d"}
+	for _, dir := range dirs {
+		entries, err := filepath.Glob(dir + "/*.start")
+		if err != nil || len(entries) == 0 {
+			continue
 		}
-		log.Printf("running startup script: %s", script)
-		cmd := exec.Command("/bin/sh", script)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			log.Printf("startup script %s: %v (non-fatal)", script, err)
+		sort.Strings(entries)
+		for _, script := range entries {
+			info, err := os.Stat(script)
+			if err != nil || info.Mode()&0111 == 0 {
+				continue
+			}
+			log.Printf("running startup script: %s", script)
+			cmd := exec.Command("/bin/sh", script)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				log.Printf("startup script %s: %v (non-fatal)", script, err)
+			}
 		}
 	}
 }
