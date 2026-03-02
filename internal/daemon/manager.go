@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/xfeldman/aegisvm/internal/config"
 	"github.com/xfeldman/aegisvm/internal/kit"
 )
 
@@ -144,9 +145,9 @@ func (m *Manager) IsRunning(instanceID string) bool {
 
 // spawn starts a single daemon binary for an instance.
 func (m *Manager) spawn(instanceID, handle, binary string, instanceEnv map[string]string) (*Process, error) {
-	binPath := filepath.Join(m.binDir, binary)
-	if _, err := os.Stat(binPath); err != nil {
-		return nil, fmt.Errorf("binary %q not found at %s", binary, binPath)
+	binPath := config.FindBinary(binary, m.binDir)
+	if binPath == "" {
+		return nil, fmt.Errorf("binary %q not found in %s or system paths", binary, m.binDir)
 	}
 
 	// Log output to ~/.aegis/data/{binary}-{handle}.log
@@ -258,7 +259,7 @@ func (m *Manager) monitor(p *Process, logFile *os.File) {
 		}
 
 		// Restart
-		binPath := filepath.Join(m.binDir, p.Binary)
+		binPath := config.FindBinary(p.Binary, m.binDir)
 		newCmd := exec.Command(binPath)
 		newCmd.Stdout = logFile
 		newCmd.Stderr = logFile

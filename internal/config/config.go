@@ -175,10 +175,11 @@ func (c *Config) ResolveBinaries() {
 	}
 }
 
-// FindBinary locates a binary by name. Search order:
+// FindBinary locates a companion binary by name. Search order:
 //  1. PATH (exec.LookPath)
-//  2. Sibling directory of the running executable (BinDir)
-//  3. Known system paths (/usr/libexec — Ubuntu puts virtiofsd here)
+//  2. BinDir — directory of the running executable
+//  3. macOS .app bundle — Contents/Resources/ relative to executable
+//  4. Known system paths (deb/rpm installs, macOS)
 //
 // Returns the absolute path, or "" if not found.
 func FindBinary(name string, binDir string) string {
@@ -196,8 +197,20 @@ func FindBinary(name string, binDir string) string {
 		}
 	}
 
-	// 3. Known system paths
-	for _, dir := range []string{"/usr/lib/aegisvm", "/usr/libexec", "/usr/local/bin"} {
+	// 3. macOS .app bundle: if executable is in Contents/MacOS/ or
+	//    Contents/Resources/, check both locations.
+	if binDir != "" {
+		parent := filepath.Dir(binDir)
+		for _, sub := range []string{"Resources", "MacOS"} {
+			p := filepath.Join(parent, sub, name)
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		}
+	}
+
+	// 4. Known system paths
+	for _, dir := range []string{"/usr/lib/aegisvm", "/usr/libexec", "/usr/local/bin", "/opt/homebrew/bin"} {
 		p := filepath.Join(dir, name)
 		if _, err := os.Stat(p); err == nil {
 			return p

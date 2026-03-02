@@ -65,9 +65,9 @@ type LibkrunVMM struct {
 }
 
 func NewLibkrunVMM(cfg *config.Config) (*LibkrunVMM, error) {
-	workerBin := filepath.Join(cfg.BinDir, "aegis-vmm-worker")
-	if _, err := os.Stat(workerBin); err != nil {
-		return nil, fmt.Errorf("vmm-worker binary not found at %s: %w", workerBin, err)
+	workerBin := config.FindBinary("aegis-vmm-worker", cfg.BinDir)
+	if workerBin == "" {
+		return nil, fmt.Errorf("aegis-vmm-worker not found in %s or system paths", cfg.BinDir)
 	}
 
 	return &LibkrunVMM{
