@@ -1,14 +1,42 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { tetherSend, tetherPoll, type TetherFrame } from '../lib/api'
+  import { tetherSend, tetherPoll, openInBrowser, type TetherFrame } from '../lib/api'
   import { getChatState, initChatState, updateChatState, addToast, type ChatMessage } from '../lib/store.svelte'
+  import { marked } from 'marked'
 
   interface Props {
     instanceId: string
     disabled?: boolean
+    exposedPorts?: number[]
+    onOpenPort?: (port: number) => void
   }
 
-  let { instanceId, disabled = false }: Props = $props()
+  let { instanceId, disabled = false, exposedPorts = [], onOpenPort }: Props = $props()
+
+  // Configure marked: no async, sanitize output by stripping dangerous tags
+  marked.setOptions({ async: false, breaks: true })
+
+  function renderMarkdown(text: string): string {
+    return marked.parse(text) as string
+  }
+
+  function handleMessageClick(e: MouseEvent) {
+    const a = (e.target as HTMLElement).closest('a')
+    if (!a) return
+    e.preventDefault()
+
+    const href = a.getAttribute('href') || ''
+    // Check if it's a localhost link matching an exposed port
+    const m = href.match(/^https?:\/\/(?:localhost|127\.0\.0\.1):(\d+)/)
+    if (m) {
+      const port = parseInt(m[1])
+      if (exposedPorts.includes(port) && onOpenPort) {
+        onOpenPort(port)
+        return
+      }
+    }
+    openInBrowser(href)
+  }
 
   let state = $derived(getChatState(instanceId))
   let input = $state('')
@@ -220,9 +248,14 @@
       <div class="empty">Send a message to the agent.</div>
     {/if}
     {#each state.messages as msg}
-      <div class="message {msg.role}">
+      <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+      <div class="message {msg.role}" onclick={msg.role === 'assistant' ? handleMessageClick : undefined}>
         <div class="message-role">{msg.role === 'user' ? 'You' : 'Agent'}</div>
-        <div class="message-text">{msg.text}{#if msg.streaming}<span class="cursor">|</span>{/if}</div>
+        {#if msg.role === 'assistant'}
+          <div class="message-text markdown">{@html renderMarkdown(msg.text)}{#if msg.streaming}<span class="cursor">|</span>{/if}</div>
+        {:else}
+          <div class="message-text">{msg.text}</div>
+        {/if}
         {#if msg.images && msg.images.length > 0}
           <div class="message-images">
             {#each msg.images as img}
@@ -323,6 +356,62 @@
   .message-text {
     white-space: pre-wrap;
     word-break: break-word;
+  }
+  .message-text.markdown {
+    white-space: normal;
+  }
+  .message-text.markdown :global(p) {
+    margin: 0 0 8px;
+  }
+  .message-text.markdown :global(p:last-child) {
+    margin-bottom: 0;
+  }
+  .message-text.markdown :global(a) {
+    color: var(--accent);
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .message-text.markdown :global(code) {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    background: var(--bg-tertiary);
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+  .message-text.markdown :global(pre) {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 10px;
+    overflow-x: auto;
+    margin: 6px 0;
+  }
+  .message-text.markdown :global(pre code) {
+    background: none;
+    padding: 0;
+  }
+  .message-text.markdown :global(ul), .message-text.markdown :global(ol) {
+    margin: 4px 0;
+    padding-left: 20px;
+  }
+  .message-text.markdown :global(li) {
+    margin: 2px 0;
+  }
+  .message-text.markdown :global(blockquote) {
+    border-left: 3px solid var(--border);
+    margin: 6px 0;
+    padding: 2px 10px;
+    color: var(--text-muted);
+  }
+  .message-text.markdown :global(h1), .message-text.markdown :global(h2), .message-text.markdown :global(h3) {
+    margin: 8px 0 4px;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .message-text.markdown :global(hr) {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 8px 0;
   }
 
   .cursor {

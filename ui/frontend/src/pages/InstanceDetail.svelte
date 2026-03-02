@@ -216,7 +216,7 @@
       {:else if tab === 'exec'}
         <CommandRunner instanceId={instance.handle || instance.id} disabled={!canExec} />
       {:else if tab === 'chat'}
-        <ChatPanel instanceId={instance.handle || instance.id} disabled={!canExec} />
+        <ChatPanel instanceId={instance.handle || instance.id} disabled={!canExec} exposedPorts={instance.endpoints?.map(ep => ep.public_port) || []} onOpenPort={openPort} />
       {:else if tab === 'config' && instance.kit}
         <ConfigEditor instanceId={instance.handle || instance.id} kitName={instance.kit} />
       {:else if activePort()}
