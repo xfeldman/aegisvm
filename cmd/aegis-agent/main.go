@@ -43,6 +43,7 @@ type Agent struct {
 	mu              sync.Mutex
 	sessions        map[string]*Session
 	llm             LLM
+	hostLLM         *HostLLM // non-nil when using host: model prefix
 	systemPrompt    string
 	mcpClients      map[string]*MCPClient
 	allTools        []Tool
@@ -112,18 +113,39 @@ func main() {
 		}
 	}
 
-	switch {
-	case provider == "claude" || provider == "anthropic":
-		agent.llm = &ClaudeLLM{apiKey: apiKey, model: modelName, maxTokens: maxTokens}
-		log.Printf("LLM provider: Claude (model=%s)", modelName)
-	case provider == "openai":
-		agent.llm = &OpenAILLM{apiKey: apiKey, model: modelName, maxTokens: maxTokens}
-		log.Printf("LLM provider: OpenAI (model=%s)", modelName)
-	case apiKey != "":
-		agent.llm = &OpenAILLM{apiKey: apiKey, model: modelName, maxTokens: maxTokens}
-		log.Printf("LLM provider: OpenAI-compatible (model=%s)", modelName)
-	default:
-		log.Println("WARNING: no LLM API key — set api_key_env in agent.json and pass the key via --env")
+	// Check for host: prefix — route through vsock to host-local provider
+	if strings.HasPrefix(config.Model, "host:") {
+		// Parse "host:provider/model"
+		hostModel := config.Model[5:] // strip "host:"
+		if i := strings.Index(hostModel, "/"); i > 0 {
+			provider = hostModel[:i]
+			modelName = hostModel[i+1:]
+		} else {
+			provider = hostModel
+		}
+		hostLLM := &HostLLM{
+			provider:  provider,
+			model:     modelName,
+			maxTokens: maxTokens,
+			pending:   make(map[string]chan hostLLMFrame),
+		}
+		agent.llm = hostLLM
+		agent.hostLLM = hostLLM
+		log.Printf("LLM provider: host:%s (model=%s)", provider, modelName)
+	} else {
+		switch {
+		case provider == "claude" || provider == "anthropic":
+			agent.llm = &ClaudeLLM{apiKey: apiKey, model: modelName, maxTokens: maxTokens}
+			log.Printf("LLM provider: Claude (model=%s)", modelName)
+		case provider == "openai":
+			agent.llm = &OpenAILLM{apiKey: apiKey, model: modelName, maxTokens: maxTokens}
+			log.Printf("LLM provider: OpenAI (model=%s)", modelName)
+		case apiKey != "":
+			agent.llm = &OpenAILLM{apiKey: apiKey, model: modelName, maxTokens: maxTokens}
+			log.Printf("LLM provider: OpenAI-compatible (model=%s)", modelName)
+		default:
+			log.Println("WARNING: no LLM API key — set api_key_env in agent.json and pass the key via --env")
+		}
 	}
 
 	agent.systemPrompt = config.SystemPrompt
@@ -146,6 +168,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/tether/recv", agent.handleTetherRecv)
+	mux.HandleFunc("POST /v1/llm/recv", agent.handleLLMRecv)
 
 	server := &http.Server{Addr: listenAddr, Handler: mux}
 	go func() {

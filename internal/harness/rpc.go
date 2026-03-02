@@ -265,6 +265,8 @@ func handleConnection(ctx context.Context, conn net.Conn, hrpc *harnessRPC) {
 			switch msg.Method {
 			case "tether.frame":
 				go handleTetherFrame(conn, msg.Params)
+			case "llm.frame":
+				go sendLLMFrame(msg.Params)
 			case "ports_changed":
 				go handlePortsChanged(msg.Params, hrpc)
 			}
@@ -615,6 +617,17 @@ func sendToAgent(params json.RawMessage) {
 	resp, err := http.Post(agentRuntimeAddr+"/v1/tether/recv", "application/json", bytes.NewReader(params))
 	if err != nil {
 		log.Printf("tether: send to agent failed: %v", err)
+		return
+	}
+	resp.Body.Close()
+}
+
+// sendLLMFrame forwards an llm.frame notification to the agent's LLM recv endpoint.
+// No buffering needed — the agent is already running when it initiates an LLM request.
+func sendLLMFrame(params json.RawMessage) {
+	resp, err := http.Post(agentRuntimeAddr+"/v1/llm/recv", "application/json", bytes.NewReader(params))
+	if err != nil {
+		log.Printf("llm: send to agent failed: %v", err)
 		return
 	}
 	resp.Body.Close()

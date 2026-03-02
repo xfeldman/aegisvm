@@ -1,10 +1,13 @@
 package lifecycle
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	"time"
 
@@ -24,6 +27,8 @@ func (m *Manager) handleGuestRequest(inst *Instance, method string, params json.
 		return m.guestExposePort(inst, params)
 	case "guest.unexpose_port":
 		return m.guestUnexposePort(inst, params)
+	case "llm.chat":
+		return m.handleLLMChat(inst, params)
 	}
 
 	// Methods that require a valid capability token
@@ -346,6 +351,114 @@ func (m *Manager) guestUnexposePort(inst *Instance, params json.RawMessage) (int
 	}
 
 	return map[string]string{"status": "ok"}, nil
+}
+
+// hostLLMProviders maps provider names to localhost endpoints.
+var hostLLMProviders = map[string]string{
+	"ollama":   "http://localhost:11434/v1/chat/completions",
+	"lmstudio": "http://localhost:1234/v1/chat/completions",
+	"vllm":     "http://localhost:8000/v1/chat/completions",
+}
+
+// handleLLMChat proxies an LLM chat completion request to a host-local provider.
+// Returns {req_id} immediately. Streaming response is sent as llm.frame notifications.
+func (m *Manager) handleLLMChat(inst *Instance, params json.RawMessage) (interface{}, error) {
+	var req struct {
+		Provider string          `json:"provider"`
+		Model    string          `json:"model"`
+		Body     json.RawMessage `json:"body"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid llm.chat params: %w", err)
+	}
+
+	endpoint, ok := hostLLMProviders[req.Provider]
+	if !ok {
+		return nil, fmt.Errorf("unknown host LLM provider: %s", req.Provider)
+	}
+
+	reqID := fmt.Sprintf("llm-%d", time.Now().UnixNano())
+
+	inst.mu.Lock()
+	demux := inst.demuxer
+	inst.mu.Unlock()
+	if demux == nil {
+		return nil, fmt.Errorf("instance not connected")
+	}
+
+	go m.proxyLLMStream(inst, demux, endpoint, reqID, req.Body)
+
+	return map[string]string{"req_id": reqID}, nil
+}
+
+// proxyLLMStream reads SSE from a host LLM provider and sends llm.frame notifications.
+func (m *Manager) proxyLLMStream(inst *Instance, demux *channelDemuxer, endpoint, reqID string, body json.RawMessage) {
+	sendFrame := func(typ string, fields map[string]interface{}) {
+		frame := map[string]interface{}{
+			"type":   typ,
+			"req_id": reqID,
+		}
+		for k, v := range fields {
+			frame[k] = v
+		}
+		if err := demux.SendNotification("llm.frame", frame); err != nil {
+			log.Printf("llm proxy: send %s: %v", typ, err)
+		}
+	}
+
+	// Use demuxer Done channel — goroutine exits when instance stops
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-demux.Done()
+		cancel()
+	}()
+	defer cancel()
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
+	if err != nil {
+		sendFrame("llm.error", map[string]interface{}{"error": err.Error()})
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		sendFrame("llm.error", map[string]interface{}{"error": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		var buf bytes.Buffer
+		buf.ReadFrom(resp.Body)
+		sendFrame("llm.error", map[string]interface{}{
+			"error": fmt.Sprintf("provider returned %d: %s", resp.StatusCode, buf.String()),
+		})
+		return
+	}
+
+	// Read SSE stream and forward as llm.delta notifications
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+		sendFrame("llm.delta", map[string]interface{}{"data": data})
+	}
+
+	if err := scanner.Err(); err != nil {
+		sendFrame("llm.error", map[string]interface{}{"error": fmt.Sprintf("stream read: %v", err)})
+		return
+	}
+
+	sendFrame("llm.done", nil)
 }
 
 // CascadeStopChildren stops all children of a parent instance.

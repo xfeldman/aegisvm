@@ -34,6 +34,11 @@ func startGuestAPIServer(hrpc *harnessRPC) {
 		handleGuestTetherSend(w, r, hrpc)
 	})
 
+	// LLM proxy (agent runtime → host LLM provider)
+	mux.HandleFunc("POST /v1/llm/chat", func(w http.ResponseWriter, r *http.Request) {
+		handleGuestLLMChat(w, r, hrpc)
+	})
+
 	// Self
 	mux.HandleFunc("GET /v1/self", func(w http.ResponseWriter, r *http.Request) {
 		handleGuestSelfInfo(w, r, hrpc)
@@ -163,6 +168,24 @@ func handleGuestTetherSend(w http.ResponseWriter, r *http.Request, hrpc *harness
 
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"ok":true}`)
+}
+
+// handleGuestLLMChat proxies an LLM chat request to aegisd.
+func handleGuestLLMChat(w http.ResponseWriter, r *http.Request, hrpc *harnessRPC) {
+	var body json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeGuestError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	result, err := hrpc.Call("llm.chat", body)
+	if err != nil {
+		writeGuestError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(result)
 }
 
 // handleGuestRestart sends SIGTERM to the primary process, triggering a restart.
