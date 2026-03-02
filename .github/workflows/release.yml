@@ -181,13 +181,17 @@ jobs:
         run: |
           shasum -a 256 "${DMG_NAME}" | awk '{print $1}' > "${DMG_NAME}.sha256"
 
+      - name: Create unversioned DMG copy (latest)
+        if: env.DMG_NAME != ''
+        run: cp "${DMG_NAME}" AegisVM.dmg
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ASSETS=("${TARBALL}" "${TARBALL}.sha256" "${KIT_TARBALL}" "${KIT_TARBALL}.sha256")
           if [ -n "${DMG_NAME}" ] && [ -f "${DMG_NAME}" ]; then
-            ASSETS+=("${DMG_NAME}" "${DMG_NAME}.sha256")
+            ASSETS+=("${DMG_NAME}" "${DMG_NAME}.sha256" "AegisVM.dmg")
           fi
 
           gh release create "${VERSION}" \
@@ -320,6 +324,9 @@ jobs:
       - name: Build AppImage
         run: make package-linux-appimage VERSION=${VERSION}
 
+      - name: Create unversioned AppImage copy (latest)
+        run: cp AegisVM-${VERSION}-${ARCH}.AppImage AegisVM-${ARCH}.AppImage
+
       - name: Generate checksums
         run: |
           sha256sum debian/aegisvm_${DEB_VERSION}_${ARCH}.deb | awk '{print $1}' > debian/aegisvm_${DEB_VERSION}_${ARCH}.deb.sha256
@@ -345,4 +352,5 @@ jobs:
             aegisvm-${VERSION}-linux-${ARCH}.tar.gz \
             aegisvm-${VERSION}-linux-${ARCH}.tar.gz.sha256 \
             AegisVM-${VERSION}-${ARCH}.AppImage \
-            AegisVM-${VERSION}-${ARCH}.AppImage.sha256
+            AegisVM-${VERSION}-${ARCH}.AppImage.sha256 \
+            AegisVM-${ARCH}.AppImage

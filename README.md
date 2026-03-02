@@ -77,7 +77,21 @@ Agent Kit is the right choice when you want lightweight, isolated agents that sc
 
 ## Install
 
-### macOS (Homebrew)
+### Desktop App (recommended)
+
+Desktop app with everything bundled — core runtime, CLI, daemon, Agent Kit. Nothing else to install.
+
+| Platform | Download | Requirements |
+|----------|----------|--------------|
+| **macOS** (Apple Silicon) | [AegisVM.dmg](https://github.com/xfeldman/aegisvm/releases/latest/download/AegisVM.dmg) | macOS Ventura+ (M1/M2/M3/M4/M5) |
+| **Linux** x86_64 | [AegisVM-amd64.AppImage](https://github.com/xfeldman/aegisvm/releases/latest/download/AegisVM-amd64.AppImage) | KVM (`/dev/kvm`), WebKitGTK 4.1 |
+| **Linux** arm64 | [AegisVM-arm64.AppImage](https://github.com/xfeldman/aegisvm/releases/latest/download/AegisVM-arm64.AppImage) | KVM (`/dev/kvm`), WebKitGTK 4.1 |
+
+**macOS:** Open the DMG, drag to Applications. The app manages the daemon, provides system tray access, and installs CLI at `~/.aegis/bin/aegis`.
+
+**Linux:** `chmod +x AegisVM-*.AppImage && ./AegisVM-*.AppImage`. First launch prompts for a password (networking setup). CLI installed at `~/.aegis/bin/aegis`.
+
+### Homebrew (macOS)
 
 ```bash
 brew tap xfeldman/aegisvm
@@ -85,15 +99,13 @@ brew install aegisvm                # core runtime
 brew install aegisvm-agent-kit      # agent kit (optional)
 ```
 
-Requires Apple Silicon (M1+).
-
-### Linux
+### Linux (CLI only)
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/xfeldman/aegisvm/main/install.sh | sh
 ```
 
-Installs `aegisvm` + `aegisvm-agent-kit` and dependencies. Requires x86_64 or arm64 with KVM (`/dev/kvm`).
+Installs `aegisvm` + `aegisvm-agent-kit` .deb packages. Requires x86_64 or arm64 with KVM (`/dev/kvm`).
 
 ## Usage: Core
 
