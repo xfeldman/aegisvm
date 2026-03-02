@@ -280,6 +280,25 @@
     document.addEventListener('mouseup', onUp)
   }
 
+  // Draggable splitter
+  let treeWidth = $state(220)
+
+  function startSplitterDrag(e: MouseEvent) {
+    e.preventDefault()
+    const startX = e.clientX
+    const startWidth = treeWidth
+
+    function onMove(ev: MouseEvent) {
+      treeWidth = Math.max(120, Math.min(400, startWidth + ev.clientX - startX))
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
   function formatSize(bytes: number): string {
     if (bytes < 1024) return `${bytes}B`
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}K`
@@ -298,7 +317,7 @@
 </script>
 
 <div class="browser">
-  <div class="tree-panel">
+  <div class="tree-panel" style="width: {treeWidth}px">
     <div class="tree-header">Files</div>
     <div class="tree-content">
       {#if treeLoading}
@@ -327,6 +346,9 @@
       {/if}
     </div>
   </div>
+
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="splitter" onmousedown={startSplitterDrag}></div>
 
   <div class="editor-panel">
     {#if !currentFile}
@@ -379,13 +401,19 @@
 
   /* Tree panel */
   .tree-panel {
-    width: 220px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    border-right: 1px solid var(--border);
     background: var(--bg-secondary);
   }
+  .splitter {
+    width: 3px;
+    flex-shrink: 0;
+    background: var(--border);
+    cursor: col-resize;
+    transition: background 0.15s;
+  }
+  .splitter:hover { background: var(--accent); }
   .tree-header {
     padding: 8px 12px;
     font-size: 11px;
@@ -421,8 +449,9 @@
     cursor: pointer;
     text-align: left;
   }
-  .tree-node:hover { background: var(--bg-tertiary); }
-  .tree-node.active { background: var(--bg-tertiary); color: var(--accent); }
+  .tree-node:hover { background: rgba(139, 148, 158, 0.1); }
+  .tree-node.active { background: rgba(88, 166, 255, 0.15); }
+  .tree-node.active .tree-name { color: var(--accent); }
   .tree-icon {
     width: 10px;
     flex-shrink: 0;
@@ -430,7 +459,8 @@
     color: var(--text-muted);
   }
   .tree-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tree-name.dir { color: var(--accent); }
+  .tree-name.dir { color: var(--yellow); }
+  .tree-node.active .tree-name.dir { color: var(--accent); }
   .tree-size { color: var(--text-muted); font-size: 10px; flex-shrink: 0; }
 
   /* Editor panel */
