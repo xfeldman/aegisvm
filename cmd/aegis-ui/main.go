@@ -57,15 +57,20 @@ func main() {
 
 	// Serve via real HTTP. This avoids the WebKit WKURLSchemeHandler
 	// limitation where POST bodies are dropped for custom URL schemes.
-	// Chat history lives in tether (server-side), so any port works.
+	// Fixed port (7701) so localStorage persists across restarts (same origin).
 	mux := http.NewServeMux()
 	mux.Handle("/api/", newAegisdProxy())
 	mux.HandleFunc("POST /open-url", handleOpenURL)
 	mux.Handle("/", spaHandler(http.FileServer(http.FS(distFS)), distFS))
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	// Fixed port so localStorage persists across app restarts (same origin).
+	// Falls back to random port if 7701 is taken (e.g. stale process).
+	listener, err := net.Listen("tcp", "127.0.0.1:7701")
 	if err != nil {
-		log.Fatalf("aegis-ui: listen: %v", err)
+		listener, err = net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			log.Fatalf("aegis-ui: listen: %v", err)
+		}
 	}
 	uiAddr := listener.Addr().String()
 	go http.Serve(listener, mux)

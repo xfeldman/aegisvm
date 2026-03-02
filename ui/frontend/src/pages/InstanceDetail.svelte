@@ -15,7 +15,7 @@
   let instance: Instance | null = $state(null)
   let error: string | null = $state(null)
   let tab: string = $state('info')
-  let openPorts: Set<number> = $state(new Set())
+  let openPorts: number[] = $state([])
   let iframeKey: number = $state(0)
   let pollTimer: ReturnType<typeof setInterval>
 
@@ -66,17 +66,17 @@
   let iframeEl: HTMLIFrameElement | undefined = $state(undefined)
 
   function openPort(port: number) {
-    openPorts = new Set([...openPorts, port])
+    if (!openPorts.includes(port)) {
+      openPorts = [...openPorts, port]
+    }
     tab = `port:${port}`
-    saveOpenPorts(id, [...openPorts])
+    saveOpenPorts(id, openPorts)
   }
 
   function closePort(port: number) {
-    const next = new Set(openPorts)
-    next.delete(port)
-    openPorts = next
+    openPorts = openPorts.filter(p => p !== port)
     if (tab === `port:${port}`) tab = 'info'
-    saveOpenPorts(id, [...openPorts])
+    saveOpenPorts(id, openPorts)
   }
 
   function activePort(): number | null {
@@ -98,7 +98,7 @@
   onMount(() => {
     // Restore persisted port tabs
     const saved = loadOpenPorts(id)
-    if (saved.length) openPorts = new Set(saved)
+    if (saved.length) openPorts = saved
 
     // Open port tab if navigated from InstanceList
     const pending = consumePendingPort()
@@ -142,17 +142,16 @@
 
     <div class="tabs">
       <button class="tab" class:active={tab === 'info'} onclick={() => tab = 'info'}>Info</button>
-      <button class="tab" class:active={tab === 'logs'} onclick={() => tab = 'logs'}>Logs</button>
-      <button class="tab" class:active={tab === 'exec'} onclick={() => tab = 'exec'}>Exec</button>
-      <button class="tab" class:active={tab === 'chat'} onclick={() => tab = 'chat'}>Chat</button>
       {#if instance.kit}
         <button class="tab" class:active={tab === 'config'} onclick={() => tab = 'config'}>Kit Config</button>
       {/if}
-      {#each [...openPorts] as port}
-        <div class="tab port-tab" class:active={tab === `port:${port}`}>
-          <button class="port-tab-select" onclick={() => tab = `port:${port}`}>:{port}</button>
-          <button class="port-tab-close" onclick={() => closePort(port)}>&times;</button>
-        </div>
+      <button class="tab" class:active={tab === 'logs'} onclick={() => tab = 'logs'}>Logs</button>
+      <button class="tab" class:active={tab === 'exec'} onclick={() => tab = 'exec'}>Exec</button>
+      <button class="tab" class:active={tab === 'chat'} onclick={() => tab = 'chat'}>Chat</button>
+      {#each openPorts as port}
+        <button class="tab" class:active={tab === `port:${port}`} onclick={() => tab = `port:${port}`}>
+          <span class="port-tab-label">:{port}</span><span class="port-tab-close" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); closePort(port) }} onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); closePort(port) } }}>&times;</span>
+        </button>
       {/each}
     </div>
 
@@ -429,37 +428,12 @@
   }
   .open-external:hover { color: var(--accent); background: var(--bg-tertiary); }
 
-  /* Port tabs */
-  .port-tab {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    padding: 0;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-  }
-  .port-tab.active { border-bottom-color: var(--accent); }
-  .port-tab-select {
-    font-family: var(--font-mono);
-    font-size: 12px;
-    font-weight: 500;
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    padding: 8px 4px 8px 16px;
-    cursor: pointer;
-  }
-  .port-tab.active .port-tab-select, .port-tab-select:hover { color: var(--text); }
+  /* Port tab extras */
+  .port-tab-label { font-family: var(--font-mono); }
   .port-tab-close {
-    font-size: 14px;
-    line-height: 1;
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    opacity: 0.5;
+    margin-left: 4px;
+    opacity: 0.4;
     cursor: pointer;
-    padding: 4px 10px 4px 4px;
-    border-radius: 3px;
   }
   .port-tab-close:hover { opacity: 1; color: var(--red); }
 
