@@ -366,6 +366,7 @@ func (m *Manager) handleLLMChat(inst *Instance, params json.RawMessage) (interfa
 	var req struct {
 		Provider string          `json:"provider"`
 		Model    string          `json:"model"`
+		ReqID    string          `json:"req_id"`
 		Body     json.RawMessage `json:"body"`
 	}
 	if err := json.Unmarshal(params, &req); err != nil {
@@ -377,7 +378,11 @@ func (m *Manager) handleLLMChat(inst *Instance, params json.RawMessage) (interfa
 		return nil, fmt.Errorf("unknown host LLM provider: %s", req.Provider)
 	}
 
-	reqID := fmt.Sprintf("llm-%d", time.Now().UnixNano())
+	// Use agent-provided req_id if present, otherwise generate one
+	reqID := req.ReqID
+	if reqID == "" {
+		reqID = fmt.Sprintf("llm-%d", time.Now().UnixNano())
+	}
 
 	inst.mu.Lock()
 	demux := inst.demuxer

@@ -115,10 +115,11 @@ func (h *HostLLM) StreamChat(ctx context.Context, messages []Message, tools []To
 
 	bodyJSON, _ := json.Marshal(body)
 
-	// Send request to harness → aegisd
+	// Send request to harness → aegisd (include req_id so aegisd uses ours)
 	reqBody, _ := json.Marshal(map[string]interface{}{
 		"provider": h.provider,
 		"model":    h.model,
+		"req_id":   reqID,
 		"body":     json.RawMessage(bodyJSON),
 	})
 
@@ -267,7 +268,6 @@ func (h *HostLLM) routeFrame(frame hostLLMFrame) {
 		default:
 			log.Printf("host llm: channel full for %s, dropping frame", frame.ReqID)
 		}
-	} else {
-		log.Printf("host llm: no pending request for %s", frame.ReqID)
 	}
+	// Straggler frames after StreamChat returns are expected — don't log.
 }
