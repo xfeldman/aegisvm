@@ -69,6 +69,12 @@ aegis mcp install / uninstall                                        (Claude Cod
 aegis ui [--port PORT]                                               (web UI, default port 7700)
 ```
 
+## IMPORTANT: Build Rules
+
+- **NEVER run `go build` directly** — always use `make` targets. All binaries must go into `./bin/`, never the repo root. A bare `aegisd` or `aegis-harness` in the repo root will shadow the real binaries and break the daemon (it resolves companion binaries relative to its own location).
+- To compile and test: `make all`
+- To compile a single binary: `make aegisd`, `make harness`, etc.
+
 ## Conventions
 
 - Go 1.23+
