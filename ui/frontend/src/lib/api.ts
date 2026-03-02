@@ -181,6 +181,23 @@ export async function writeKitConfig(id: string, file: string, content: string):
   }
 }
 
+// Workspace directory listing
+export interface FileEntry {
+  name: string
+  is_dir: boolean
+  size: number
+}
+
+export async function listWorkspaceDir(id: string, path = '.'): Promise<FileEntry[]> {
+  const res = await fetch(`${BASE}/instances/${encodeURIComponent(id)}/workspace/tree?path=${encodeURIComponent(path)}`)
+  if (!res.ok) {
+    let msg = res.statusText
+    try { const d = await res.json(); if (d.error) msg = d.error } catch {}
+    throw new APIError(res.status, msg)
+  }
+  return res.json()
+}
+
 // Workspace files
 export async function readWorkspaceFile(id: string, path: string): Promise<string> {
   const res = await fetch(`${BASE}/instances/${encodeURIComponent(id)}/workspace?path=${encodeURIComponent(path)}`)

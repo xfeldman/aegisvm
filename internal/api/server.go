@@ -78,6 +78,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v1/instances/prune", s.handlePruneInstances)
 
 	// Workspace file access
+	s.mux.HandleFunc("GET /v1/instances/{id}/workspace/tree", s.handleWorkspaceTree)
 	s.mux.HandleFunc("GET /v1/instances/{id}/workspace", s.handleWorkspaceRead)
 	s.mux.HandleFunc("POST /v1/instances/{id}/workspace", s.handleWorkspaceWrite)
 
@@ -1172,6 +1173,77 @@ func validateWorkspacePath(p string) error {
 		return fmt.Errorf("path traversal not allowed")
 	}
 	return nil
+}
+
+func (s *Server) handleWorkspaceTree(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+	relPath := r.URL.Query().Get("path")
+	if relPath == "" {
+		relPath = "."
+	}
+
+	if relPath != "." {
+		if err := validateWorkspacePath(relPath); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
+	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+	if inst.WorkspacePath == "" {
+		writeError(w, http.StatusNotFound, "instance has no workspace")
+		return
+	}
+
+	fullPath := filepath.Join(inst.WorkspacePath, filepath.Clean(relPath))
+
+	resolved, err := filepath.EvalSymlinks(fullPath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "directory not found")
+		return
+	}
+	wsResolved, _ := filepath.EvalSymlinks(inst.WorkspacePath)
+	if !strings.HasPrefix(resolved, wsResolved) {
+		writeError(w, http.StatusForbidden, "path escapes workspace")
+		return
+	}
+
+	entries, err := os.ReadDir(fullPath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "directory not found")
+		return
+	}
+
+	type fileEntry struct {
+		Name  string `json:"name"`
+		IsDir bool   `json:"is_dir"`
+		Size  int64  `json:"size"`
+	}
+
+	// Directories first, then files, alphabetical within each group
+	var dirs, files []fileEntry
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		fe := fileEntry{Name: e.Name(), IsDir: e.IsDir(), Size: info.Size()}
+		if e.IsDir() {
+			dirs = append(dirs, fe)
+		} else {
+			files = append(files, fe)
+		}
+	}
+
+	result := append(dirs, files...)
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleWorkspaceRead(w http.ResponseWriter, r *http.Request) {

@@ -6,6 +6,7 @@
   import CommandRunner from '../components/CommandRunner.svelte'
   import ChatPanel from '../components/ChatPanel.svelte'
   import ConfigEditor from '../components/ConfigEditor.svelte'
+  import WorkspaceBrowser from '../components/WorkspaceBrowser.svelte'
 
   interface Props {
     id: string
@@ -158,6 +159,9 @@
       {#if instance.kit}
         <button class="tab" class:active={tab === 'config'} onclick={() => tab = 'config'}>Kit Config</button>
       {/if}
+      {#if instance.workspace}
+        <button class="tab" class:active={tab === 'files'} onclick={() => tab = 'files'}>Files</button>
+      {/if}
       <button class="tab" class:active={tab === 'logs'} onclick={() => tab = 'logs'}>Logs</button>
       <button class="tab" class:active={tab === 'exec'} onclick={() => tab = 'exec'}>Exec</button>
       <button class="tab" class:active={tab === 'chat'} onclick={() => tab = 'chat'}>Chat</button>
@@ -238,6 +242,8 @@
         <ChatPanel instanceId={instance.handle || instance.id} disabled={!canExec} exposedPorts={instance.endpoints?.map(ep => ep.public_port) || []} onOpenPort={openPort} />
       {:else if tab === 'config' && instance.kit}
         <ConfigEditor instanceId={instance.handle || instance.id} kitName={instance.kit} />
+      {:else if tab === 'files' && instance.workspace}
+        <WorkspaceBrowser instanceId={instance.handle || instance.id} />
       {:else if activePort()}
         {@const port = activePort()}
         <div class="iframe-toolbar">
