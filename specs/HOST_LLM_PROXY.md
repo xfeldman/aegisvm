@@ -371,7 +371,30 @@ The harness is a dumb pipe. For the streaming direction, `llm.frame` notificatio
 
 ---
 
-## 7. Non-goals
+## 7. Reasoning Models
+
+Models that emit chain-of-thought reasoning (Qwen 3.5, QWQ, DeepSeek-R1, etc.) stream reasoning tokens via the `delta.reasoning` field in SSE chunks. The agent parses this field in `HostLLM.StreamChat()` and emits two new tether frame types:
+
+| Frame | Direction | Payload | When |
+|-------|-----------|---------|------|
+| `reasoning.delta` | guest → host | `{"text": "..."}` | Each reasoning chunk from LLM |
+| `reasoning.done` | guest → host | `{}` | Reasoning phase finished, content starting |
+
+These are egress frames stored in the tether store (clients replay them on catch-up). The UI renders reasoning in a collapsible `<details>` block.
+
+Reasoning tokens are NOT included in session context. Only `delta.content` tokens are accumulated into `fullText` and stored as the assistant turn. This avoids wasting context on the model's scratch pad.
+
+The `onReasoning` / `onReasoningDone` callbacks are fields on `HostLLM` only — they are not part of the `LLM` interface. Cloud providers (OpenAI, Anthropic) handle reasoning differently and would need separate implementations.
+
+### Context window gotcha
+
+Ollama's OpenAI-compatible endpoint (`/v1/chat/completions`) does not accept `num_ctx` as a request parameter (the Ollama team explicitly rejected this). Ollama defaults to a 4096-token KV cache regardless of the model's native capability.
+
+With ~29 agent tools + system prompt consuming ~3500 tokens, a 4096-token context leaves almost no room for conversation history. Ollama silently truncates — the model loses older turns without any error.
+
+Users must configure `num_ctx` at the Ollama level (GUI settings, Modelfile, or `OLLAMA_CONTEXT_LENGTH` env var). 32768 is the recommended minimum for tool-using agents.
+
+## 8. Non-goals
 
 - **Running models inside the VM.** Possible but impractical — RAM constraints, no GPU passthrough. Out of scope.
 - **Model management.** Pulling, deleting, or listing models on the host. Use `ollama pull` directly.
@@ -382,7 +405,7 @@ The harness is a dumb pipe. For the streaming direction, `llm.frame` notificatio
 
 ---
 
-## 8. Future Extensions
+## 9. Future Extensions
 
 - **Cancellation** — `llm.cancel` RPC to abort in-flight generation. Requires adding user-interrupt support to the agent's agentic loop first. On SIGTERM, vsock close already handles cleanup.
 - **`host:` provider config in aegisd** — custom ports, auth tokens for providers that need them
