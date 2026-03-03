@@ -58,7 +58,7 @@ aegis up / down / status / doctor
 aegis run [--expose [PUB:]GUEST[/proto]] [--secret KEY] [--name H] [--workspace W] [--kit KIT] -- CMD
 aegis instance start [--name H] [--expose [PUB:]GUEST[/proto]] [--secret KEY] [--workspace W] [--image REF] [--kit KIT] -- CMD
 aegis instance start --name H                              (restart stopped instance)
-aegis instance list [--stopped | --running] / info / disable / delete / pause / resume
+aegis instance list [--stopped | --running] / info / restart / disable / delete / pause / resume
 aegis instance prune --stopped-older-than <dur>
 aegis exec <handle|id> -- CMD
 aegis logs <handle|id> [--follow]

@@ -243,6 +243,17 @@ var tools = []mcpTool{
 		}`),
 	},
 	{
+		Name:        "instance_restart",
+		Description: "Restart a running or paused instance. Stops the VM and cold-boots it. Useful after config changes or to pick up new secrets.",
+		InputSchema: rawJSON(`{
+			"type": "object",
+			"properties": {
+				"name": {"type": "string", "description": "Instance handle or ID"}
+			},
+			"required": ["name"]
+		}`),
+	},
+	{
 		Name:        "instance_delete",
 		Description: "Delete an instance entirely, removing its record.",
 		InputSchema: rawJSON(`{
@@ -530,6 +541,29 @@ func handleInstanceDisable(args json.RawMessage) *mcpToolResult {
 		return errorResult(fmt.Sprintf("HTTP %d: %s", status, string(data)))
 	}
 	return textResult("instance disabled")
+}
+
+func handleInstanceRestart(args json.RawMessage) *mcpToolResult {
+	var params struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil || params.Name == "" {
+		return errorResult("name is required")
+	}
+
+	// Disable (best-effort — instance may already be stopped)
+	doRequest("POST", "/v1/instances/"+params.Name+"/disable", nil)
+
+	// Start
+	status, data, err := doRequest("POST", "/v1/instances/"+params.Name+"/start", nil)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	if status >= 400 {
+		return errorResult(fmt.Sprintf("start: HTTP %d: %s", status, string(data)))
+	}
+
+	return textResult("instance restarting")
 }
 
 func handleInstanceDelete(args json.RawMessage) *mcpToolResult {
@@ -1037,6 +1071,7 @@ var toolHandlers = map[string]func(json.RawMessage) *mcpToolResult{
 	"instance_expose":   handleInstanceExpose,
 	"instance_unexpose": handleInstanceUnexpose,
 	"instance_disable":  handleInstanceDisable,
+	"instance_restart":  handleInstanceRestart,
 	"instance_delete":   handleInstanceDelete,
 	"exec":              handleExec,
 	"logs":              handleLogs,

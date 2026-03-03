@@ -50,6 +50,10 @@
       switch (action) {
         case 'enable': await startInstance(ref); break
         case 'disable': await disableInstance(ref); break
+        case 'restart':
+          try { await disableInstance(ref) } catch {}
+          await startInstance(ref)
+          break
         case 'delete':
           if (!await showConfirm(`Delete instance "${name}"?`)) return
           await deleteInstance(ref)
@@ -112,6 +116,7 @@
         {:else if inst.state === 'starting'}
           <span class="text-muted">starting...</span>
         {:else}
+          <button class="btn btn-sm btn-restart" onclick={() => doAction('restart', inst)}>Restart</button>
           <button class="btn btn-sm btn-disable" onclick={() => doAction('disable', inst)}>Disable</button>
         {/if}
         <button class="btn-icon btn-delete" title="Delete" onclick={() => doAction('delete', inst)}>&#x2715;</button>
@@ -234,6 +239,14 @@
   .btn-enable:hover {
     background: rgba(63, 185, 80, 0.1);
     border-color: var(--green);
+  }
+  .btn-restart {
+    color: var(--accent);
+    border-color: rgba(88, 166, 255, 0.3);
+  }
+  .btn-restart:hover {
+    background: rgba(88, 166, 255, 0.1);
+    border-color: var(--accent);
   }
   .btn-disable {
     color: var(--orange);

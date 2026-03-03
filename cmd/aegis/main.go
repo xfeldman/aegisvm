@@ -810,6 +810,8 @@ func cmdInstance() {
 		cmdInstancePause(client)
 	case "resume":
 		cmdInstanceResume(client)
+	case "restart":
+		cmdInstanceRestart(client)
 	case "expose":
 		cmdInstanceExpose(client)
 	case "unexpose":
@@ -834,6 +836,7 @@ Commands:
   info       Show instance details
   expose     Expose a guest port on the host
   unexpose   Remove a port exposure
+  restart    Restart a running instance (disable + start)
   disable    Disable an instance (stop VM, close listeners, prevent auto-wake)
   delete     Delete an instance (removed entirely, logs cleaned)
   pause      Pause a running instance (SIGSTOP)
@@ -849,6 +852,7 @@ Examples:
   aegis instance list
   aegis instance list --stopped
   aegis instance info web
+  aegis instance restart web
   aegis instance disable web
   aegis instance delete web
   aegis instance prune --stopped-older-than 7d`)
@@ -1176,6 +1180,40 @@ func cmdInstanceDisable(client *http.Client) {
 	}
 
 	fmt.Printf("Instance %s disabled\n", target)
+}
+
+func cmdInstanceRestart(client *http.Client) {
+	if len(os.Args) < 4 {
+		fmt.Fprintln(os.Stderr, "usage: aegis instance restart HANDLE_OR_ID")
+		os.Exit(1)
+	}
+
+	target := os.Args[3]
+	instID := resolveInstanceTarget(client, target)
+	if instID == "" {
+		fmt.Fprintf(os.Stderr, "instance %q not found\n", target)
+		os.Exit(1)
+	}
+
+	// Disable (ignore errors — instance may already be stopped)
+	resp, err := client.Post(fmt.Sprintf("http://aegis/v1/instances/%s/disable", instID), "application/json", nil)
+	if err == nil {
+		resp.Body.Close()
+	}
+
+	// Start
+	resp, err = client.Post(fmt.Sprintf("http://aegis/v1/instances/%s/start", instID), "application/json", nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "restart: start failed: %v\n", err)
+		os.Exit(1)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "restart: start failed (HTTP %d)\n", resp.StatusCode)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Instance %s restarting\n", target)
 }
 
 func cmdInstanceDelete(client *http.Client) {

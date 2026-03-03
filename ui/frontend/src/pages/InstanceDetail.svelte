@@ -45,6 +45,10 @@
       switch (action) {
         case 'enable': await startInstance(ref); break
         case 'disable': await disableInstance(ref); break
+        case 'restart':
+          try { await disableInstance(ref) } catch {}
+          await startInstance(ref)
+          break
         case 'delete':
           if (!await showConfirm(`Delete instance "${ref}"?`)) return
           await deleteInstance(ref)
@@ -216,6 +220,7 @@
       </div>
       <div class="header-actions">
         {#if instance.enabled}
+          <button class="btn btn-restart" onclick={() => doAction('restart')}>Restart</button>
           <button class="btn btn-disable" onclick={() => doAction('disable')}>Disable</button>
         {:else}
           <button class="btn btn-enable" onclick={() => doAction('enable')}>Enable</button>
@@ -428,6 +433,8 @@
   .btn:hover { background: var(--bg); border-color: var(--text-muted); }
   .btn-enable { color: var(--green); border-color: rgba(63, 185, 80, 0.3); }
   .btn-enable:hover { background: rgba(63, 185, 80, 0.1); border-color: var(--green); }
+  .btn-restart { color: var(--accent); border-color: rgba(88, 166, 255, 0.3); }
+  .btn-restart:hover { background: rgba(88, 166, 255, 0.1); border-color: var(--accent); }
   .btn-disable { color: var(--orange); border-color: rgba(209, 134, 22, 0.3); }
   .btn-disable:hover { background: rgba(209, 134, 22, 0.1); border-color: var(--orange); }
   .btn-icon {
