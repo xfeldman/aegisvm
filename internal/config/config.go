@@ -166,19 +166,17 @@ func (c *Config) ResolveBinaries() {
 }
 
 // FindBinary locates a companion binary by name. Search order:
-//  1. PATH (exec.LookPath)
-//  2. BinDir — directory of the running executable
-//  3. macOS .app bundle — Contents/Resources/ relative to executable
-//  4. Known system paths (deb/rpm installs, macOS)
+//  1. BinDir — directory of the running executable (dev builds, .app bundles)
+//  2. macOS .app bundle — Contents/Resources/ relative to executable
+//  3. PATH (exec.LookPath)
+//  4. Known system paths (deb/rpm installs)
+//
+// BinDir is checked first so dev builds (./bin/aegisd) always find freshly
+// built siblings (./bin/aegis-gateway) instead of stale system-installed copies.
 //
 // Returns the absolute path, or "" if not found.
 func FindBinary(name string, binDir string) string {
-	// 1. PATH
-	if p, err := exec.LookPath(name); err == nil {
-		return p
-	}
-
-	// 2. Sibling of the running executable
+	// 1. Sibling of the running executable
 	if binDir != "" {
 		p := filepath.Join(binDir, name)
 		if _, err := os.Stat(p); err == nil {
@@ -187,7 +185,7 @@ func FindBinary(name string, binDir string) string {
 		}
 	}
 
-	// 3. macOS .app bundle: if executable is in Contents/MacOS/ or
+	// 2. macOS .app bundle: if executable is in Contents/MacOS/ or
 	//    Contents/Resources/, check both locations.
 	if binDir != "" {
 		parent := filepath.Dir(binDir)
@@ -197,6 +195,11 @@ func FindBinary(name string, binDir string) string {
 				return p
 			}
 		}
+	}
+
+	// 3. PATH
+	if p, err := exec.LookPath(name); err == nil {
+		return p
 	}
 
 	// 4. Known system paths
