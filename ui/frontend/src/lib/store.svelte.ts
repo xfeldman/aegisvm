@@ -70,6 +70,8 @@ export function pushCmdHistory(id: string, cmd: string) {
 export interface ChatMessage {
   role: 'user' | 'assistant'
   text: string
+  reasoning?: string        // accumulated reasoning text (chain-of-thought)
+  reasoningDone?: boolean   // true when reasoning phase is over
   images?: { media_type: string; blob: string }[]
   ts: string
   streaming?: boolean

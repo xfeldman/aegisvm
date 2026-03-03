@@ -22,6 +22,9 @@ type HostLLM struct {
 
 	mu      sync.Mutex
 	pending map[string]chan hostLLMFrame // req_id → channel
+
+	onReasoning     func(string) // called with reasoning text chunks
+	onReasoningDone func()       // called when reasoning→content transition
 }
 
 type hostLLMFrame struct {
@@ -157,6 +160,7 @@ func (h *HostLLM) StreamChat(ctx context.Context, messages []Message, tools []To
 		args strings.Builder
 	}
 	toolCalls := make(map[int]*partialTC)
+	wasReasoning := false
 
 	for {
 		select {
@@ -174,6 +178,7 @@ func (h *HostLLM) StreamChat(ctx context.Context, messages []Message, tools []To
 					Choices []struct {
 						Delta struct {
 							Content   string `json:"content"`
+							Reasoning string `json:"reasoning"` // Ollama reasoning field
 							ToolCalls []struct {
 								Index    int    `json:"index"`
 								ID       string `json:"id"`
@@ -190,7 +195,15 @@ func (h *HostLLM) StreamChat(ctx context.Context, messages []Message, tools []To
 				}
 
 				delta := event.Choices[0].Delta
+				if delta.Reasoning != "" && h.onReasoning != nil {
+					h.onReasoning(delta.Reasoning)
+					wasReasoning = true
+				}
 				if delta.Content != "" {
+					if wasReasoning && h.onReasoningDone != nil {
+						h.onReasoningDone()
+						wasReasoning = false
+					}
 					onDelta(delta.Content)
 				}
 

@@ -52,6 +52,19 @@ func (a *Agent) sendDelta(session SessionID, text string) {
 	})
 }
 
+func (a *Agent) sendReasoning(session SessionID, text string) {
+	a.sendFrame(TetherFrame{
+		V: 1, Type: "reasoning.delta", TS: now(), Session: session,
+		Payload: mustMarshal(map[string]string{"text": text}),
+	})
+}
+
+func (a *Agent) sendReasoningDone(session SessionID) {
+	a.sendFrame(TetherFrame{
+		V: 1, Type: "reasoning.done", TS: now(), Session: session,
+	})
+}
+
 func (a *Agent) sendDone(session SessionID, text string) {
 	a.sendFrame(TetherFrame{
 		V: 1, Type: "assistant.done", TS: now(), Session: session,

@@ -265,6 +265,16 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 		}
 	}
 
+	// Wire reasoning callbacks for host LLM (Ollama chain-of-thought)
+	if a.hostLLM != nil {
+		a.hostLLM.onReasoning = func(text string) {
+			a.sendReasoning(frame.Session, text)
+		}
+		a.hostLLM.onReasoningDone = func() {
+			a.sendReasoningDone(frame.Session)
+		}
+	}
+
 	// Agentic loop: call LLM with streaming, execute tools, repeat
 	for round := 0; round < maxToolRounds; round++ {
 		messages := sess.assembleContext(sysPrompt, a.maxContextTurns, a.maxContextChars)

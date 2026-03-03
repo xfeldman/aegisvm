@@ -85,6 +85,31 @@
       } else if (frame.type === 'status.presence') {
         thinking = frame.payload?.state || 'thinking'
         changed = true
+      } else if (frame.type === 'reasoning.delta') {
+        const text = frame.payload?.text || ''
+        const last = messages[messages.length - 1]
+        if (last && last.role === 'assistant' && last.streaming) {
+          messages[messages.length - 1] = {
+            ...last,
+            reasoning: (last.reasoning || '') + text,
+          }
+        } else {
+          messages.push({
+            role: 'assistant',
+            text: '',
+            reasoning: text,
+            ts: frame.ts || new Date().toISOString(),
+            streaming: true,
+          })
+        }
+        thinking = null
+        changed = true
+      } else if (frame.type === 'reasoning.done') {
+        const last = messages[messages.length - 1]
+        if (last && last.role === 'assistant') {
+          messages[messages.length - 1] = { ...last, reasoningDone: true }
+        }
+        changed = true
       } else if (frame.type === 'assistant.delta') {
         const text = frame.payload?.text || ''
         const last = messages[messages.length - 1]
@@ -252,6 +277,15 @@
       <div class="message {msg.role}" onclick={msg.role === 'assistant' ? handleMessageClick : undefined}>
         <div class="message-role">{msg.role === 'user' ? 'You' : 'Agent'}</div>
         {#if msg.role === 'assistant'}
+          {#if msg.reasoning}
+            <details class="reasoning" open={!msg.reasoningDone && msg.streaming}>
+              <summary>
+                Thinking{#if !msg.reasoningDone && msg.streaming}...{/if}
+                <span class="reasoning-size">({msg.reasoning.length} chars)</span>
+              </summary>
+              <div class="reasoning-text">{msg.reasoning}</div>
+            </details>
+          {/if}
           <div class="message-text markdown">{@html renderMarkdown(msg.text)}{#if msg.streaming}<span class="cursor">|</span>{/if}</div>
         {:else}
           <div class="message-text">{msg.text}</div>
@@ -351,6 +385,35 @@
     letter-spacing: 0.03em;
     margin-bottom: 2px;
     opacity: 0.7;
+  }
+
+  .reasoning {
+    font-size: 12px;
+    margin-bottom: 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .reasoning summary {
+    padding: 4px 8px;
+    cursor: pointer;
+    color: var(--text-muted);
+    font-weight: 500;
+    user-select: none;
+  }
+  .reasoning-size {
+    font-weight: normal;
+    opacity: 0.5;
+  }
+  .reasoning-text {
+    padding: 6px 8px;
+    white-space: pre-wrap;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    max-height: 200px;
+    overflow-y: auto;
+    border-top: 1px solid var(--border);
   }
 
   .message-text {
