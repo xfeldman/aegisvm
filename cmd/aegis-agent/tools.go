@@ -249,6 +249,20 @@ var builtinTools = []Tool{
 		},
 	},
 	{
+		Name:        "notify",
+		Description: "Broadcast a notification to all connected clients (UI, Telegram, etc.). Use for alerts, reminders, cron results, or any proactive message that should reach the user regardless of which channel they're on. The notification appears in all active sessions.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"text": map[string]interface{}{
+					"type":        "string",
+					"description": "Notification message",
+				},
+			},
+			"required": []string{"text"},
+		},
+	},
+	{
 		Name:        "respond_with_image",
 		Description: "Attach an image to your response. Download the image first (e.g. with bash + wget), then call this tool with the local file path. The image will be sent alongside your text response to the user (e.g. in Telegram).",
 		InputSchema: map[string]interface{}{
@@ -337,6 +351,8 @@ func (a *Agent) executeTool(name string, input json.RawMessage) string {
 		return a.toolSelfInfo(input)
 	case "self_restart":
 		return a.toolSelfRestart(input)
+	case "notify":
+		return a.toolNotify(input)
 	case "respond_with_image":
 		return a.toolRespondWithImage(input)
 	case "image_generate":
@@ -1199,6 +1215,32 @@ func (a *Agent) toolSelfRestart(input json.RawMessage) string {
 	return jsonResult(map[string]interface{}{
 		"ok":      true,
 		"message": "Restart scheduled. It will happen after this response completes.",
+	})
+}
+
+func (a *Agent) toolNotify(input json.RawMessage) string {
+	var params struct {
+		Text string `json:"text"`
+	}
+	json.Unmarshal(input, &params)
+	if params.Text == "" {
+		return jsonError("text is required")
+	}
+
+	a.sendFrame(TetherFrame{
+		V:    1,
+		Type: "assistant.notification",
+		TS:   now(),
+		Session: SessionID{
+			Channel: "broadcast",
+			ID:      "notify",
+		},
+		Payload: mustMarshal(map[string]string{"text": params.Text}),
+	})
+
+	return jsonResult(map[string]interface{}{
+		"ok":      true,
+		"message": "notification broadcast to all channels",
 	})
 }
 

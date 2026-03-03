@@ -268,9 +268,10 @@ export async function tetherPoll(
   afterSeq: number,
   waitMs = 5000,
   signal?: AbortSignal,
+  channel = 'ui',
 ): Promise<TetherPollResult> {
   const params = new URLSearchParams({
-    channel: 'ui',
+    channel,
     session_id: sessionId,
     after_seq: String(afterSeq),
     wait_ms: String(waitMs),

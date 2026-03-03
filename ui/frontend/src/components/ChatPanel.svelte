@@ -193,6 +193,38 @@
     }
   }
 
+  // Broadcast notification listener — picks up notify() tool output
+  let broadcastSeq = 0
+  let broadcastAbort: AbortController | null = null
+
+  async function startBroadcastPoll() {
+    broadcastAbort = new AbortController()
+    try {
+      while (broadcastAbort && !broadcastAbort.signal.aborted) {
+        const result = await tetherPoll(instanceId, 'notify', broadcastSeq, 10000, broadcastAbort.signal, 'broadcast')
+        broadcastSeq = result.next_seq
+        for (const frame of result.frames) {
+          if (frame.type === 'assistant.notification') {
+            const text = frame.payload?.text || ''
+            if (text) {
+              const { messages } = getChatState(instanceId)
+              updateChatState(instanceId, {
+                messages: [...messages, {
+                  role: 'assistant',
+                  text: `📢 ${text}`,
+                  ts: frame.ts || new Date().toISOString(),
+                }],
+              })
+              scrollToBottom()
+            }
+          }
+        }
+      }
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return
+    }
+  }
+
   async function send() {
     const text = input.trim()
     if (!text || disabled) return
@@ -262,8 +294,12 @@
 
     scrollToBottom()
     catchUp().then(scrollToBottom)
+    startBroadcastPoll()
 
-    return () => stopPolling()
+    return () => {
+      stopPolling()
+      if (broadcastAbort) { broadcastAbort.abort(); broadcastAbort = null }
+    }
   })
 </script>
 

@@ -776,6 +776,38 @@ func (gw *Gateway) handleEgressFrameByChannel(frame TetherFrame) {
 	switch frame.Session.Channel {
 	case "telegram":
 		gw.handleEgressFrame(frame)
+	case "broadcast":
+		gw.handleBroadcastFrame(frame)
+	}
+}
+
+// handleBroadcastFrame sends broadcast notifications to all Telegram chats
+// that have recently interacted with this instance.
+func (gw *Gateway) handleBroadcastFrame(frame TetherFrame) {
+	if frame.Type != "assistant.notification" {
+		return
+	}
+	gw.mu.Lock()
+	cfg := gw.currentConfig
+	gw.mu.Unlock()
+	if cfg == nil || cfg.BotToken == "" {
+		return
+	}
+
+	var payload struct {
+		Text string `json:"text"`
+	}
+	json.Unmarshal(frame.Payload, &payload)
+	if payload.Text == "" {
+		return
+	}
+
+	// Send to all allowed chats
+	for _, chatStr := range cfg.AllowedChats {
+		chatID := parseChatID(chatStr)
+		if chatID != 0 {
+			gw.sendTelegramMessage(chatID, "📢 "+payload.Text, cfg.BotToken)
+		}
 	}
 }
 
