@@ -169,17 +169,15 @@ type Gateway struct {
 }
 
 type gwCronEntry struct {
-	ID         string
-	Schedule   *cron.Schedule
-	Message    string
-	Session    string
-	OnConflict string // "skip" or "queue"
-	Enabled    bool
+	ID       string
+	Schedule *cron.Schedule
+	Message  string
+	Session  string
+	Enabled  bool
 }
 
 type cronState struct {
-	lastFiredMinute string // "2006-01-02T15:04"
-	active          bool   // run in progress
+	lastFiredMinute string // "2006-01-02T15:04" — dedup within same minute
 }
 
 type activeReply struct {
@@ -420,17 +418,12 @@ func (gw *Gateway) checkCronChange() {
 			log.Printf("cron [%s]: invalid schedule %q: %v (skipped)", e.ID, e.Schedule, err)
 			continue
 		}
-		onConflict := e.OnConflict
-		if onConflict == "" {
-			onConflict = "skip"
-		}
 		entries = append(entries, gwCronEntry{
-			ID:         e.ID,
-			Schedule:   sched,
-			Message:    e.Message,
-			Session:    e.Session,
-			OnConflict: onConflict,
-			Enabled:    e.Enabled,
+			ID:       e.ID,
+			Schedule: sched,
+			Message:  e.Message,
+			Session:  e.Session,
+			Enabled:  e.Enabled,
 		})
 	}
 
@@ -439,6 +432,9 @@ func (gw *Gateway) checkCronChange() {
 }
 
 // evaluateCron checks all cron entries and fires matching ones.
+// Fire-and-forget: the gateway sends the tether message and doesn't track
+// whether the agent is done. The agent's session system serializes messages
+// naturally — if the agent is busy, the message queues.
 func (gw *Gateway) evaluateCron() {
 	if len(gw.cronEntries) == 0 {
 		return
@@ -466,14 +462,7 @@ func (gw *Gateway) evaluateCron() {
 			continue
 		}
 
-		if state.active && entry.OnConflict != "queue" {
-			log.Printf("cron [%s]: skipped (previous run still active)", entry.ID)
-			state.lastFiredMinute = nowKey
-			continue
-		}
-
 		state.lastFiredMinute = nowKey
-		state.active = true
 		log.Printf("cron [%s]: firing → session %s", entry.ID, entry.Session)
 		go gw.fireCron(entry)
 	}
@@ -500,17 +489,6 @@ func (gw *Gateway) fireCron(entry gwCronEntry) {
 	}
 }
 
-// markCronIdle marks a cron session as no longer active.
-func (gw *Gateway) markCronIdle(sessionID string) {
-	for _, entry := range gw.cronEntries {
-		if entry.Session == sessionID {
-			if state := gw.cronState[entry.ID]; state != nil {
-				state.active = false
-			}
-			return
-		}
-	}
-}
 
 // TetherFrame for gateway use.
 type TetherFrame struct {
@@ -771,6 +749,7 @@ func (gw *Gateway) subscribeEgress(ctx context.Context) {
 	}
 }
 
+
 func (gw *Gateway) processEgressStream(ctx context.Context, r io.Reader) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 256*1024), 256*1024)
@@ -788,16 +767,15 @@ func (gw *Gateway) processEgressStream(ctx context.Context, r io.Reader) {
 			continue
 		}
 
-		switch frame.Session.Channel {
-		case "telegram":
-			gw.handleEgressFrame(frame)
-		case "cron":
-			if frame.Type == "assistant.done" {
-				gw.markCronIdle(frame.Session.ID)
-			}
-		default:
-			continue
-		}
+		gw.handleEgressFrameByChannel(frame)
+	}
+}
+
+// handleEgressFrameByChannel routes a tether frame to the appropriate handler.
+func (gw *Gateway) handleEgressFrameByChannel(frame TetherFrame) {
+	switch frame.Session.Channel {
+	case "telegram":
+		gw.handleEgressFrame(frame)
 	}
 }
 
@@ -1065,6 +1043,7 @@ func (c *aegisClient) streamTether(ctx context.Context, instanceID string) (io.R
 	}
 	return resp.Body, nil
 }
+
 
 // Legacy config loading (backward compat)
 
