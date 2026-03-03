@@ -1,7 +1,7 @@
 # Integrated Local Inference
 ## Bundled llama-server — Zero-Config Local Models
 
-**Status:** Draft
+**Status:** Deferred — revisit when local models mature beyond toy quality for agentic workloads
 **Scope:** Bundle llama-server with Aegis to provide zero-config local inference with automatic context window sizing. Replace the Ollama hard dependency with an opinionated built-in default while keeping external providers as escape hatches.
 
 ---
