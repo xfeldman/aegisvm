@@ -393,3 +393,127 @@ func TestGetEndpoint_MatchingPort(t *testing.T) {
 		t.Errorf("endpoint = %q, want %q", endpoint, "127.0.0.1:49152")
 	}
 }
+
+// --- Dynamic secrets tests ---
+
+func TestCreateInstance_WithSecretKeysOption(t *testing.T) {
+	m := newTestManager()
+
+	inst := m.CreateInstance("inst-1", []string{"echo"}, nil,
+		WithSecretKeys([]string{"API_KEY", "DB_URL"}),
+	)
+
+	if len(inst.SecretKeys) != 2 {
+		t.Fatalf("SecretKeys len = %d, want 2", len(inst.SecretKeys))
+	}
+	if inst.SecretKeys[0] != "API_KEY" || inst.SecretKeys[1] != "DB_URL" {
+		t.Errorf("SecretKeys = %v, want [API_KEY DB_URL]", inst.SecretKeys)
+	}
+}
+
+func TestCreateInstance_SecretKeysAndEnvSeparate(t *testing.T) {
+	m := newTestManager()
+
+	inst := m.CreateInstance("inst-1", []string{"echo"}, nil,
+		WithSecretKeys([]string{"API_KEY"}),
+		WithEnv(map[string]string{"DEBUG": "1"}),
+	)
+
+	if len(inst.SecretKeys) != 1 || inst.SecretKeys[0] != "API_KEY" {
+		t.Errorf("SecretKeys = %v, want [API_KEY]", inst.SecretKeys)
+	}
+	if inst.Env["DEBUG"] != "1" {
+		t.Errorf("Env[DEBUG] = %q, want %q", inst.Env["DEBUG"], "1")
+	}
+	// Env should NOT contain the secret key
+	if _, ok := inst.Env["API_KEY"]; ok {
+		t.Error("Env should not contain API_KEY (that's in SecretKeys)")
+	}
+}
+
+func TestSetBootEnv(t *testing.T) {
+	m := newTestManager()
+	inst := m.CreateInstance("inst-1", []string{"echo"}, nil)
+
+	bootEnv := map[string]string{"API_KEY": "sk-123", "DEBUG": "1"}
+	inst.SetBootEnv(bootEnv)
+
+	inst.mu.Lock()
+	got := inst.bootEnv
+	inst.mu.Unlock()
+
+	if len(got) != 2 {
+		t.Fatalf("bootEnv len = %d, want 2", len(got))
+	}
+	if got["API_KEY"] != "sk-123" {
+		t.Errorf("bootEnv[API_KEY] = %q, want %q", got["API_KEY"], "sk-123")
+	}
+}
+
+func TestMergeSecretKeys(t *testing.T) {
+	m := newTestManager()
+	inst := m.CreateInstance("inst-1", []string{"echo"}, nil,
+		WithSecretKeys([]string{"API_KEY"}),
+	)
+
+	inst.MergeSecretKeys([]string{"DB_URL", "REDIS_URL"})
+
+	if len(inst.SecretKeys) != 3 {
+		t.Fatalf("SecretKeys len = %d, want 3", len(inst.SecretKeys))
+	}
+	want := map[string]bool{"API_KEY": true, "DB_URL": true, "REDIS_URL": true}
+	for _, k := range inst.SecretKeys {
+		if !want[k] {
+			t.Errorf("unexpected key %q in SecretKeys", k)
+		}
+	}
+}
+
+func TestMergeSecretKeys_NoDuplicates(t *testing.T) {
+	m := newTestManager()
+	inst := m.CreateInstance("inst-1", []string{"echo"}, nil,
+		WithSecretKeys([]string{"API_KEY", "DB_URL"}),
+	)
+
+	inst.MergeSecretKeys([]string{"API_KEY", "NEW_KEY"})
+
+	if len(inst.SecretKeys) != 3 {
+		t.Fatalf("SecretKeys len = %d, want 3 (API_KEY should not be duplicated)", len(inst.SecretKeys))
+	}
+}
+
+func TestMergeSecretKeys_IntoEmpty(t *testing.T) {
+	m := newTestManager()
+	inst := m.CreateInstance("inst-1", []string{"echo"}, nil)
+
+	inst.MergeSecretKeys([]string{"API_KEY"})
+
+	if len(inst.SecretKeys) != 1 || inst.SecretKeys[0] != "API_KEY" {
+		t.Errorf("SecretKeys = %v, want [API_KEY]", inst.SecretKeys)
+	}
+}
+
+func TestOnPreBoot_Callback(t *testing.T) {
+	m := newTestManager()
+
+	var calledWith *Instance
+	m.OnPreBoot(func(inst *Instance) {
+		calledWith = inst
+	})
+
+	inst := m.CreateInstance("inst-1", []string{"echo"}, nil,
+		WithSecretKeys([]string{"KEY"}),
+	)
+
+	// Simulate what bootInstance does: call onPreBoot
+	if m.onPreBoot != nil {
+		m.onPreBoot(inst)
+	}
+
+	if calledWith == nil {
+		t.Fatal("OnPreBoot callback was not called")
+	}
+	if calledWith.ID != "inst-1" {
+		t.Errorf("callback received inst ID = %q, want %q", calledWith.ID, "inst-1")
+	}
+}

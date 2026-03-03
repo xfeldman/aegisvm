@@ -509,11 +509,6 @@ func (m *Manager) EnsureInstance(ctx context.Context, id string) error {
 }
 
 func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
-	// Resolve secrets before boot (e.g., re-decrypt secret keys from store)
-	if m.onPreBoot != nil {
-		m.onPreBoot(inst)
-	}
-
 	inst.mu.Lock()
 	if inst.State != StateStopped {
 		inst.mu.Unlock()
@@ -551,6 +546,11 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 			return fmt.Errorf("prepare image rootfs: %w", err)
 		}
 		inst.RootfsPath = rootfs
+	}
+
+	// Resolve secrets after image env merge so bootEnv includes image defaults
+	if m.onPreBoot != nil {
+		m.onPreBoot(inst)
 	}
 
 	log.Printf("instance %s: rootfs ready, starting VM", inst.ID)
@@ -1556,10 +1556,10 @@ func (m *Manager) ExecInstance(ctx context.Context, id string, command []string,
 	inst.execWaiters[execID] = doneCh
 	inst.mu.Unlock()
 
-	// Merge instance env (includes image env) with caller's exec env.
+	// Merge instance boot env (resolved secrets + image env + explicit env) with caller's exec env.
 	// Caller env wins over instance env.
 	mergedEnv := make(map[string]string)
-	for k, v := range inst.Env {
+	for k, v := range inst.bootEnv {
 		mergedEnv[k] = v
 	}
 	for k, v := range env {

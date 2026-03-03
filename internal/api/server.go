@@ -1841,24 +1841,6 @@ func (s *Server) resolveEnv(secretKeys []string, explicitEnv map[string]string) 
 	return env
 }
 
-// resolveBootEnv resolves an instance's SecretKeys against the current secret
-// store, merges with explicit Env, and sets the result as bootEnv for the next start.
-func (s *Server) resolveBootEnv(inst *lifecycle.Instance) {
-	env := make(map[string]string)
-	// Resolve secret keys from store
-	if len(inst.SecretKeys) > 0 {
-		resolved := s.resolveEnv(inst.SecretKeys, nil)
-		for k, v := range resolved {
-			env[k] = v
-		}
-	}
-	// Explicit env overrides secrets
-	for k, v := range inst.Env {
-		env[k] = v
-	}
-	inst.SetBootEnv(env)
-}
-
 // resolveWorkspace resolves a workspace argument to an absolute path.
 // Named workspaces (no / or . prefix) resolve to ~/.aegis/data/workspaces/<name>.
 // Path workspaces resolve to their absolute path.

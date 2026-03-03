@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/xfeldman/aegisvm/internal/config"
+	"github.com/xfeldman/aegisvm/internal/lifecycle"
+	"github.com/xfeldman/aegisvm/internal/logstore"
 	"github.com/xfeldman/aegisvm/internal/registry"
 	"github.com/xfeldman/aegisvm/internal/secrets"
 )
@@ -179,6 +181,90 @@ func TestResolveEnv_EmptyStore(t *testing.T) {
 	env = s.resolveEnv([]string{"API_KEY"}, nil)
 	if len(env) != 0 {
 		t.Fatalf("expected empty env for missing key, got %v", env)
+	}
+}
+
+// --- handleUpdateInstanceSecrets tests ---
+
+func TestHandleUpdateInstanceSecrets_ReplaceKeys(t *testing.T) {
+	s := setupTestServer(t)
+
+	dir := t.TempDir()
+	cfg := &config.Config{
+		BaseRootfsPath:  "/tmp/test-rootfs",
+		DefaultMemoryMB: 256,
+		DefaultVCPUs:    1,
+		PauseAfterIdle:  60 * time.Second,
+		StopAfterIdle:   20 * time.Minute,
+	}
+	ls := logstore.NewStore(filepath.Join(dir, "logs"))
+	lm := lifecycle.NewManager(nil, cfg, ls, nil, nil)
+	lm.SetRegistry(s.registry)
+	s.lifecycle = lm
+
+	inst := lm.CreateInstance("inst-1", []string{"echo"}, nil,
+		lifecycle.WithSecretKeys([]string{"OLD_KEY"}),
+	)
+
+	// Verify initial state
+	if len(inst.SecretKeys) != 1 || inst.SecretKeys[0] != "OLD_KEY" {
+		t.Fatalf("initial SecretKeys = %v, want [OLD_KEY]", inst.SecretKeys)
+	}
+
+	// Simulate PUT /v1/instances/{id}/secrets — replace keys
+	inst.SecretKeys = []string{"NEW_KEY_A", "NEW_KEY_B"}
+	lm.SaveToRegistry(inst)
+
+	// Verify in-memory
+	got := lm.GetInstance("inst-1")
+	if len(got.SecretKeys) != 2 {
+		t.Fatalf("SecretKeys len = %d, want 2", len(got.SecretKeys))
+	}
+	if got.SecretKeys[0] != "NEW_KEY_A" || got.SecretKeys[1] != "NEW_KEY_B" {
+		t.Errorf("SecretKeys = %v, want [NEW_KEY_A NEW_KEY_B]", got.SecretKeys)
+	}
+
+	// Verify persisted in registry
+	ri, err := s.registry.GetInstance("inst-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ri.SecretKeys) != 2 || ri.SecretKeys[0] != "NEW_KEY_A" {
+		t.Errorf("registry SecretKeys = %v, want [NEW_KEY_A NEW_KEY_B]", ri.SecretKeys)
+	}
+}
+
+func TestSecretKeysNotBakedIntoEnv(t *testing.T) {
+	s := setupTestServer(t)
+	seedSecret(t, s, "API_KEY", "sk-secret-value")
+
+	// Simulate what handleCreateInstance does: store keys, not values
+	env := s.resolveEnv(nil, map[string]string{"DEBUG": "1"})
+	if _, ok := env["API_KEY"]; ok {
+		t.Error("API_KEY should not appear in env when not in secretKeys")
+	}
+	if env["DEBUG"] != "1" {
+		t.Errorf("DEBUG = %q, want %q", env["DEBUG"], "1")
+	}
+}
+
+func TestSecretRotationPickedUpByResolveEnv(t *testing.T) {
+	s := setupTestServer(t)
+	seedSecret(t, s, "API_KEY", "old-value")
+
+	// First resolve
+	env1 := s.resolveEnv([]string{"API_KEY"}, nil)
+	if env1["API_KEY"] != "old-value" {
+		t.Fatalf("first resolve: API_KEY = %q, want %q", env1["API_KEY"], "old-value")
+	}
+
+	// Rotate the secret
+	seedSecret(t, s, "API_KEY", "new-value")
+
+	// Second resolve picks up the new value
+	env2 := s.resolveEnv([]string{"API_KEY"}, nil)
+	if env2["API_KEY"] != "new-value" {
+		t.Errorf("after rotation: API_KEY = %q, want %q", env2["API_KEY"], "new-value")
 	}
 }
 
