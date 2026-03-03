@@ -468,11 +468,9 @@ func cmdRun() {
 		os.Exit(1)
 	}
 
-	// Default to python:3.12-alpine if no --image and no base-rootfs
+	// Default to python:3.12-alpine if no --image specified
 	if imageRef == "" {
-		if _, err := os.Stat(baseRootfsPath()); os.IsNotExist(err) {
-			imageRef = defaultImage
-		}
+		imageRef = defaultImage
 	}
 
 	// If no workspace provided, allocate a temporary named workspace
@@ -774,14 +772,6 @@ func doctorLinux() {
 		fmt.Printf("kernel:             not found (install via: make kernel)\n")
 	}
 
-	// Base rootfs
-	rootfsPath := filepath.Join(aegisDir, "base-rootfs.ext4")
-	if info, err := os.Stat(rootfsPath); err == nil {
-		fmt.Printf("base-rootfs:        found at %s (%dMB)\n", rootfsPath, info.Size()/(1024*1024))
-	} else {
-		fmt.Printf("base-rootfs:        not found (install via: aegis rootfs pull python)\n")
-	}
-
 }
 
 func boolYesNo(v bool) string {
@@ -890,11 +880,9 @@ func cmdInstanceStart(client *http.Client) {
 		os.Exit(1)
 	}
 
-	// Default to python:3.12-alpine if no --image and no base-rootfs
+	// Default to python:3.12-alpine if no --image specified
 	if imageRef == "" && len(command) > 0 {
-		if _, err := os.Stat(baseRootfsPath()); os.IsNotExist(err) {
-			imageRef = defaultImage
-		}
+		imageRef = defaultImage
 	}
 
 	reqBody := map[string]interface{}{}
@@ -1922,14 +1910,8 @@ type kitManifest struct {
 
 // --- Default image ---
 //
-// When no --image is specified and no base-rootfs exists, the CLI
-// automatically sets image_ref to defaultImage. aegisd's existing
-// OCI pull/cache mechanism handles the rest — no separate rootfs
-// download infrastructure needed.
+// When no --image is specified, the CLI defaults to defaultImage.
+// aegisd's OCI pull/cache mechanism handles the rest.
 
 const defaultImage = "python:3.12-alpine"
 
-func baseRootfsPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".aegis", "base-rootfs")
-}

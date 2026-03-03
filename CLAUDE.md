@@ -35,13 +35,12 @@ make aegisd       # Daemon
 make aegis        # CLI
 make harness      # Guest harness (GOOS=linux GOARCH=arm64)
 make mcp          # MCP server for LLM integration
-make base-rootfs  # Alpine ARM64 ext4 with harness
 ```
 
 ## Dev Loop
 
 ```bash
-brew install libkrun e2fsprogs
+brew install libkrun
 make all
 ./bin/aegisd &
 ./bin/aegis run -- echo hello
@@ -74,6 +73,7 @@ aegis ui [--port PORT]                                               (web UI, de
 - **NEVER run `go build` directly** — always use `make` targets. All binaries must go into `./bin/`, never the repo root. A bare `aegisd` or `aegis-harness` in the repo root will shadow the real binaries and break the daemon (it resolves companion binaries relative to its own location).
 - To compile and test: `make all`
 - To compile a single binary: `make aegisd`, `make harness`, etc.
+- **After changing harness code**: delete existing instances (`aegis down && rm -rf ~/.aegis/data/overlays`) so the next boot injects the fresh harness into a new overlay. OCI image cache (`~/.aegis/data/images`) can stay — only the overlays bake in the harness binary.
 
 ## Conventions
 

@@ -71,7 +71,7 @@ type Instance struct {
 	// ImageRef is the OCI image reference (e.g. "python:3.12-alpine").
 	ImageRef string
 
-	RootfsPath    string // if set, used instead of cfg.BaseRootfsPath
+	RootfsPath    string // rootfs path (set by image preparation)
 	WorkspacePath string // if set, passed to VMConfig.WorkspacePath
 	AutoWorkspace bool   // true = workspace auto-created, delete on instance delete
 
@@ -555,10 +555,7 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 
 	log.Printf("instance %s: rootfs ready, starting VM", inst.ID)
 
-	rootfsPath := m.cfg.BaseRootfsPath
-	if inst.RootfsPath != "" {
-		rootfsPath = inst.RootfsPath
-	}
+	rootfsPath := inst.RootfsPath
 
 	// If the backend needs a block image and we have a directory, convert it.
 	// Reuse existing ext4 image if present — preserves in-VM changes (installed
@@ -1213,7 +1210,7 @@ func (m *Manager) prepareImageRootfs(ctx context.Context, inst *Instance) (strin
 
 // dirToExt4 creates an ext4 block image from a directory.
 // Used when the backend requires RootFSBlockImage but the rootfs is a directory
-// (e.g. OCI image overlay or base-rootfs directory on Linux).
+// (e.g. OCI image overlay directory on Linux).
 func dirToExt4(dir string, sizeMB int) (string, error) {
 	out := dir + ".ext4"
 	cmd := exec.Command("mkfs.ext4", "-d", dir, "-L", "aegis", out, fmt.Sprintf("%dM", sizeMB))

@@ -19,9 +19,6 @@ type Config struct {
 	// SocketPath is the unix socket path for the aegisd API.
 	SocketPath string
 
-	// BaseRootfsPath is the path to the base rootfs directory.
-	BaseRootfsPath string
-
 	// DefaultMemoryMB is the default VM memory in megabytes.
 	DefaultMemoryMB int
 
@@ -80,12 +77,6 @@ func DefaultConfig() *Config {
 	aegisDir := filepath.Join(homeDir, ".aegis")
 	execDir := executableDir()
 
-	// Platform-specific base rootfs path
-	baseRootfs := filepath.Join(aegisDir, "base-rootfs")
-	if runtime.GOOS == "linux" {
-		baseRootfs = filepath.Join(aegisDir, "base-rootfs.ext4")
-	}
-
 	// Kernel path: prefer user-local, fall back to system package path
 	kernelPath := filepath.Join(aegisDir, "kernel", "vmlinux")
 	if runtime.GOOS == "linux" {
@@ -101,7 +92,6 @@ func DefaultConfig() *Config {
 		DataDir:            filepath.Join(aegisDir, "data"),
 		BinDir:             execDir,
 		SocketPath:         filepath.Join(aegisDir, "aegisd.sock"),
-		BaseRootfsPath:     baseRootfs,
 		DefaultMemoryMB:    512,
 		DefaultVCPUs:       1,
 		RouterAddr:         "127.0.0.1:8099",

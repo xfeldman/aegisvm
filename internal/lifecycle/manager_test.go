@@ -16,7 +16,6 @@ import (
 // call into the VMM backend.
 func newTestManager() *Manager {
 	cfg := &config.Config{
-		BaseRootfsPath:  "/tmp/test-rootfs",
 		DefaultMemoryMB: 256,
 		DefaultVCPUs:    1,
 		PauseAfterIdle:  60 * time.Second,

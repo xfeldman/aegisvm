@@ -191,7 +191,6 @@ func TestHandleUpdateInstanceSecrets_ReplaceKeys(t *testing.T) {
 
 	dir := t.TempDir()
 	cfg := &config.Config{
-		BaseRootfsPath:  "/tmp/test-rootfs",
 		DefaultMemoryMB: 256,
 		DefaultVCPUs:    1,
 		PauseAfterIdle:  60 * time.Second,

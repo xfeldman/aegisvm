@@ -1,5 +1,5 @@
 # Aegis Makefile
-# Build aegisd, aegis CLI, harness, and base rootfs
+# Build aegisd, aegis CLI, harness, and tools
 
 SHELL := /bin/bash
 
@@ -51,7 +51,7 @@ else
 ALL_TARGETS := aegisd aegis harness vmm-worker mcp mcp-guest gateway agent
 endif
 
-.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent base-rootfs clean test test-unit test-m2 test-m3 test-network integration install-kit release-tarball release-kit-tarball cloud-hypervisor kernel kernel-build deb deb-agent-kit release-linux-tarball ui ui-frontend desktop package-mac package-linux-appimage
+.PHONY: all aegisd aegis harness vmm-worker mcp mcp-guest gateway agent clean test test-unit test-m2 test-m3 test-network integration install-kit release-tarball release-kit-tarball cloud-hypervisor kernel kernel-build deb deb-agent-kit release-linux-tarball ui ui-frontend desktop package-mac package-linux-appimage
 
 all: $(ALL_TARGETS)
 
@@ -212,10 +212,6 @@ package-linux-appimage: all desktop
 	@rm -rf $(APPDIR)
 	@echo "==> Built AegisVM-$(VERSION)-$(HOST_ARCH).AppImage"
 
-# Base rootfs — Alpine with harness baked in
-# Requires: brew install e2fsprogs (for mkfs.ext4)
-base-rootfs: harness
-	$(MAKE) -C base
 
 # Download Cloud Hypervisor static binary (Linux only)
 cloud-hypervisor:
@@ -346,7 +342,7 @@ else
 endif
 
 # Run Linux-specific integration tests (Cloud Hypervisor backend)
-# Requires: sudo, kernel, cloud-hypervisor, virtiofsd, base-rootfs.ext4
+# Requires: sudo, kernel, cloud-hypervisor, virtiofsd
 # Use SHORT=1 to skip snapshot/pause tests
 test-linux: all
 ifdef SHORT
