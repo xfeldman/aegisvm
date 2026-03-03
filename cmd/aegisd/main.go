@@ -180,6 +180,36 @@ func main() {
 		persistPublicPorts(id)
 	})
 
+	// Pre-boot: resolve secret keys into bootEnv before each instance starts.
+	// This ensures rotated or newly-added secrets are picked up on every boot.
+	lm.OnPreBoot(func(inst *lifecycle.Instance) {
+		env := make(map[string]string)
+		if len(inst.SecretKeys) > 0 {
+			injectAll := len(inst.SecretKeys) == 1 && inst.SecretKeys[0] == "*"
+			var allowlist map[string]bool
+			if !injectAll {
+				allowlist = make(map[string]bool, len(inst.SecretKeys))
+				for _, k := range inst.SecretKeys {
+					allowlist[k] = true
+				}
+			}
+			secrets, _ := reg.ListSecrets()
+			for _, sec := range secrets {
+				if injectAll || allowlist[sec.Name] {
+					val, err := ss.DecryptString(sec.EncryptedValue)
+					if err == nil {
+						env[sec.Name] = val
+					}
+				}
+			}
+		}
+		// Explicit env overrides secrets
+		for k, v := range inst.Env {
+			env[k] = v
+		}
+		inst.SetBootEnv(env)
+	})
+
 	// Create daemon manager for per-instance sidecar processes (e.g., gateways)
 	dm := daemon.NewManager(cfg.BinDir, cfg.DataDir, cfg.SocketPath)
 
@@ -206,6 +236,9 @@ func main() {
 			}
 			if len(ri.Env) > 0 {
 				opts = append(opts, lifecycle.WithEnv(ri.Env))
+			}
+			if len(ri.SecretKeys) > 0 {
+				opts = append(opts, lifecycle.WithSecretKeys(ri.SecretKeys))
 			}
 			opts = append(opts, lifecycle.WithEnabled(ri.Enabled))
 			if ri.MemoryMB > 0 {
@@ -268,7 +301,31 @@ func main() {
 				if handle == "" {
 					handle = ri.ID
 				}
-				if err := dm.StartDaemons(ri.ID, handle, ri.Kit, inst.Env); err != nil {
+				// Resolve secrets for daemon env
+				daemonEnv := make(map[string]string)
+				if len(inst.SecretKeys) > 0 {
+					injectAll := len(inst.SecretKeys) == 1 && inst.SecretKeys[0] == "*"
+					var allowlist map[string]bool
+					if !injectAll {
+						allowlist = make(map[string]bool, len(inst.SecretKeys))
+						for _, k := range inst.SecretKeys {
+							allowlist[k] = true
+						}
+					}
+					secs, _ := reg.ListSecrets()
+					for _, sec := range secs {
+						if injectAll || allowlist[sec.Name] {
+							val, err := ss.DecryptString(sec.EncryptedValue)
+							if err == nil {
+								daemonEnv[sec.Name] = val
+							}
+						}
+					}
+				}
+				for k, v := range inst.Env {
+					daemonEnv[k] = v
+				}
+				if err := dm.StartDaemons(ri.ID, handle, ri.Kit, daemonEnv); err != nil {
 					log.Printf("start daemons for %s: %v", ri.ID, err)
 				}
 			}

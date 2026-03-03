@@ -270,7 +270,6 @@
     </div>
 
 
-
   </div>
 {/if}
 
@@ -432,5 +431,6 @@
     text-align: center;
     padding: 40px;
   }
+
 
 </style>

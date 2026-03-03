@@ -14,6 +14,7 @@ export interface Instance {
   kit_version?: string
   harness_version?: string
   workspace?: string
+  secret_keys?: string[]
   created_at: string
   stopped_at?: string
   last_active_at?: string
@@ -139,6 +140,9 @@ export const createInstance = (req: CreateInstanceRequest) =>
 
 export const exposePort = (id: string, guestPort: number, protocol = 'http') =>
   request<Endpoint>('POST', `/instances/${encodeURIComponent(id)}/expose`, { port: guestPort, protocol })
+
+export const updateInstanceSecrets = (id: string, secrets: string[]) =>
+  request<{ secret_keys: string[]; restart_required?: boolean }>('PUT', `/instances/${encodeURIComponent(id)}/secrets`, { secrets })
 
 // Secrets
 export const listSecrets = () =>

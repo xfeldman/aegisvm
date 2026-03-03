@@ -79,8 +79,15 @@ type Instance struct {
 	MemoryMB int
 	VCPUs    int
 
-	// Env holds environment variables to inject (including decrypted secrets).
+	// Env holds explicit (non-secret) environment variables to inject.
 	Env map[string]string
+
+	// SecretKeys lists secret names to resolve from the store at boot time.
+	SecretKeys []string
+
+	// bootEnv is the merged env (secrets + Env) computed at boot time.
+	// Not persisted — recomputed on every start.
+	bootEnv map[string]string
 
 	// Connection tracking
 	activeConns int
@@ -137,6 +144,30 @@ func (inst *Instance) FirstGuestPort() int {
 	return 0
 }
 
+// SetBootEnv sets the env for the next boot without persisting to registry.
+// This is the merged result of resolved secrets + explicit Env.
+func (inst *Instance) SetBootEnv(env map[string]string) {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	inst.bootEnv = env
+}
+
+// MergeSecretKeys adds new keys to SecretKeys without duplicates.
+func (inst *Instance) MergeSecretKeys(keys []string) {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	existing := make(map[string]bool, len(inst.SecretKeys))
+	for _, k := range inst.SecretKeys {
+		existing[k] = true
+	}
+	for _, k := range keys {
+		if !existing[k] {
+			inst.SecretKeys = append(inst.SecretKeys, k)
+			existing[k] = true
+		}
+	}
+}
+
 // Manager owns instances and drives their lifecycle.
 type Manager struct {
 	mu        sync.Mutex
@@ -157,6 +188,7 @@ type Manager struct {
 	getPublicPorts  func(id string) map[int]int                     // guestPort → publicPort lookup
 	onExposePort    func(id string, guestPort, publicPort int, protocol string) (int, error) // runtime expose
 	onUnexposePort  func(id string, guestPort int)                  // runtime unexpose
+	onPreBoot       func(inst *Instance)                            // resolve secrets before boot
 }
 
 // NewManager creates a lifecycle manager.
@@ -198,6 +230,7 @@ func (m *Manager) saveToRegistry(inst *Instance) {
 		Workspace:      inst.WorkspacePath,
 		AutoWorkspace:  inst.AutoWorkspace,
 		Env:            inst.Env,
+		SecretKeys:     inst.SecretKeys,
 		Enabled:        inst.Enabled,
 		MemoryMB:     inst.MemoryMB,
 		VCPUs:        inst.VCPUs,
@@ -209,6 +242,11 @@ func (m *Manager) saveToRegistry(inst *Instance) {
 	if err := m.registry.SaveInstance(regInst); err != nil {
 		log.Printf("save instance to registry: %v", err)
 	}
+}
+
+// SaveToRegistry persists the current instance state to the registry database.
+func (m *Manager) SaveToRegistry(inst *Instance) {
+	m.saveToRegistry(inst)
 }
 
 // OnStateChange registers a callback for state changes (e.g., to persist to registry).
@@ -231,6 +269,12 @@ func (m *Manager) OnExposePort(fn func(id string, guestPort, publicPort int, pro
 // OnUnexposePort registers a callback for runtime port unexpose.
 func (m *Manager) OnUnexposePort(fn func(id string, guestPort int)) {
 	m.onUnexposePort = fn
+}
+
+// OnPreBoot registers a callback invoked before each instance boot.
+// Used by the API server to resolve secrets into bootEnv.
+func (m *Manager) OnPreBoot(fn func(inst *Instance)) {
+	m.onPreBoot = fn
 }
 
 // SetPublicPortsLookup registers a function to query router public ports.
@@ -322,6 +366,13 @@ func WithAutoWorkspace() InstanceOption {
 func WithEnv(env map[string]string) InstanceOption {
 	return func(inst *Instance) {
 		inst.Env = env
+	}
+}
+
+// WithSecretKeys sets the secret names to resolve from the store at boot time.
+func WithSecretKeys(keys []string) InstanceOption {
+	return func(inst *Instance) {
+		inst.SecretKeys = keys
 	}
 }
 
@@ -458,6 +509,11 @@ func (m *Manager) EnsureInstance(ctx context.Context, id string) error {
 }
 
 func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
+	// Resolve secrets before boot (e.g., re-decrypt secret keys from store)
+	if m.onPreBoot != nil {
+		m.onPreBoot(inst)
+	}
+
 	inst.mu.Lock()
 	if inst.State != StateStopped {
 		inst.mu.Unlock()
@@ -647,8 +703,8 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 	rpcParams := map[string]interface{}{
 		"command": inst.Command,
 	}
-	if len(inst.Env) > 0 {
-		rpcParams["env"] = inst.Env
+	if len(inst.bootEnv) > 0 {
+		rpcParams["env"] = inst.bootEnv
 	}
 	if len(inst.ExposePorts) > 0 {
 		var ports []int

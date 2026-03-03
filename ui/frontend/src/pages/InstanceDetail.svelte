@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { getInstance, startInstance, disableInstance, deleteInstance, openInBrowser, type Instance } from '../lib/api'
+  import { getInstance, startInstance, disableInstance, deleteInstance, openInBrowser, listSecrets, updateInstanceSecrets, type Instance, type SecretInfo } from '../lib/api'
   import { addToast, showConfirm, consumePendingPort, loadOpenPorts, saveOpenPorts } from '../lib/store.svelte'
   import LogViewer from '../components/LogViewer.svelte'
   import CommandRunner from '../components/CommandRunner.svelte'
@@ -22,10 +22,17 @@
 
   let canExec = $derived(instance?.enabled !== false)
 
+  let secretsInitialized = false
+
   async function load() {
     try {
       instance = await getInstance(id)
       error = null
+      // Sync bound keys on first load only (don't overwrite user edits on poll)
+      if (!secretsInitialized) {
+        syncBoundKeys()
+        secretsInitialized = true
+      }
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to load instance'
     }
@@ -109,6 +116,68 @@
     try { iframeEl?.contentWindow?.history.forward() } catch {}
   }
 
+  // --- Propagated secrets ---
+  let allSecrets: SecretInfo[] = $state([])
+  let boundKeys: string[] = $state([])
+  let originalBoundKeys: string[] = $state([])
+  let secretsDirty = $derived(JSON.stringify([...boundKeys].sort()) !== JSON.stringify([...originalBoundKeys].sort()))
+  let savingSecrets = $state(false)
+  let restartRequired = $state(false)
+
+  async function loadSecrets() {
+    try {
+      const secrets = await listSecrets()
+      allSecrets = secrets
+    } catch {}
+  }
+
+  function syncBoundKeys() {
+    if (instance) {
+      boundKeys = instance.secret_keys ? [...instance.secret_keys] : []
+      originalBoundKeys = [...boundKeys]
+      restartRequired = false
+    }
+  }
+
+  function toggleSecret(name: string) {
+    if (boundKeys.includes(name)) {
+      boundKeys = boundKeys.filter(k => k !== name)
+    } else {
+      boundKeys = [...boundKeys, name]
+    }
+  }
+
+  async function saveSecrets() {
+    if (!instance) return
+    const ref = instance.handle || instance.id
+    savingSecrets = true
+    try {
+      const result = await updateInstanceSecrets(ref, boundKeys)
+      originalBoundKeys = [...boundKeys]
+      if (result.restart_required) {
+        restartRequired = true
+      }
+      addToast('Secrets updated', 'success')
+    } catch (e) {
+      addToast(`Save failed: ${e instanceof Error ? e.message : 'unknown'}`, 'error')
+    } finally {
+      savingSecrets = false
+    }
+  }
+
+  async function doRestart() {
+    if (!instance) return
+    const ref = instance.handle || instance.id
+    try {
+      await startInstance(ref)
+      restartRequired = false
+      addToast('Restart requested', 'success')
+      setTimeout(load, 500)
+    } catch (e) {
+      addToast(`Restart failed: ${e instanceof Error ? e.message : 'unknown'}`, 'error')
+    }
+  }
+
   onMount(() => {
     // Restore persisted port tabs
     const saved = loadOpenPorts(id)
@@ -119,6 +188,7 @@
     if (pending) openPort(pending)
 
     load()
+    loadSecrets()
     pollTimer = setInterval(load, 5000)
     return () => clearInterval(pollTimer)
   })
@@ -234,6 +304,28 @@
             </div>
           {/if}
         </div>
+
+        {#if allSecrets.length > 0}
+          <div class="secrets-panel">
+            <span class="field-label">Propagated Secrets</span>
+            <div class="secrets-list">
+              {#each allSecrets as secret}
+                <label class="secret-item">
+                  <input type="checkbox" checked={boundKeys.includes(secret.name)} onchange={() => toggleSecret(secret.name)} />
+                  <code>{secret.name}</code>
+                </label>
+              {/each}
+            </div>
+            <div class="secrets-actions">
+              <button class="btn" onclick={saveSecrets} disabled={savingSecrets || !secretsDirty}>
+                {savingSecrets ? 'Saving...' : 'Save'}
+              </button>
+              {#if restartRequired}
+                <button class="btn btn-restart" onclick={doRestart}>Restart to apply</button>
+              {/if}
+            </div>
+          </div>
+        {/if}
       {:else if tab === 'logs'}
         <LogViewer instanceId={instance.handle || instance.id} />
       {:else if tab === 'exec'}
@@ -517,6 +609,42 @@
   }
 
   .text-muted { color: var(--text-muted); font-size: 12px; }
+
+  /* Propagated secrets */
+  .secrets-panel {
+    margin-top: 12px;
+    padding: 12px 16px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .secrets-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+  }
+  .secret-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .secret-item code { color: var(--text); }
+  .secrets-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin-top: 4px;
+  }
+  .btn-restart {
+    color: var(--accent);
+    border-color: rgba(88, 166, 255, 0.3);
+  }
+  .btn-restart:hover { background: rgba(88, 166, 255, 0.1); border-color: var(--accent); }
 
   .error-msg {
     color: var(--red);

@@ -74,6 +74,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v1/instances/{id}/resume", s.handleResumeInstance)
 	s.mux.HandleFunc("POST /v1/instances/{id}/expose", s.handleExposePort)
 	s.mux.HandleFunc("DELETE /v1/instances/{id}/expose/{guest_port}", s.handleUnexposePort)
+	s.mux.HandleFunc("PUT /v1/instances/{id}/secrets", s.handleUpdateInstanceSecrets)
 	s.mux.HandleFunc("DELETE /v1/instances/{id}", s.handleDeleteInstance)
 	s.mux.HandleFunc("POST /v1/instances/prune", s.handlePruneInstances)
 
@@ -323,10 +324,12 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	if req.ImageRef != "" {
 		opts = append(opts, lifecycle.WithImageRef(req.ImageRef))
 	}
-	// Resolve secrets + env into final env map
-	env := s.resolveEnv(req.Secrets, req.Env)
-	if len(env) > 0 {
-		opts = append(opts, lifecycle.WithEnv(env))
+	// Store secret key names (resolved at boot time, not baked into Env)
+	if len(req.Secrets) > 0 {
+		opts = append(opts, lifecycle.WithSecretKeys(req.Secrets))
+	}
+	if len(req.Env) > 0 {
+		opts = append(opts, lifecycle.WithEnv(req.Env))
 	}
 	if req.Workspace != "" {
 		resolved := s.resolveWorkspace(req.Workspace)
@@ -376,7 +379,8 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		if handle == "" {
 			handle = id
 		}
-		if err := s.daemons.StartDaemons(id, handle, req.Kit, env); err != nil {
+		daemonEnv := s.resolveEnv(req.Secrets, req.Env)
+		if err := s.daemons.StartDaemons(id, handle, req.Kit, daemonEnv); err != nil {
 			log.Printf("instance %s start daemons: %v", id, err)
 		}
 	}
@@ -417,6 +421,12 @@ func (s *Server) handleRestartOrConflict(w http.ResponseWriter, inst *lifecycle.
 		return
 	}
 
+	// Merge new secret keys if provided (additive)
+	if len(req.Secrets) > 0 {
+		inst.MergeSecretKeys(req.Secrets)
+		s.lifecycle.SaveToRegistry(inst)
+	}
+
 	s.ensurePortListeners(inst)
 
 	// Start instance daemons on re-enable
@@ -425,7 +435,8 @@ func (s *Server) handleRestartOrConflict(w http.ResponseWriter, inst *lifecycle.
 		if handle == "" {
 			handle = inst.ID
 		}
-		if err := s.daemons.StartDaemons(inst.ID, handle, inst.Kit, inst.Env); err != nil {
+		daemonEnv := s.resolveEnv(inst.SecretKeys, inst.Env)
+		if err := s.daemons.StartDaemons(inst.ID, handle, inst.Kit, daemonEnv); err != nil {
 			log.Printf("instance %s start daemons: %v", inst.ID, err)
 		}
 	}
@@ -495,6 +506,9 @@ func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	if inst.HarnessVersion != "" {
 		resp["harness_version"] = inst.HarnessVersion
+	}
+	if len(inst.SecretKeys) > 0 {
+		resp["secret_keys"] = inst.SecretKeys
 	}
 	if inst.WorkspacePath != "" {
 		resp["workspace"] = inst.WorkspacePath
@@ -905,7 +919,8 @@ func (s *Server) handleStartInstance(w http.ResponseWriter, r *http.Request) {
 		if handle == "" {
 			handle = inst.ID
 		}
-		if err := s.daemons.StartDaemons(inst.ID, handle, inst.Kit, inst.Env); err != nil {
+		daemonEnv := s.resolveEnv(inst.SecretKeys, inst.Env)
+		if err := s.daemons.StartDaemons(inst.ID, handle, inst.Kit, daemonEnv); err != nil {
 			log.Printf("instance %s start daemons: %v", inst.ID, err)
 		}
 	}
@@ -924,6 +939,42 @@ func (s *Server) handleStartInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "starting"})
+}
+
+func (s *Server) handleUpdateInstanceSecrets(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+
+	// Resolve by ID or handle
+	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	var req struct {
+		Secrets []string `json:"secrets"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
+		return
+	}
+
+	// Replace (not merge) the instance's SecretKeys
+	inst.SecretKeys = req.Secrets
+	s.lifecycle.SaveToRegistry(inst)
+
+	resp := map[string]interface{}{
+		"secret_keys": inst.SecretKeys,
+	}
+	// Signal if a restart is needed to pick up the changes
+	if inst.State == lifecycle.StateRunning || inst.State == lifecycle.StatePaused {
+		resp["restart_required"] = true
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleDisableInstance(w http.ResponseWriter, r *http.Request) {
@@ -1788,6 +1839,24 @@ func (s *Server) resolveEnv(secretKeys []string, explicitEnv map[string]string) 
 		env[k] = v
 	}
 	return env
+}
+
+// resolveBootEnv resolves an instance's SecretKeys against the current secret
+// store, merges with explicit Env, and sets the result as bootEnv for the next start.
+func (s *Server) resolveBootEnv(inst *lifecycle.Instance) {
+	env := make(map[string]string)
+	// Resolve secret keys from store
+	if len(inst.SecretKeys) > 0 {
+		resolved := s.resolveEnv(inst.SecretKeys, nil)
+		for k, v := range resolved {
+			env[k] = v
+		}
+	}
+	// Explicit env overrides secrets
+	for k, v := range inst.Env {
+		env[k] = v
+	}
+	inst.SetBootEnv(env)
 }
 
 // resolveWorkspace resolves a workspace argument to an absolute path.
