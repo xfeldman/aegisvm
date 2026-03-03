@@ -302,9 +302,9 @@ test-unit:
 # Run M2 integration tests only
 test-m2: all
 ifdef SHORT
-	$(GO) test -tags integration -v -count=1 -short -timeout 10m -run 'TestRunWithImage|TestApp|TestM1Backward' ./test/integration/
+	$(GO) test -tags integration -v -count=1 -short -timeout 10m -run 'TestRunWithImage|TestApp|TestM1Backward|TestRestart' ./test/integration/
 else
-	$(GO) test -tags integration -v -count=1 -timeout 10m -run 'TestRunWithImage|TestApp|TestM1Backward' ./test/integration/
+	$(GO) test -tags integration -v -count=1 -timeout 10m -run 'TestRunWithImage|TestApp|TestM1Backward|TestRestart' ./test/integration/
 endif
 
 # Run M3 integration + conformance tests
