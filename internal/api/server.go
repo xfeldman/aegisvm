@@ -295,12 +295,20 @@ type createInstanceRequest struct {
 	Kit          string                    `json:"kit,omitempty"`
 }
 
+const defaultImage = "python:3.12-alpine"
+
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	var req createInstanceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
 		return
 	}
+
+	// Default to OCI image if none specified
+	if req.ImageRef == "" {
+		req.ImageRef = defaultImage
+	}
+
 	// Idempotent start: if handle exists, restart if stopped or conflict if running
 	if req.Handle != "" {
 		if existing := s.lifecycle.GetInstanceByHandle(req.Handle); existing != nil {

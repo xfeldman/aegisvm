@@ -106,6 +106,11 @@ func (m *Manager) guestSpawn(parent *Instance, token *CapabilityToken, params js
 		return nil, fmt.Errorf("expose_ports count %d exceeds cap %d", len(req.Exposes), token.MaxExposePorts)
 	}
 
+	// Default to OCI image if none specified
+	if req.ImageRef == "" {
+		req.ImageRef = "python:3.12-alpine"
+	}
+
 	// Check image allowlist
 	if len(token.AllowedImages) > 0 && req.ImageRef != "" {
 		allowed := false
