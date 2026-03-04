@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, tick } from 'svelte'
   import { tetherSend, tetherPoll, setTetherWatermark, openInBrowser, type TetherFrame } from '../lib/api'
   import { getChatState, initChatState, updateChatState, addToast, clearUnreadMessages, type ChatMessage } from '../lib/store.svelte'
   import { marked } from 'marked'
@@ -51,11 +51,11 @@
 
   const SESSION_ID = 'default'
 
-  function scrollToBottom() {
-    if (messagesEl && autoScroll) {
-      requestAnimationFrame(() => {
-        messagesEl.scrollTop = messagesEl.scrollHeight
-      })
+  async function scrollToBottom() {
+    if (!autoScroll) return
+    await tick()
+    if (messagesEl) {
+      messagesEl.scrollTop = messagesEl.scrollHeight
     }
   }
 
@@ -230,7 +230,16 @@
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       send()
+      // Reset height after send
+      const ta = e.target as HTMLTextAreaElement
+      if (ta) { ta.style.height = 'auto' }
     }
+  }
+
+  function autoResize(e: Event) {
+    const ta = e.target as HTMLTextAreaElement
+    ta.style.height = 'auto'
+    ta.style.height = Math.min(ta.scrollHeight, 72) + 'px' // 3 lines ≈ 72px
   }
 
   // On mount: reload full conversation from tether (server is authoritative).
@@ -267,8 +276,7 @@
       }
     }
 
-    scrollToBottom()
-    catchUp().then(scrollToBottom)
+    catchUp().then(() => scrollToBottom())
 
     return () => stopStream()
   })
@@ -317,13 +325,15 @@
     {/if}
   </div>
   <div class="input-bar">
-    <input
-      type="text"
+    <textarea
+      class="chat-input"
       bind:value={input}
       onkeydown={onKeydown}
+      oninput={autoResize}
       placeholder={disabled ? 'Instance is disabled' : 'Message the agent...'}
       {disabled}
-    />
+      rows="1"
+    ></textarea>
     <button class="send-btn" onclick={send} disabled={disabled || !input.trim()}>Send</button>
   </div>
 </div>
@@ -579,14 +589,14 @@
 
   .input-bar {
     display: flex;
-    align-items: center;
+    align-items: flex-end;
     gap: 8px;
     padding: 8px 12px;
     background: var(--bg-secondary);
     border-top: 1px solid var(--border);
   }
 
-  input {
+  .chat-input {
     flex: 1;
     background: var(--bg);
     border: 1px solid var(--border);
@@ -594,12 +604,17 @@
     padding: 8px 12px;
     color: var(--text);
     font-size: 13px;
+    font-family: inherit;
     outline: none;
+    resize: none;
+    line-height: 1.4;
+    max-height: 72px;
+    overflow-y: auto;
   }
-  input:focus {
+  .chat-input:focus {
     border-color: var(--accent);
   }
-  input:disabled {
+  .chat-input:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
