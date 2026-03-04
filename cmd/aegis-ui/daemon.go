@@ -236,6 +236,12 @@ func ensureDesktopSetupLinux() {
 		}
 	}
 
+	// Install .desktop file and icon so the app shows up in launchers.
+	// $APPIMAGE is set by the AppImage runtime to the path of the .AppImage file.
+	if appImage := os.Getenv("APPIMAGE"); appImage != "" {
+		installDesktopEntry(appDir, appImage, currentVersion)
+	}
+
 	// Only write the version marker if all critical binaries were copied.
 	// If a copy failed (e.g. aegisd was running), omitting the marker
 	// ensures the next launch retries the setup.
@@ -247,6 +253,41 @@ func ensureDesktopSetupLinux() {
 	os.WriteFile(versionFile, []byte(currentVersion), 0644)
 
 	log.Printf("aegis-ui: desktop setup complete (version %s)", currentVersion)
+}
+
+// installDesktopEntry installs the .desktop file and icon into the user's
+// XDG directories so the app appears in GNOME/KDE launchers with its icon.
+func installDesktopEntry(appDir, appImagePath, ver string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+
+	// Install icon
+	iconSrc := filepath.Join(appDir, "aegisvm.png")
+	iconDir := filepath.Join(home, ".local", "share", "icons", "hicolor", "256x256", "apps")
+	os.MkdirAll(iconDir, 0755)
+	if err := copyFile(iconSrc, filepath.Join(iconDir, "aegisvm.png")); err != nil {
+		log.Printf("aegis-ui: install icon: %v", err)
+	}
+
+	// Install .desktop file, rewriting Exec to point to the actual AppImage path.
+	desktopDir := filepath.Join(home, ".local", "share", "applications")
+	os.MkdirAll(desktopDir, 0755)
+	desktop := "[Desktop Entry]\n" +
+		"Type=Application\n" +
+		"Name=AegisVM\n" +
+		"Comment=Local agent runtime platform\n" +
+		"Exec=" + appImagePath + "\n" +
+		"Icon=aegisvm\n" +
+		"Categories=Development;System;\n" +
+		"Terminal=false\n" +
+		"StartupWMClass=AegisVM\n" +
+		"X-AppImage-Version=" + ver + "\n"
+	desktopPath := filepath.Join(desktopDir, "aegisvm.desktop")
+	if err := os.WriteFile(desktopPath, []byte(desktop), 0755); err != nil {
+		log.Printf("aegis-ui: install desktop entry: %v", err)
+	}
 }
 
 // findAegisdBinary locates the aegisd binary.
