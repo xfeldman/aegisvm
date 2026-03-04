@@ -79,10 +79,16 @@ func main() {
 	uiAddr := listener.Addr().String()
 	go http.Serve(listener, mux)
 
-	app := application.New(application.Options{
+	opts := application.Options{
 		Name: "AegisVM",
-		Icon: appIcon,
-	})
+	}
+	// Only set Icon on Linux — macOS uses .icns from the app bundle.
+	// Setting Icon on macOS overrides the .icns with a raw PNG, losing
+	// the rounded corners and gradient that macOS applies to .icns icons.
+	if runtime.GOOS != "darwin" {
+		opts.Icon = appIcon
+	}
+	app := application.New(opts)
 
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:  "AegisVM",
