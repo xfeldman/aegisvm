@@ -51,7 +51,6 @@
 
   function openLightbox(src: string) { lightboxSrc = src }
   function closeLightbox() { lightboxSrc = null }
-  function onLightboxKey(e: KeyboardEvent) { if (e.key === 'Escape') closeLightbox() }
 
   const SESSION_ID = 'default'
 
@@ -312,7 +311,10 @@
   })
 </script>
 
-<svelte:window onresize={() => { if (autoScroll && messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight }} />
+<svelte:window
+  onresize={() => { if (autoScroll && messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight }}
+  onkeydown={(e) => { if (e.key === 'Escape' && lightboxSrc) closeLightbox() }}
+/>
 
 <div class="chat" class:ready>
   <div class="messages" bind:this={messagesEl} onscroll={onScroll}>
@@ -375,10 +377,10 @@
 
 {#if lightboxSrc}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="lightbox" onclick={closeLightbox} onkeydown={onLightboxKey}>
+  <div class="lightbox" onclick={closeLightbox}>
     <button class="lightbox-close" onclick={closeLightbox}>&times;</button>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <img src={lightboxSrc} alt="Preview" class="lightbox-img" onclick={(e) => e.stopPropagation()} onkeydown={(e) => { if (e.key === 'Escape') closeLightbox() }} />
+    <img src={lightboxSrc} alt="Preview" class="lightbox-img" onclick={(e) => e.stopPropagation()} />
   </div>
 {/if}
 
