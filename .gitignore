@@ -4,8 +4,11 @@
 /aegis
 /aegis-harness
 /aegis-mcp
+/aegis-mcp-guest
 /aegis-vmm-worker
 /aegis-gateway
+/aegis-agent
+/aegis-ui
 
 # Base rootfs
 base/*.ext4
