@@ -19,6 +19,13 @@
 
   let activeKit = $derived(kits.find(k => k.name === selectedKit))
 
+  const handlePattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/
+  let handleError = $derived(
+    name.trim() && !handlePattern.test(name.trim())
+      ? 'Must start with a letter or digit, then letters, digits, dots, dashes, or underscores only'
+      : null
+  )
+
   function isReferenced(secretName: string): boolean {
     return activeKit?.referenced_env?.includes(secretName) ?? false
   }
@@ -114,7 +121,10 @@
   <div class="form">
     <div class="field">
       <label for="name">Name</label>
-      <input id="name" type="text" bind:value={name} placeholder="my-instance (optional)" />
+      <input id="name" type="text" bind:value={name} placeholder="my-instance (optional)" class:input-error={!!handleError} />
+      {#if handleError}
+        <span class="field-error">{handleError}</span>
+      {/if}
     </div>
 
     <div class="field">
@@ -183,7 +193,7 @@
 
     <div class="actions">
       <a href="#/" class="btn btn-cancel">Cancel</a>
-      <button class="btn btn-create" onclick={submit} disabled={creating || !command.trim()}>
+      <button class="btn btn-create" onclick={submit} disabled={creating || !command.trim() || !!handleError}>
         {creating ? 'Creating...' : 'Create'}
       </button>
     </div>
@@ -257,6 +267,9 @@
   }
   input:focus, select:focus { border-color: var(--accent); }
   input:disabled { opacity: 0.5; }
+  input.input-error { border-color: var(--red); }
+  input.input-error:focus { border-color: var(--red); }
+  .field-error { font-size: 11px; color: var(--red); }
 
   select { font-family: inherit; }
 

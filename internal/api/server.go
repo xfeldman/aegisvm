@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -300,10 +301,19 @@ type createInstanceRequest struct {
 
 const defaultImage = "python:3.12-alpine"
 
+// validHandle matches alphanumeric start, then alphanumeric/dot/dash/underscore.
+var validHandle = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
+
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	var req createInstanceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
+		return
+	}
+
+	// Validate handle
+	if req.Handle != "" && !validHandle.MatchString(req.Handle) {
+		writeError(w, http.StatusBadRequest, "invalid handle: must start with alphanumeric and contain only letters, digits, dots, dashes, or underscores")
 		return
 	}
 
