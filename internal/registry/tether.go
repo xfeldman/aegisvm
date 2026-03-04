@@ -57,3 +57,35 @@ func (d *DB) DeleteTetherFrames(instanceID string) error {
 	)
 	return err
 }
+
+// SaveTetherWatermark persists the read watermark for a channel on an instance.
+func (d *DB) SaveTetherWatermark(instanceID, channel string, seq int64) error {
+	_, err := d.db.Exec(
+		`INSERT OR REPLACE INTO tether_watermarks (instance_id, channel, seq) VALUES (?, ?, ?)`,
+		instanceID, channel, seq,
+	)
+	return err
+}
+
+// LoadTetherWatermark returns the read watermark for a channel on an instance.
+// Returns 0 if no watermark is saved.
+func (d *DB) LoadTetherWatermark(instanceID, channel string) (int64, error) {
+	var seq int64
+	err := d.db.QueryRow(
+		`SELECT seq FROM tether_watermarks WHERE instance_id = ? AND channel = ?`,
+		instanceID, channel,
+	).Scan(&seq)
+	if err != nil {
+		return 0, nil
+	}
+	return seq, nil
+}
+
+// DeleteTetherWatermarks removes all watermarks for an instance.
+func (d *DB) DeleteTetherWatermarks(instanceID string) error {
+	_, err := d.db.Exec(
+		`DELETE FROM tether_watermarks WHERE instance_id = ?`,
+		instanceID,
+	)
+	return err
+}

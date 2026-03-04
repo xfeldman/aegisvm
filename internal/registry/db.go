@@ -72,6 +72,12 @@ func (d *DB) migrate() error {
 			frame       TEXT NOT NULL,
 			PRIMARY KEY (instance_id, seq)
 		)`,
+		`CREATE TABLE IF NOT EXISTS tether_watermarks (
+			instance_id TEXT NOT NULL,
+			channel     TEXT NOT NULL,
+			seq         INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (instance_id, channel)
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := d.db.Exec(stmt); err != nil {

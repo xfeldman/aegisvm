@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { tetherSend, tetherPoll, openInBrowser, type TetherFrame } from '../lib/api'
-  import { getChatState, initChatState, updateChatState, addToast, setMessageSeq, clearUnreadMessages, type ChatMessage } from '../lib/store.svelte'
+  import { tetherSend, tetherPoll, setTetherWatermark, openInBrowser, type TetherFrame } from '../lib/api'
+  import { getChatState, initChatState, updateChatState, addToast, clearUnreadMessages, type ChatMessage } from '../lib/store.svelte'
   import { marked } from 'marked'
 
   interface Props {
@@ -166,20 +166,13 @@
         const result = await tetherPoll(instanceId, SESSION_ID, cursor, 5000, abortCtrl.signal)
         cursor = result.next_seq
         updateChatState(instanceId, { cursor })
-        setMessageSeq(instanceId, cursor)
 
         if (result.frames.length > 0) {
           processFrames(result.frames)
-        }
-
-        // Stop if we got assistant.done
-        const done = result.frames.some(f => f.type === 'assistant.done')
-        if (done) {
+          // Update watermark on each batch with content
+          setTetherWatermark(instanceId, 'ui', cursor).catch(() => {})
           clearUnreadMessages(instanceId)
-          break
         }
-
-        if (result.timed_out) continue
       }
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') return
@@ -253,16 +246,12 @@
           if (result.frames.length === 0 || result.timed_out) break
         }
 
-        // Sync notify seq so the InstanceList poller doesn't re-count
-        setMessageSeq(instanceId, cursor)
+        // Mark as read — save cursor server-side
+        setTetherWatermark(instanceId, 'ui', cursor).catch(() => {})
         clearUnreadMessages(instanceId)
 
-        // If last message is streaming (interrupted mid-stream), resume polling
-        const { messages } = getChatState(instanceId)
-        const last = messages[messages.length - 1]
-        if (last && last.role === 'assistant' && last.streaming) {
-          startPollLoop(cursor)
-        }
+        // Always poll for new messages (handles notify from cron, proactive agent messages)
+        startPollLoop(cursor)
       } catch {
         // Instance may not support tether — ignore
       }

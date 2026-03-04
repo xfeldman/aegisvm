@@ -1,8 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { tetherPoll, type Instance } from '../lib/api'
-  import { startInstance, restartInstance, disableInstance, deleteInstance } from '../lib/api'
-  import { addToast, refreshInstances, showConfirm, setPendingPort, getUnreadMessages, setUnreadMessages, getMessageSeq, setMessageSeq } from '../lib/store.svelte'
+  import { tetherPoll, getTetherWatermark, startInstance, disableInstance, deleteInstance, type Instance } from '../lib/api'
+  import { addToast, refreshInstances, showConfirm, setPendingPort, getUnreadMessages, setUnreadMessages } from '../lib/store.svelte'
 
   interface Props {
     instances: Instance[]
@@ -18,12 +17,13 @@
       if (!inst.enabled) continue
       const id = inst.handle || inst.id
       try {
-        const seq = getMessageSeq(id)
+        const { seq } = await getTetherWatermark(id, 'ui')
         const result = await tetherPoll(id, 'default', seq, 0, undefined, 'ui')
         const count = result.frames.filter(f => f.type === 'assistant.done').length
         if (count > 0) {
-          setUnreadMessages(id, getUnreadMessages(id) + count)
-          setMessageSeq(id, result.next_seq)
+          setUnreadMessages(id, count)
+        } else {
+          setUnreadMessages(id, 0)
         }
       } catch {}
     }

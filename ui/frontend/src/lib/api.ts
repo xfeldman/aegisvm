@@ -195,6 +195,13 @@ export interface FileEntry {
   size: number
 }
 
+// Tether watermarks (server-side read position / high-water mark)
+export const getTetherWatermark = (id: string, channel: string) =>
+  request<{ seq: number }>('GET', `/instances/${encodeURIComponent(id)}/tether/watermark?channel=${encodeURIComponent(channel)}`)
+
+export const setTetherWatermark = (id: string, channel: string, seq: number) =>
+  request<{ seq: number }>('POST', `/instances/${encodeURIComponent(id)}/tether/watermark?channel=${encodeURIComponent(channel)}`, { seq })
+
 export async function listWorkspaceDir(id: string, path = '.'): Promise<FileEntry[]> {
   const res = await fetch(`${BASE}/instances/${encodeURIComponent(id)}/workspace/tree?path=${encodeURIComponent(path)}`)
   if (!res.ok) {

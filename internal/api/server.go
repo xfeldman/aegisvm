@@ -92,6 +92,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v1/instances/{id}/tether", s.handleTetherIngress)
 	s.mux.HandleFunc("GET /v1/instances/{id}/tether/stream", s.handleTetherStream)
 	s.mux.HandleFunc("GET /v1/instances/{id}/tether/poll", s.handleTetherPoll)
+	s.mux.HandleFunc("GET /v1/instances/{id}/tether/watermark", s.handleGetTetherWatermark)
+	s.mux.HandleFunc("POST /v1/instances/{id}/tether/watermark", s.handleSetTetherWatermark)
 
 	// Secret routes (workspace-scoped key-value store)
 	s.mux.HandleFunc("PUT /v1/secrets/{name}", s.handleSetSecret)
@@ -1108,6 +1110,7 @@ func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 	if s.registry != nil {
 		s.registry.DeleteInstance(resolvedID)
 		s.registry.DeleteTetherFrames(resolvedID)
+		s.registry.DeleteTetherWatermarks(resolvedID)
 	}
 
 	// Delete auto-created workspace (user-provided workspaces are kept)
@@ -1148,6 +1151,7 @@ func (s *Server) handlePruneInstances(w http.ResponseWriter, r *http.Request) {
 				if s.registry != nil {
 					s.registry.DeleteInstance(inst.ID)
 					s.registry.DeleteTetherFrames(inst.ID)
+					s.registry.DeleteTetherWatermarks(inst.ID)
 				}
 				pruned = append(pruned, inst.ID)
 			}
@@ -1764,6 +1768,63 @@ func (s *Server) handleTetherPoll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+// Tether watermark handlers — per-channel read position (high-water mark).
+
+func (s *Server) handleGetTetherWatermark(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+	channel := r.URL.Query().Get("channel")
+	if channel == "" {
+		writeError(w, http.StatusBadRequest, "channel is required")
+		return
+	}
+
+	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	seq := int64(0)
+	if s.registry != nil {
+		seq, _ = s.registry.LoadTetherWatermark(inst.ID, channel)
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"seq": seq})
+}
+
+func (s *Server) handleSetTetherWatermark(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+	channel := r.URL.Query().Get("channel")
+	if channel == "" {
+		writeError(w, http.StatusBadRequest, "channel is required")
+		return
+	}
+
+	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	var req struct {
+		Seq int64 `json:"seq"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+
+	if s.registry != nil {
+		s.registry.SaveTetherWatermark(inst.ID, channel, req.Seq)
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"seq": req.Seq})
 }
 
 // Secret handlers — dumb key-value store with encryption.
