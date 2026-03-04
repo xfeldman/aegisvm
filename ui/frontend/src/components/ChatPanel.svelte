@@ -43,7 +43,6 @@
   let autoScroll = $state(true)
   let messagesEl: HTMLElement
   let abortCtrl: AbortController | null = null
-  let polling = false
   let lightboxSrc: string | null = $state(null)
 
   function openLightbox(src: string) { lightboxSrc = src }
@@ -66,13 +65,14 @@
     autoScroll = atBottom
   }
 
-  function processFrames(frames: TetherFrame[]) {
+  function processFrames(frames: TetherFrame[], skipUserMessages = false) {
     let { messages, thinking } = getChatState(instanceId)
     messages = [...messages]
     let changed = false
 
     for (const frame of frames) {
       if (frame.type === 'user.message') {
+        if (skipUserMessages) continue
         const text = frame.content?.text || frame.payload?.text || ''
         if (text) {
           messages.push({
@@ -155,35 +155,47 @@
     }
   }
 
-  async function startPollLoop(fromSeq: number) {
-    if (polling) return
-    polling = true
+  // Live stream — real-time frame delivery via NDJSON stream.
+  // Replaces polling for instant message display.
+  function startStream() {
+    if (abortCtrl) return
     abortCtrl = new AbortController()
-    let cursor = fromSeq
 
-    try {
-      while (polling) {
-        const result = await tetherPoll(instanceId, SESSION_ID, cursor, 5000, abortCtrl.signal)
-        cursor = result.next_seq
-        updateChatState(instanceId, { cursor })
+    const url = `/api/v1/instances/${encodeURIComponent(instanceId)}/tether/stream`
+    fetch(url, { signal: abortCtrl.signal }).then(async (resp) => {
+      if (!resp.ok || !resp.body) return
+      const reader = resp.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
 
-        if (result.frames.length > 0) {
-          processFrames(result.frames)
-          // Update watermark on each batch with content
-          setTetherWatermark(instanceId, 'ui', cursor).catch(() => {})
-          clearUnreadMessages(instanceId)
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+
+        // Process complete NDJSON lines
+        let nl: number
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl).trim()
+          buf = buf.slice(nl + 1)
+          if (!line) continue
+          try {
+            const frame = JSON.parse(line)
+            // Only process frames for our channel/session
+            if (frame.session?.channel === 'ui' && frame.session?.id === SESSION_ID) {
+              processFrames([frame], true)
+              if (frame.seq) {
+                setTetherWatermark(instanceId, 'ui', frame.seq).catch(() => {})
+                clearUnreadMessages(instanceId)
+              }
+            }
+          } catch {}
         }
       }
-    } catch (e) {
-      if (e instanceof DOMException && e.name === 'AbortError') return
-      // Non-abort errors — stop polling silently
-    } finally {
-      polling = false
-    }
+    }).catch(() => {})
   }
 
-  function stopPolling() {
-    polling = false
+  function stopStream() {
     if (abortCtrl) {
       abortCtrl.abort()
       abortCtrl = null
@@ -196,7 +208,7 @@
 
     input = ''
 
-    // Add user message to state
+    // Add user message locally for instant display
     const { messages } = getChatState(instanceId)
     updateChatState(instanceId, {
       messages: [...messages, {
@@ -208,9 +220,7 @@
     scrollToBottom()
 
     try {
-      const result = await tetherSend(instanceId, SESSION_ID, text)
-      updateChatState(instanceId, { cursor: result.ingress_seq })
-      startPollLoop(result.ingress_seq)
+      await tetherSend(instanceId, SESSION_ID, text)
     } catch (e) {
       addToast(`Send failed: ${e instanceof Error ? e.message : 'unknown'}`, 'error')
     }
@@ -250,8 +260,8 @@
         setTetherWatermark(instanceId, 'ui', cursor).catch(() => {})
         clearUnreadMessages(instanceId)
 
-        // Always poll for new messages (handles notify from cron, proactive agent messages)
-        startPollLoop(cursor)
+        // Connect to live stream for real-time frames
+        startStream()
       } catch {
         // Instance may not support tether — ignore
       }
@@ -260,7 +270,7 @@
     scrollToBottom()
     catchUp().then(scrollToBottom)
 
-    return () => stopPolling()
+    return () => stopStream()
   })
 </script>
 

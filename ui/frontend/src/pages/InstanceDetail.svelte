@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { getInstance, startInstance, restartInstance, disableInstance, deleteInstance, openInBrowser, listSecrets, updateInstanceSecrets, type Instance, type SecretInfo } from '../lib/api'
-  import { addToast, showConfirm, consumePendingPort, loadOpenPorts, saveOpenPorts, getUnreadMessages, clearUnreadMessages } from '../lib/store.svelte'
+  import { getInstance, startInstance, restartInstance, disableInstance, deleteInstance, openInBrowser, listSecrets, updateInstanceSecrets, getTetherWatermark, tetherPoll, type Instance, type SecretInfo } from '../lib/api'
+  import { addToast, showConfirm, consumePendingPort, loadOpenPorts, saveOpenPorts, getUnreadMessages, setUnreadMessages, clearUnreadMessages } from '../lib/store.svelte'
   import LogViewer from '../components/LogViewer.svelte'
   import CommandRunner from '../components/CommandRunner.svelte'
   import ChatPanel from '../components/ChatPanel.svelte'
@@ -179,6 +179,15 @@
     }
   }
 
+  async function checkUnread() {
+    try {
+      const { seq } = await getTetherWatermark(id, 'ui')
+      const result = await tetherPoll(id, 'default', seq, 0, undefined, 'ui')
+      const count = result.frames.filter((f: any) => f.type === 'assistant.done').length
+      setUnreadMessages(id, count)
+    } catch {}
+  }
+
   onMount(() => {
     // Restore persisted port tabs
     const saved = loadOpenPorts(id)
@@ -190,7 +199,11 @@
 
     load()
     loadSecrets()
-    pollTimer = setInterval(load, 5000)
+    pollTimer = setInterval(() => {
+      load()
+      // Check for unread messages when Chat tab is not active
+      if (tab !== 'chat') checkUnread()
+    }, 5000)
     return () => clearInterval(pollTimer)
   })
 </script>
