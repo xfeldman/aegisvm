@@ -1,13 +1,39 @@
 <script lang="ts">
-  import type { Instance } from '../lib/api'
+  import { onMount } from 'svelte'
+  import { tetherPoll, type Instance } from '../lib/api'
   import { startInstance, disableInstance, deleteInstance } from '../lib/api'
-  import { addToast, refreshInstances, showConfirm, setPendingPort } from '../lib/store.svelte'
+  import { addToast, refreshInstances, showConfirm, setPendingPort, getUnreadMessages, setUnreadMessages, getMessageSeq, setMessageSeq } from '../lib/store.svelte'
 
   interface Props {
     instances: Instance[]
   }
 
   let { instances }: Props = $props()
+
+  // Poll broadcast notifications for all enabled instances
+  let pollTimer: ReturnType<typeof setInterval>
+
+  async function checkNotifications() {
+    for (const inst of instances) {
+      if (!inst.enabled) continue
+      const id = inst.handle || inst.id
+      try {
+        const seq = getMessageSeq(id)
+        const result = await tetherPoll(id, 'default', seq, 0, undefined, 'ui')
+        const count = result.frames.filter(f => f.type === 'assistant.done').length
+        if (count > 0) {
+          setUnreadMessages(id, getUnreadMessages(id) + count)
+          setMessageSeq(id, result.next_seq)
+        }
+      } catch {}
+    }
+  }
+
+  onMount(() => {
+    checkNotifications()
+    pollTimer = setInterval(checkNotifications, 10000)
+    return () => clearInterval(pollTimer)
+  })
 
   function stateColor(inst: Instance): string {
     if (!inst.enabled) return 'var(--red)'
@@ -85,7 +111,12 @@
         <span class="status-dot" style="background: {stateColor(inst)}"></span>
       </div>
       <div class="col-name">
-        <a href="#/instance/{inst.handle || inst.id}" class="instance-name">{displayName(inst)}</a>
+        <a href="#/instance/{inst.handle || inst.id}" class="instance-name">
+          {displayName(inst)}
+          {#if getUnreadMessages(inst.handle || inst.id) > 0}
+            <span class="notify-badge">{getUnreadMessages(inst.handle || inst.id)}</span>
+          {/if}
+        </a>
         {#if inst.image_ref}
           <span class="image-ref">{inst.image_ref}</span>
         {/if}
@@ -169,6 +200,24 @@
     font-weight: 500;
     font-family: var(--font-mono);
     font-size: 13px;
+  }
+
+  .notify-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    margin-left: 6px;
+    vertical-align: middle;
+    font-family: var(--font-mono);
+    line-height: 1;
   }
 
   .image-ref {

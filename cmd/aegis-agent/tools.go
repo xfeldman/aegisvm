@@ -1227,20 +1227,24 @@ func (a *Agent) toolNotify(input json.RawMessage) string {
 		return jsonError("text is required")
 	}
 
-	a.sendFrame(TetherFrame{
-		V:    1,
-		Type: "assistant.notification",
-		TS:   now(),
-		Session: SessionID{
-			Channel: "broadcast",
-			ID:      "notify",
-		},
-		Payload: mustMarshal(map[string]string{"text": params.Text}),
-	})
+	// Send as assistant.done to all human-facing channels.
+	// Uses session "default" so it appears in the main chat thread.
+	for _, ch := range []string{"ui", "telegram"} {
+		a.sendFrame(TetherFrame{
+			V:    1,
+			Type: "assistant.done",
+			TS:   now(),
+			Session: SessionID{
+				Channel: ch,
+				ID:      "default",
+			},
+			Payload: mustMarshal(map[string]string{"text": params.Text}),
+		})
+	}
 
 	return jsonResult(map[string]interface{}{
 		"ok":      true,
-		"message": "notification broadcast to all channels",
+		"message": "notification sent to ui and telegram",
 	})
 }
 

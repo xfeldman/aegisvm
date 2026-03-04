@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { tetherSend, tetherPoll, openInBrowser, type TetherFrame } from '../lib/api'
-  import { getChatState, initChatState, updateChatState, addToast, type ChatMessage } from '../lib/store.svelte'
+  import { getChatState, initChatState, updateChatState, addToast, setMessageSeq, clearUnreadMessages, type ChatMessage } from '../lib/store.svelte'
   import { marked } from 'marked'
 
   interface Props {
@@ -166,6 +166,7 @@
         const result = await tetherPoll(instanceId, SESSION_ID, cursor, 5000, abortCtrl.signal)
         cursor = result.next_seq
         updateChatState(instanceId, { cursor })
+        setMessageSeq(instanceId, cursor)
 
         if (result.frames.length > 0) {
           processFrames(result.frames)
@@ -173,7 +174,10 @@
 
         // Stop if we got assistant.done
         const done = result.frames.some(f => f.type === 'assistant.done')
-        if (done) break
+        if (done) {
+          clearUnreadMessages(instanceId)
+          break
+        }
 
         if (result.timed_out) continue
       }
@@ -190,38 +194,6 @@
     if (abortCtrl) {
       abortCtrl.abort()
       abortCtrl = null
-    }
-  }
-
-  // Broadcast notification listener — picks up notify() tool output
-  let broadcastSeq = 0
-  let broadcastAbort: AbortController | null = null
-
-  async function startBroadcastPoll() {
-    broadcastAbort = new AbortController()
-    try {
-      while (broadcastAbort && !broadcastAbort.signal.aborted) {
-        const result = await tetherPoll(instanceId, 'notify', broadcastSeq, 10000, broadcastAbort.signal, 'broadcast')
-        broadcastSeq = result.next_seq
-        for (const frame of result.frames) {
-          if (frame.type === 'assistant.notification') {
-            const text = frame.payload?.text || ''
-            if (text) {
-              const { messages } = getChatState(instanceId)
-              updateChatState(instanceId, {
-                messages: [...messages, {
-                  role: 'assistant',
-                  text: `📢 ${text}`,
-                  ts: frame.ts || new Date().toISOString(),
-                }],
-              })
-              scrollToBottom()
-            }
-          }
-        }
-      }
-    } catch (e) {
-      if (e instanceof DOMException && e.name === 'AbortError') return
     }
   }
 
@@ -281,6 +253,10 @@
           if (result.frames.length === 0 || result.timed_out) break
         }
 
+        // Sync notify seq so the InstanceList poller doesn't re-count
+        setMessageSeq(instanceId, cursor)
+        clearUnreadMessages(instanceId)
+
         // If last message is streaming (interrupted mid-stream), resume polling
         const { messages } = getChatState(instanceId)
         const last = messages[messages.length - 1]
@@ -294,12 +270,8 @@
 
     scrollToBottom()
     catchUp().then(scrollToBottom)
-    startBroadcastPoll()
 
-    return () => {
-      stopPolling()
-      if (broadcastAbort) { broadcastAbort.abort(); broadcastAbort = null }
-    }
+    return () => stopPolling()
   })
 </script>
 

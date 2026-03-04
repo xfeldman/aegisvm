@@ -164,6 +164,39 @@ export function saveOpenPorts(id: string, ports: number[]) {
   } catch {}
 }
 
+// Unread messages tracking — per instance
+const MSG_SEQ_KEY = 'aegis-msg-seq-'
+let _unreadMessages: Record<string, number> = $state({})
+let _messageSeqs: Record<string, number> = {}
+
+export function getUnreadMessages(id: string): number { return _unreadMessages[id] || 0 }
+
+export function setUnreadMessages(id: string, count: number) {
+  _unreadMessages[id] = count
+}
+
+export function clearUnreadMessages(id: string) {
+  _unreadMessages[id] = 0
+  const seq = _messageSeqs[id]
+  if (seq) {
+    try { localStorage.setItem(MSG_SEQ_KEY + id, String(seq)) } catch {}
+  }
+}
+
+export function getMessageSeq(id: string): number {
+  if (_messageSeqs[id] != null) return _messageSeqs[id]
+  try {
+    const v = localStorage.getItem(MSG_SEQ_KEY + id)
+    if (v) { _messageSeqs[id] = parseInt(v); return _messageSeqs[id] }
+  } catch {}
+  _messageSeqs[id] = 0
+  return 0
+}
+
+export function setMessageSeq(id: string, seq: number) {
+  _messageSeqs[id] = seq
+}
+
 export async function refreshInstances() {
   _loading = true
   _error = null

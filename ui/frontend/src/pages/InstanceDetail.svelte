@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { getInstance, startInstance, disableInstance, deleteInstance, openInBrowser, listSecrets, updateInstanceSecrets, type Instance, type SecretInfo } from '../lib/api'
-  import { addToast, showConfirm, consumePendingPort, loadOpenPorts, saveOpenPorts } from '../lib/store.svelte'
+  import { addToast, showConfirm, consumePendingPort, loadOpenPorts, saveOpenPorts, getUnreadMessages, clearUnreadMessages } from '../lib/store.svelte'
   import LogViewer from '../components/LogViewer.svelte'
   import CommandRunner from '../components/CommandRunner.svelte'
   import ChatPanel from '../components/ChatPanel.svelte'
@@ -239,7 +239,7 @@
       {/if}
       <button class="tab" class:active={tab === 'logs'} onclick={() => tab = 'logs'}>Logs</button>
       <button class="tab" class:active={tab === 'exec'} onclick={() => tab = 'exec'}>Exec</button>
-      <button class="tab" class:active={tab === 'chat'} onclick={() => tab = 'chat'}>Chat</button>
+      <button class="tab" class:active={tab === 'chat'} onclick={() => { tab = 'chat'; clearUnreadMessages(id) }}>Chat{#if getUnreadMessages(id) > 0}<span class="tab-badge">{getUnreadMessages(id)}</span>{/if}</button>
       {#each openPorts as port}
         <button class="tab" class:active={tab === `port:${port}`} onclick={() => tab = `port:${port}`}>
           <span class="port-tab-label">:{port}</span><span class="port-tab-close" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); closePort(port) }} onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); closePort(port) } }}>&times;</span>
@@ -613,6 +613,22 @@
     height: 100%;
     border: none;
     background: var(--bg);
+  }
+
+  .tab-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    margin-left: 6px;
+    line-height: 1;
   }
 
   .text-muted { color: var(--text-muted); font-size: 12px; }
