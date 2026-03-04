@@ -3,6 +3,8 @@
 package main
 
 import (
+	"runtime"
+
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
@@ -27,10 +29,13 @@ func setupSystemTray(app *application.App, window *application.WebviewWindow) {
 
 	tray.SetMenu(buildTrayMenu(app, window))
 
-	// Both clicks open the menu.
-	tray.OnClick(func() {
-		tray.OpenMenu()
-	})
+	// macOS: click tray icon → open menu.
+	// Linux: libappindicator shows the menu on click natively; no OnClick needed.
+	if runtime.GOOS != "linux" {
+		tray.OnClick(func() {
+			tray.OpenMenu()
+		})
+	}
 
 	// Intercept window close → hide to tray instead of quitting.
 	window.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
