@@ -183,6 +183,9 @@ func ensureDesktopSetupLinux() {
 
 	// Copy runtime binaries to ~/.aegis/bin/.
 	// Required: daemon, CLI, harness, Cloud Hypervisor components.
+	// Track failures — if a critical binary can't be copied, don't write the
+	// version marker so the next launch retries.
+	var copyFailed bool
 	for _, name := range []string{"aegis", "aegisd", "aegis-mcp", "aegis-harness", "aegis-mcp-guest", "cloud-hypervisor", "ch-remote"} {
 		src := filepath.Join(binSrc, name)
 		if _, err := os.Stat(src); err != nil {
@@ -191,6 +194,7 @@ func ensureDesktopSetupLinux() {
 		dst := filepath.Join(binDir, name)
 		if err := copyFile(src, dst); err != nil {
 			log.Printf("aegis-ui: copy %s: %v", name, err)
+			copyFailed = true
 			continue
 		}
 		os.Chmod(dst, 0755)
@@ -232,7 +236,14 @@ func ensureDesktopSetupLinux() {
 		}
 	}
 
-	// Write version marker
+	// Only write the version marker if all critical binaries were copied.
+	// If a copy failed (e.g. aegisd was running), omitting the marker
+	// ensures the next launch retries the setup.
+	if copyFailed {
+		log.Printf("aegis-ui: desktop setup incomplete — will retry next launch")
+		return
+	}
+
 	os.WriteFile(versionFile, []byte(currentVersion), 0644)
 
 	log.Printf("aegis-ui: desktop setup complete (version %s)", currentVersion)
@@ -373,6 +384,12 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	defer in.Close()
+
+	// Remove destination before writing. On Linux, unlinking a running
+	// binary succeeds (the process keeps its fd) and frees the path for
+	// a new file. Without this, os.Create fails with ETXTBSY on a
+	// running executable — which caused stale aegisd after upgrades.
+	os.Remove(dst)
 
 	out, err := os.Create(dst)
 	if err != nil {
