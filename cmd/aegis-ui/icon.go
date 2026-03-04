@@ -38,7 +38,7 @@ func generateTrayIcon() []byte {
 	}
 
 	face, err := opentype.NewFace(tt, &opentype.FaceOptions{
-		Size:    40,
+		Size:    30,
 		DPI:     72,
 		Hinting: font.HintingFull,
 	})
