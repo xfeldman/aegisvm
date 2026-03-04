@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -165,6 +166,9 @@ func (m *Manager) guestSpawn(parent *Instance, token *CapabilityToken, params js
 		WithCapabilities(childCaps),
 	}
 	if req.Handle != "" {
+		if ok, _ := regexp.MatchString(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`, req.Handle); !ok {
+			return nil, fmt.Errorf("invalid handle: must start with alphanumeric and contain only letters, digits, dots, dashes, or underscores")
+		}
 		opts = append(opts, WithHandle(req.Handle))
 	}
 	if req.ImageRef != "" {

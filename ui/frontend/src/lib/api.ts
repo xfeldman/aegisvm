@@ -122,6 +122,9 @@ export const getInstance = (id: string) =>
 export const startInstance = (id: string) =>
   request<unknown>('POST', `/instances/${encodeURIComponent(id)}/start`)
 
+export const restartInstance = (id: string) =>
+  request<unknown>('POST', `/instances/${encodeURIComponent(id)}/restart`)
+
 export const disableInstance = (id: string) =>
   request<unknown>('POST', `/instances/${encodeURIComponent(id)}/disable`)
 
@@ -191,6 +194,13 @@ export interface FileEntry {
   is_dir: boolean
   size: number
 }
+
+// Tether watermarks (server-side read position / high-water mark)
+export const getTetherWatermark = (id: string, channel: string) =>
+  request<{ seq: number }>('GET', `/instances/${encodeURIComponent(id)}/tether/watermark?channel=${encodeURIComponent(channel)}`)
+
+export const setTetherWatermark = (id: string, channel: string, seq: number) =>
+  request<{ seq: number }>('POST', `/instances/${encodeURIComponent(id)}/tether/watermark?channel=${encodeURIComponent(channel)}`, { seq })
 
 export async function listWorkspaceDir(id: string, path = '.'): Promise<FileEntry[]> {
   const res = await fetch(`${BASE}/instances/${encodeURIComponent(id)}/workspace/tree?path=${encodeURIComponent(path)}`)
@@ -279,6 +289,32 @@ export async function tetherPoll(
   const res = await fetch(
     `${BASE}/instances/${encodeURIComponent(id)}/tether/poll?${params}`,
     { signal },
+  )
+  if (!res.ok) {
+    let msg = res.statusText
+    try { const d = await res.json(); if (d.error) msg = d.error } catch {}
+    throw new APIError(res.status, msg)
+  }
+  return res.json()
+}
+
+// Reverse poll: fetch frames before a given seq (for loading older history).
+// Returns frames in chronological order (oldest first).
+export async function tetherPollBack(
+  id: string,
+  sessionId: string,
+  beforeSeq: number,
+  limit = 50,
+  channel = 'ui',
+): Promise<TetherPollResult> {
+  const params = new URLSearchParams({
+    channel,
+    session_id: sessionId,
+    before_seq: String(beforeSeq),
+    limit: String(limit),
+  })
+  const res = await fetch(
+    `${BASE}/instances/${encodeURIComponent(id)}/tether/poll?${params}`,
   )
   if (!res.ok) {
     let msg = res.statusText

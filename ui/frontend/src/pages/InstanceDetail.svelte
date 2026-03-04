@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { getInstance, startInstance, disableInstance, deleteInstance, openInBrowser, listSecrets, updateInstanceSecrets, type Instance, type SecretInfo } from '../lib/api'
-  import { addToast, showConfirm, consumePendingPort, loadOpenPorts, saveOpenPorts, getUnreadMessages, clearUnreadMessages } from '../lib/store.svelte'
+  import { getInstance, startInstance, restartInstance, disableInstance, deleteInstance, openInBrowser, listSecrets, updateInstanceSecrets, getTetherWatermark, type Instance, type SecretInfo } from '../lib/api'
+  import { addToast, showConfirm, consumePendingPort, loadOpenPorts, saveOpenPorts, getUnreadMessages, setUnreadMessages, clearUnreadMessages } from '../lib/store.svelte'
   import LogViewer from '../components/LogViewer.svelte'
   import CommandRunner from '../components/CommandRunner.svelte'
   import ChatPanel from '../components/ChatPanel.svelte'
@@ -45,10 +45,7 @@
       switch (action) {
         case 'enable': await startInstance(ref); break
         case 'disable': await disableInstance(ref); break
-        case 'restart':
-          try { await disableInstance(ref) } catch {}
-          await startInstance(ref)
-          break
+        case 'restart': await restartInstance(ref); break
         case 'delete':
           if (!await showConfirm(`Delete instance "${ref}"?`)) return
           await deleteInstance(ref)
@@ -173,13 +170,30 @@
     if (!instance) return
     const ref = instance.handle || instance.id
     try {
-      await startInstance(ref)
+      await restartInstance(ref)
       restartRequired = false
       addToast('Restart requested', 'success')
       setTimeout(load, 500)
     } catch (e) {
       addToast(`Restart failed: ${e instanceof Error ? e.message : 'unknown'}`, 'error')
     }
+  }
+
+  async function checkUnread() {
+    try {
+      const { seq } = await getTetherWatermark(id, 'ui')
+      // Use types filter to only fetch assistant.done — avoids pagination issues
+      // with large numbers of delta frames between watermark and done
+      const params = new URLSearchParams({
+        channel: 'ui', session_id: 'default',
+        after_seq: String(seq), wait_ms: '0',
+        types: 'assistant.done',
+      })
+      const res = await fetch(`/api/v1/instances/${encodeURIComponent(id)}/tether/poll?${params}`)
+      if (!res.ok) return
+      const result = await res.json()
+      setUnreadMessages(id, result.frames?.length || 0)
+    } catch {}
   }
 
   onMount(() => {
@@ -193,7 +207,11 @@
 
     load()
     loadSecrets()
-    pollTimer = setInterval(load, 5000)
+    pollTimer = setInterval(() => {
+      load()
+      // Check for unread messages when Chat tab is not active
+      if (tab !== 'chat') checkUnread()
+    }, 5000)
     return () => clearInterval(pollTimer)
   })
 </script>

@@ -551,16 +551,12 @@ func handleInstanceRestart(args json.RawMessage) *mcpToolResult {
 		return errorResult("name is required")
 	}
 
-	// Disable (best-effort — instance may already be stopped)
-	doRequest("POST", "/v1/instances/"+params.Name+"/disable", nil)
-
-	// Start
-	status, data, err := doRequest("POST", "/v1/instances/"+params.Name+"/start", nil)
+	status, data, err := doRequest("POST", "/v1/instances/"+params.Name+"/restart", nil)
 	if err != nil {
 		return errorResult(err.Error())
 	}
 	if status >= 400 {
-		return errorResult(fmt.Sprintf("start: HTTP %d: %s", status, string(data)))
+		return errorResult(fmt.Sprintf("restart: HTTP %d: %s", status, string(data)))
 	}
 
 	return textResult("instance restarting")

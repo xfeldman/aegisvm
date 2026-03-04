@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
-  import { tetherSend, tetherPoll, openInBrowser, type TetherFrame } from '../lib/api'
-  import { getChatState, initChatState, updateChatState, addToast, setMessageSeq, clearUnreadMessages, type ChatMessage } from '../lib/store.svelte'
+  import { onMount, tick } from 'svelte'
+  import { tetherSend, tetherPollBack, setTetherWatermark, openInBrowser, type TetherFrame } from '../lib/api'
+  import { getChatState, initChatState, updateChatState, addToast, clearUnreadMessages, type ChatMessage } from '../lib/store.svelte'
   import { marked } from 'marked'
 
   interface Props {
@@ -43,20 +43,22 @@
   let autoScroll = $state(true)
   let messagesEl: HTMLElement
   let abortCtrl: AbortController | null = null
-  let polling = false
+  let oldestSeq = $state(Infinity)
+  let hasMore = $state(true)
+  let loadingMore = $state(false)
+  let ready = $state(false)
   let lightboxSrc: string | null = $state(null)
 
   function openLightbox(src: string) { lightboxSrc = src }
   function closeLightbox() { lightboxSrc = null }
-  function onLightboxKey(e: KeyboardEvent) { if (e.key === 'Escape') closeLightbox() }
 
   const SESSION_ID = 'default'
 
-  function scrollToBottom() {
-    if (messagesEl && autoScroll) {
-      requestAnimationFrame(() => {
-        messagesEl.scrollTop = messagesEl.scrollHeight
-      })
+  async function scrollToBottom() {
+    if (!autoScroll) return
+    await tick()
+    if (messagesEl) {
+      messagesEl.scrollTop = messagesEl.scrollHeight
     }
   }
 
@@ -64,133 +66,154 @@
     if (!messagesEl) return
     const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 40
     autoScroll = atBottom
+    // Load older messages when scrolled to top
+    if (messagesEl.scrollTop < 50 && hasMore && !loadingMore) {
+      loadOlder()
+    }
   }
 
-  function processFrames(frames: TetherFrame[]) {
+  // Convert history frames (user.message + assistant.done) to ChatMessages.
+  // Pure function — no streaming state, no side effects.
+  function framesToMessages(frames: TetherFrame[]): ChatMessage[] {
+    const msgs: ChatMessage[] = []
+    for (const f of frames) {
+      if (f.type === 'user.message') {
+        const text = (f as any).content?.text || f.payload?.text || ''
+        if (text) msgs.push({ role: 'user', text, ts: f.ts || '' })
+      } else if (f.type === 'assistant.done') {
+        msgs.push({
+          role: 'assistant',
+          text: f.payload?.text || '',
+          images: f.payload?.images,
+          ts: f.ts || '',
+        })
+      }
+    }
+    return msgs
+  }
+
+  async function loadOlder() {
+    if (loadingMore || !hasMore || oldestSeq <= 1) return
+    loadingMore = true
+    try {
+      const result = await tetherPollBack(instanceId, SESSION_ID, oldestSeq, 50)
+      if (result.frames.length === 0) {
+        hasMore = false
+      } else {
+        const prevHeight = messagesEl?.scrollHeight || 0
+        const prevTop = messagesEl?.scrollTop || 0
+        const older = framesToMessages(result.frames)
+        if (older.length > 0) {
+          const { messages } = getChatState(instanceId)
+          updateChatState(instanceId, { messages: [...older, ...messages] })
+          await tick()
+          if (messagesEl) {
+            messagesEl.scrollTop = prevTop + (messagesEl.scrollHeight - prevHeight)
+          }
+        }
+        oldestSeq = result.next_seq
+        if (result.frames.length < 50) hasMore = false
+      }
+    } catch {}
+    loadingMore = false
+  }
+
+  // Handle a single live stream frame — manages streaming state (deltas, presence).
+  function handleStreamFrame(frame: TetherFrame) {
     let { messages, thinking } = getChatState(instanceId)
     messages = [...messages]
-    let changed = false
 
-    for (const frame of frames) {
-      if (frame.type === 'user.message') {
-        const text = frame.content?.text || frame.payload?.text || ''
-        if (text) {
-          messages.push({
-            role: 'user',
-            text,
-            ts: frame.ts || new Date().toISOString(),
-          })
-          changed = true
-        }
-      } else if (frame.type === 'status.presence') {
+    switch (frame.type) {
+      case 'status.presence':
         thinking = frame.payload?.state || 'thinking'
-        changed = true
-      } else if (frame.type === 'reasoning.delta') {
+        break
+      case 'reasoning.delta': {
         const text = frame.payload?.text || ''
         const last = messages[messages.length - 1]
-        if (last && last.role === 'assistant' && last.streaming) {
-          messages[messages.length - 1] = {
-            ...last,
-            reasoning: (last.reasoning || '') + text,
-          }
+        if (last?.role === 'assistant' && last.streaming) {
+          messages[messages.length - 1] = { ...last, reasoning: (last.reasoning || '') + text }
         } else {
-          messages.push({
-            role: 'assistant',
-            text: '',
-            reasoning: text,
-            ts: frame.ts || new Date().toISOString(),
-            streaming: true,
-          })
+          messages.push({ role: 'assistant', text: '', reasoning: text, ts: frame.ts || '', streaming: true })
         }
         thinking = null
-        changed = true
-      } else if (frame.type === 'reasoning.done') {
+        break
+      }
+      case 'reasoning.done': {
         const last = messages[messages.length - 1]
-        if (last && last.role === 'assistant') {
+        if (last?.role === 'assistant') {
           messages[messages.length - 1] = { ...last, reasoningDone: true }
         }
-        changed = true
-      } else if (frame.type === 'assistant.delta') {
+        break
+      }
+      case 'assistant.delta': {
         const text = frame.payload?.text || ''
         const last = messages[messages.length - 1]
-        if (last && last.role === 'assistant' && last.streaming) {
+        if (last?.role === 'assistant' && last.streaming) {
           messages[messages.length - 1] = { ...last, text: last.text + text }
         } else {
-          messages.push({
-            role: 'assistant',
-            text,
-            ts: frame.ts || new Date().toISOString(),
-            streaming: true,
-          })
+          messages.push({ role: 'assistant', text, ts: frame.ts || '', streaming: true })
         }
-        changed = true
-      } else if (frame.type === 'assistant.done') {
-        const text = frame.payload?.text || ''
-        const images = frame.payload?.images
+        break
+      }
+      case 'assistant.done': {
         const last = messages[messages.length - 1]
-        if (last && last.role === 'assistant' && last.streaming) {
-          messages[messages.length - 1] = {
-            ...last,
-            text,
-            images,
-            streaming: false,
-          }
+        const done: ChatMessage = {
+          role: 'assistant', text: frame.payload?.text || '',
+          images: frame.payload?.images, ts: frame.ts || '',
+        }
+        if (last?.role === 'assistant' && last.streaming) {
+          messages[messages.length - 1] = { ...done, reasoning: last.reasoning, reasoningDone: last.reasoningDone }
         } else {
-          messages.push({
-            role: 'assistant',
-            text,
-            ts: frame.ts || new Date().toISOString(),
-            images,
-            streaming: false,
-          })
+          messages.push(done)
         }
         thinking = null
-        changed = true
+        break
       }
+      default:
+        return // unknown frame type — no state change
     }
 
-    if (changed) {
-      updateChatState(instanceId, { messages, thinking })
-      scrollToBottom()
-    }
+    updateChatState(instanceId, { messages, thinking })
+    scrollToBottom()
   }
 
-  async function startPollLoop(fromSeq: number) {
-    if (polling) return
-    polling = true
+  // Live stream — real-time frame delivery via NDJSON stream.
+  // Replaces polling for instant message display.
+  function startStream() {
+    if (abortCtrl) return
     abortCtrl = new AbortController()
-    let cursor = fromSeq
 
-    try {
-      while (polling) {
-        const result = await tetherPoll(instanceId, SESSION_ID, cursor, 5000, abortCtrl.signal)
-        cursor = result.next_seq
-        updateChatState(instanceId, { cursor })
-        setMessageSeq(instanceId, cursor)
+    const url = `/api/v1/instances/${encodeURIComponent(instanceId)}/tether/stream`
+    fetch(url, { signal: abortCtrl.signal }).then(async (resp) => {
+      if (!resp.ok || !resp.body) return
+      const reader = resp.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
 
-        if (result.frames.length > 0) {
-          processFrames(result.frames)
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+
+        // Process complete NDJSON lines
+        let nl: number
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl).trim()
+          buf = buf.slice(nl + 1)
+          if (!line) continue
+          try {
+            const frame = JSON.parse(line)
+            // Only process frames for our channel/session
+            if (frame.session?.channel === 'ui' && frame.session?.id === SESSION_ID) {
+              handleStreamFrame(frame)
+            }
+          } catch {}
         }
-
-        // Stop if we got assistant.done
-        const done = result.frames.some(f => f.type === 'assistant.done')
-        if (done) {
-          clearUnreadMessages(instanceId)
-          break
-        }
-
-        if (result.timed_out) continue
       }
-    } catch (e) {
-      if (e instanceof DOMException && e.name === 'AbortError') return
-      // Non-abort errors — stop polling silently
-    } finally {
-      polling = false
-    }
+    }).catch(() => {})
   }
 
-  function stopPolling() {
-    polling = false
+  function stopStream() {
     if (abortCtrl) {
       abortCtrl.abort()
       abortCtrl = null
@@ -203,7 +226,7 @@
 
     input = ''
 
-    // Add user message to state
+    // Add user message locally for instant display
     const { messages } = getChatState(instanceId)
     updateChatState(instanceId, {
       messages: [...messages, {
@@ -215,9 +238,7 @@
     scrollToBottom()
 
     try {
-      const result = await tetherSend(instanceId, SESSION_ID, text)
-      updateChatState(instanceId, { cursor: result.ingress_seq })
-      startPollLoop(result.ingress_seq)
+      await tetherSend(instanceId, SESSION_ID, text)
     } catch (e) {
       addToast(`Send failed: ${e instanceof Error ? e.message : 'unknown'}`, 'error')
     }
@@ -227,56 +248,79 @@
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       send()
+      // Reset height after send
+      const ta = e.target as HTMLTextAreaElement
+      if (ta) { ta.style.height = 'auto' }
     }
   }
 
-  // On mount: reload full conversation from tether (server is authoritative).
-  // Tether stores both user.message and assistant.* frames, so all clients
-  // (desktop app, browser, MCP) see the same history.
+  function autoResize(e: Event) {
+    const ta = e.target as HTMLTextAreaElement
+    ta.style.height = 'auto'
+    ta.style.height = Math.min(ta.scrollHeight, 72) + 'px' // 3 lines ≈ 72px
+  }
+
+  // On mount: load recent messages from the end (reverse), then connect stream.
+  // No full history replay — older messages load on scroll-to-top.
   onMount(() => {
     initChatState(instanceId)
 
-    async function catchUp() {
-      // Start from 0 — tether has the complete conversation.
-      let cursor = 0
+    async function loadRecent() {
       updateChatState(instanceId, { messages: [], cursor: 0, thinking: null })
 
       try {
-        // Drain all available frames (API paginates at ~50)
-        while (true) {
-          const result = await tetherPoll(instanceId, SESSION_ID, cursor, 0)
-          if (result.frames.length > 0) {
-            processFrames(result.frames)
+        const result = await tetherPollBack(instanceId, SESSION_ID, Number.MAX_SAFE_INTEGER, 200)
+        if (result.frames.length > 0) {
+          // Replay all frames to reconstruct exact state (including thinking, tool use, streaming)
+          for (const frame of result.frames) {
+            handleStreamFrame(frame)
           }
-          cursor = result.next_seq
-          updateChatState(instanceId, { cursor })
-          if (result.frames.length === 0 || result.timed_out) break
-        }
+          oldestSeq = result.next_seq
+          hasMore = result.frames.length >= 200
 
-        // Sync notify seq so the InstanceList poller doesn't re-count
-        setMessageSeq(instanceId, cursor)
+          const maxSeq = Math.max(...result.frames.map(f => f.seq || 0))
+          if (maxSeq > 0) setTetherWatermark(instanceId, 'ui', maxSeq).catch(() => {})
+        } else {
+          hasMore = false
+        }
         clearUnreadMessages(instanceId)
 
-        // If last message is streaming (interrupted mid-stream), resume polling
-        const { messages } = getChatState(instanceId)
-        const last = messages[messages.length - 1]
-        if (last && last.role === 'assistant' && last.streaming) {
-          startPollLoop(cursor)
+        // Wait for DOM update, then wait for all images to load before scrolling
+        await tick()
+        if (messagesEl) {
+          const imgs = messagesEl.querySelectorAll('img')
+          if (imgs.length > 0) {
+            await Promise.all(Array.from(imgs).map(img =>
+              img.complete ? Promise.resolve() : new Promise(r => { img.onload = r; img.onerror = r })
+            ))
+          }
+          messagesEl.scrollTop = messagesEl.scrollHeight
         }
+        ready = true
+
+        // Connect to live stream for real-time frames
+        startStream()
       } catch {
-        // Instance may not support tether — ignore
+        ready = true
       }
     }
 
-    scrollToBottom()
-    catchUp().then(scrollToBottom)
+    loadRecent()
 
-    return () => stopPolling()
+    return () => stopStream()
   })
 </script>
 
-<div class="chat">
+<svelte:window
+  onresize={() => { if (autoScroll && messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight }}
+  onkeydown={(e) => { if (e.key === 'Escape' && lightboxSrc) closeLightbox() }}
+/>
+
+<div class="chat" class:ready>
   <div class="messages" bind:this={messagesEl} onscroll={onScroll}>
+    {#if loadingMore}
+      <div class="loading-more">Loading older messages...</div>
+    {/if}
     {#if state.messages.length === 0 && !state.thinking}
       <div class="empty">Send a message to the agent.</div>
     {/if}
@@ -318,23 +362,25 @@
     {/if}
   </div>
   <div class="input-bar">
-    <input
-      type="text"
+    <textarea
+      class="chat-input"
       bind:value={input}
       onkeydown={onKeydown}
+      oninput={autoResize}
       placeholder={disabled ? 'Instance is disabled' : 'Message the agent...'}
       {disabled}
-    />
+      rows="1"
+    ></textarea>
     <button class="send-btn" onclick={send} disabled={disabled || !input.trim()}>Send</button>
   </div>
 </div>
 
 {#if lightboxSrc}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="lightbox" onclick={closeLightbox} onkeydown={onLightboxKey}>
+  <div class="lightbox" onclick={closeLightbox}>
     <button class="lightbox-close" onclick={closeLightbox}>&times;</button>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <img src={lightboxSrc} alt="Preview" class="lightbox-img" onclick={(e) => e.stopPropagation()} onkeydown={(e) => { if (e.key === 'Escape') closeLightbox() }} />
+    <img src={lightboxSrc} alt="Preview" class="lightbox-img" onclick={(e) => e.stopPropagation()} />
   </div>
 {/if}
 
@@ -347,6 +393,16 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     overflow: hidden;
+    visibility: hidden;
+  }
+  .chat.ready {
+    visibility: visible;
+  }
+  .loading-more {
+    text-align: center;
+    padding: 8px;
+    color: var(--text-muted);
+    font-size: 12px;
   }
 
   .messages {
@@ -580,14 +636,14 @@
 
   .input-bar {
     display: flex;
-    align-items: center;
+    align-items: flex-end;
     gap: 8px;
     padding: 8px 12px;
     background: var(--bg-secondary);
     border-top: 1px solid var(--border);
   }
 
-  input {
+  .chat-input {
     flex: 1;
     background: var(--bg);
     border: 1px solid var(--border);
@@ -595,12 +651,17 @@
     padding: 8px 12px;
     color: var(--text);
     font-size: 13px;
+    font-family: inherit;
     outline: none;
+    resize: none;
+    line-height: 1.4;
+    max-height: 72px;
+    overflow-y: auto;
   }
-  input:focus {
+  .chat-input:focus {
     border-color: var(--accent);
   }
-  input:disabled {
+  .chat-input:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }

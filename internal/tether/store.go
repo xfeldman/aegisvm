@@ -29,7 +29,8 @@ type Store struct {
 type QueryOpts struct {
 	Channel      string   // filter by session.channel (e.g. "host")
 	SessionID    string   // filter by session.id
-	AfterSeq     int64    // frames with seq > this
+	AfterSeq     int64    // frames with seq > this (forward scan)
+	BeforeSeq    int64    // frames with seq < this (reverse scan, 0 = unused)
 	Types        []string // filter by frame type (empty = all)
 	ReplyToMsgID string   // filter by reply_to msg_id
 	Limit        int      // max results (0 = default 50)
@@ -278,13 +279,48 @@ func (rb *ringBuffer) query(opts QueryOpts) QueryResult {
 		limit = 200
 	}
 
-	var matched []Frame
-	maxSeq := opts.AfterSeq
-
 	typesSet := make(map[string]bool, len(opts.Types))
 	for _, t := range opts.Types {
 		typesSet[t] = true
 	}
+
+	// Reverse scan: return last N frames with seq < BeforeSeq
+	if opts.BeforeSeq > 0 {
+		var matched []Frame
+		minSeq := opts.BeforeSeq
+
+		// Scan from tail backwards
+		for i := rb.count - 1; i >= 0 && len(matched) < limit; i-- {
+			idx := (rb.head + i) % rb.cap
+			f := rb.frames[idx]
+
+			if f.Seq >= opts.BeforeSeq {
+				continue
+			}
+			if !rb.matchesFilters(f, opts, typesSet) {
+				continue
+			}
+
+			matched = append(matched, f)
+			if f.Seq < minSeq {
+				minSeq = f.Seq
+			}
+		}
+
+		// Reverse to chronological order
+		for i, j := 0, len(matched)-1; i < j; i, j = i+1, j-1 {
+			matched[i], matched[j] = matched[j], matched[i]
+		}
+
+		return QueryResult{
+			Frames:  matched,
+			NextSeq: minSeq,
+		}
+	}
+
+	// Forward scan: return first N frames with seq > AfterSeq
+	var matched []Frame
+	maxSeq := opts.AfterSeq
 
 	for i := 0; i < rb.count && len(matched) < limit; i++ {
 		idx := (rb.head + i) % rb.cap
@@ -293,16 +329,7 @@ func (rb *ringBuffer) query(opts QueryOpts) QueryResult {
 		if f.Seq <= opts.AfterSeq {
 			continue
 		}
-		if opts.Channel != "" && f.Session.Channel != opts.Channel {
-			continue
-		}
-		if opts.SessionID != "" && f.Session.ID != opts.SessionID {
-			continue
-		}
-		if len(typesSet) > 0 && !typesSet[f.Type] {
-			continue
-		}
-		if opts.ReplyToMsgID != "" && f.MsgID != opts.ReplyToMsgID {
+		if !rb.matchesFilters(f, opts, typesSet) {
 			continue
 		}
 
@@ -316,6 +343,22 @@ func (rb *ringBuffer) query(opts QueryOpts) QueryResult {
 		Frames:  matched,
 		NextSeq: maxSeq,
 	}
+}
+
+func (rb *ringBuffer) matchesFilters(f Frame, opts QueryOpts, typesSet map[string]bool) bool {
+	if opts.Channel != "" && f.Session.Channel != opts.Channel {
+		return false
+	}
+	if opts.SessionID != "" && f.Session.ID != opts.SessionID {
+		return false
+	}
+	if len(typesSet) > 0 && !typesSet[f.Type] {
+		return false
+	}
+	if opts.ReplyToMsgID != "" && f.MsgID != opts.ReplyToMsgID {
+		return false
+	}
+	return true
 }
 
 func (rb *ringBuffer) subscribe() (<-chan Frame, func()) {

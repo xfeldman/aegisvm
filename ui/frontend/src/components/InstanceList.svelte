@@ -1,8 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { tetherPoll, type Instance } from '../lib/api'
-  import { startInstance, disableInstance, deleteInstance } from '../lib/api'
-  import { addToast, refreshInstances, showConfirm, setPendingPort, getUnreadMessages, setUnreadMessages, getMessageSeq, setMessageSeq } from '../lib/store.svelte'
+  import { getTetherWatermark, startInstance, disableInstance, deleteInstance, type Instance } from '../lib/api'
+  import { addToast, refreshInstances, showConfirm, setPendingPort, getUnreadMessages, setUnreadMessages } from '../lib/store.svelte'
 
   interface Props {
     instances: Instance[]
@@ -18,13 +17,16 @@
       if (!inst.enabled) continue
       const id = inst.handle || inst.id
       try {
-        const seq = getMessageSeq(id)
-        const result = await tetherPoll(id, 'default', seq, 0, undefined, 'ui')
-        const count = result.frames.filter(f => f.type === 'assistant.done').length
-        if (count > 0) {
-          setUnreadMessages(id, getUnreadMessages(id) + count)
-          setMessageSeq(id, result.next_seq)
-        }
+        const { seq } = await getTetherWatermark(id, 'ui')
+        const params = new URLSearchParams({
+          channel: 'ui', session_id: 'default',
+          after_seq: String(seq), wait_ms: '0',
+          types: 'assistant.done',
+        })
+        const res = await fetch(`/api/v1/instances/${encodeURIComponent(id)}/tether/poll?${params}`)
+        if (!res.ok) continue
+        const result = await res.json()
+        setUnreadMessages(id, result.frames?.length || 0)
       } catch {}
     }
   }
@@ -76,10 +78,7 @@
       switch (action) {
         case 'enable': await startInstance(ref); break
         case 'disable': await disableInstance(ref); break
-        case 'restart':
-          try { await disableInstance(ref) } catch {}
-          await startInstance(ref)
-          break
+        case 'restart': await restartInstance(ref); break
         case 'delete':
           if (!await showConfirm(`Delete instance "${name}"?`)) return
           await deleteInstance(ref)
