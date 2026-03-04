@@ -1755,6 +1755,9 @@ func (s *Server) handleTetherPoll(w http.ResponseWriter, r *http.Request) {
 	if v := q.Get("after_seq"); v != "" {
 		fmt.Sscanf(v, "%d", &opts.AfterSeq)
 	}
+	if v := q.Get("before_seq"); v != "" {
+		fmt.Sscanf(v, "%d", &opts.BeforeSeq)
+	}
 	if v := q.Get("limit"); v != "" {
 		fmt.Sscanf(v, "%d", &opts.Limit)
 	}

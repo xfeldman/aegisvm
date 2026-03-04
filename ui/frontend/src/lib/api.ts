@@ -297,3 +297,30 @@ export async function tetherPoll(
   }
   return res.json()
 }
+
+// Reverse poll: fetch frames before a given seq (for loading older history).
+// Returns frames in chronological order (oldest first).
+export async function tetherPollBack(
+  id: string,
+  sessionId: string,
+  beforeSeq: number,
+  limit = 50,
+  channel = 'ui',
+): Promise<TetherPollResult> {
+  const params = new URLSearchParams({
+    channel,
+    session_id: sessionId,
+    before_seq: String(beforeSeq),
+    limit: String(limit),
+    types: 'user.message,assistant.done',
+  })
+  const res = await fetch(
+    `${BASE}/instances/${encodeURIComponent(id)}/tether/poll?${params}`,
+  )
+  if (!res.ok) {
+    let msg = res.statusText
+    try { const d = await res.json(); if (d.error) msg = d.error } catch {}
+    throw new APIError(res.status, msg)
+  }
+  return res.json()
+}

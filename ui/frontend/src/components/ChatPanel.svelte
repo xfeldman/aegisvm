@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
-  import { tetherSend, tetherPoll, setTetherWatermark, openInBrowser, type TetherFrame } from '../lib/api'
+  import { tetherSend, tetherPoll, tetherPollBack, setTetherWatermark, openInBrowser, type TetherFrame } from '../lib/api'
   import { getChatState, initChatState, updateChatState, addToast, clearUnreadMessages, type ChatMessage } from '../lib/store.svelte'
   import { marked } from 'marked'
 
@@ -43,6 +43,10 @@
   let autoScroll = $state(true)
   let messagesEl: HTMLElement
   let abortCtrl: AbortController | null = null
+  let oldestSeq = $state(Infinity)
+  let hasMore = $state(true)
+  let loadingMore = $state(false)
+  let ready = $state(false)
   let lightboxSrc: string | null = $state(null)
 
   function openLightbox(src: string) { lightboxSrc = src }
@@ -63,6 +67,48 @@
     if (!messagesEl) return
     const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 40
     autoScroll = atBottom
+    // Load older messages when scrolled to top
+    if (messagesEl.scrollTop < 50 && hasMore && !loadingMore) {
+      loadOlder()
+    }
+  }
+
+  async function loadOlder() {
+    if (loadingMore || !hasMore || oldestSeq <= 1) return
+    loadingMore = true
+    try {
+      const result = await tetherPollBack(instanceId, SESSION_ID, oldestSeq, 50)
+      if (result.frames.length === 0) {
+        hasMore = false
+      } else {
+        const prevHeight = messagesEl?.scrollHeight || 0
+        const prevTop = messagesEl?.scrollTop || 0
+
+        // Build older messages from frames
+        const { messages } = getChatState(instanceId)
+        const older: ChatMessage[] = []
+        for (const frame of result.frames) {
+          if (frame.type === 'user.message') {
+            const text = (frame as any).content?.text || frame.payload?.text || ''
+            if (text) older.push({ role: 'user', text, ts: frame.ts || '' })
+          } else if (frame.type === 'assistant.done') {
+            const text = frame.payload?.text || ''
+            const images = frame.payload?.images
+            older.push({ role: 'assistant', text, images, ts: frame.ts || '' })
+          }
+        }
+        if (older.length > 0) {
+          updateChatState(instanceId, { messages: [...older, ...messages] })
+          await tick()
+          if (messagesEl) {
+            messagesEl.scrollTop = prevTop + (messagesEl.scrollHeight - prevHeight)
+          }
+        }
+        oldestSeq = result.next_seq
+        if (result.frames.length < 50) hasMore = false
+      }
+    } catch {}
+    loadingMore = false
   }
 
   function processFrames(frames: TetherFrame[], skipUserMessages = false) {
@@ -242,48 +288,68 @@
     ta.style.height = Math.min(ta.scrollHeight, 72) + 'px' // 3 lines ≈ 72px
   }
 
-  // On mount: reload full conversation from tether (server is authoritative).
-  // Tether stores both user.message and assistant.* frames, so all clients
-  // (desktop app, browser, MCP) see the same history.
+  // On mount: load recent messages from the end (reverse), then connect stream.
+  // No full history replay — older messages load on scroll-to-top.
   onMount(() => {
     initChatState(instanceId)
 
-    async function catchUp() {
-      // Start from 0 — tether has the complete conversation.
-      let cursor = 0
+    async function loadRecent() {
       updateChatState(instanceId, { messages: [], cursor: 0, thinking: null })
 
       try {
-        // Drain all available frames (API paginates at ~50)
-        while (true) {
-          const result = await tetherPoll(instanceId, SESSION_ID, cursor, 0)
-          if (result.frames.length > 0) {
-            processFrames(result.frames)
-          }
-          cursor = result.next_seq
-          updateChatState(instanceId, { cursor })
-          if (result.frames.length === 0 || result.timed_out) break
-        }
+        // Load last 50 frames (most recent first, returned in chronological order)
+        const result = await tetherPollBack(instanceId, SESSION_ID, Number.MAX_SAFE_INTEGER, 50)
+        if (result.frames.length > 0) {
+          processFrames(result.frames)
+          oldestSeq = result.next_seq
+          hasMore = result.frames.length >= 50
 
-        // Mark as read — save cursor server-side
-        setTetherWatermark(instanceId, 'ui', cursor).catch(() => {})
+          // Find max seq for watermark
+          let maxSeq = 0
+          for (const f of result.frames) {
+            if (f.seq && f.seq > maxSeq) maxSeq = f.seq
+          }
+          if (maxSeq > 0) {
+            setTetherWatermark(instanceId, 'ui', maxSeq).catch(() => {})
+          }
+        } else {
+          hasMore = false
+        }
         clearUnreadMessages(instanceId)
+
+        // Wait for DOM update, then wait for all images to load before scrolling
+        await tick()
+        if (messagesEl) {
+          const imgs = messagesEl.querySelectorAll('img')
+          if (imgs.length > 0) {
+            await Promise.all(Array.from(imgs).map(img =>
+              img.complete ? Promise.resolve() : new Promise(r => { img.onload = r; img.onerror = r })
+            ))
+          }
+          messagesEl.scrollTop = messagesEl.scrollHeight
+        }
+        ready = true
 
         // Connect to live stream for real-time frames
         startStream()
       } catch {
-        // Instance may not support tether — ignore
+        ready = true
       }
     }
 
-    catchUp().then(() => scrollToBottom())
+    loadRecent()
 
     return () => stopStream()
   })
 </script>
 
-<div class="chat">
+<svelte:window onresize={() => { if (autoScroll && messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight }} />
+
+<div class="chat" class:ready>
   <div class="messages" bind:this={messagesEl} onscroll={onScroll}>
+    {#if loadingMore}
+      <div class="loading-more">Loading older messages...</div>
+    {/if}
     {#if state.messages.length === 0 && !state.thinking}
       <div class="empty">Send a message to the agent.</div>
     {/if}
@@ -356,6 +422,16 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     overflow: hidden;
+    visibility: hidden;
+  }
+  .chat.ready {
+    visibility: visible;
+  }
+  .loading-more {
+    text-align: center;
+    padding: 8px;
+    color: var(--text-muted);
+    font-size: 12px;
   }
 
   .messages {
