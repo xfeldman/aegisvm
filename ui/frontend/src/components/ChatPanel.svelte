@@ -124,6 +124,11 @@
     messages = [...messages]
 
     switch (frame.type) {
+      case 'user.message': {
+        const text = (frame as any).content?.text || frame.payload?.text || ''
+        if (text) messages.push({ role: 'user', text, ts: frame.ts || '' })
+        break
+      }
       case 'status.presence':
         thinking = frame.payload?.state || 'thinking'
         break
@@ -203,8 +208,9 @@
           if (!line) continue
           try {
             const frame = JSON.parse(line)
-            // Only process frames for our channel/session
-            if (frame.session?.channel === 'ui' && frame.session?.id === SESSION_ID) {
+            // Only process frames for our channel/session.
+            // Skip user.message — already added locally by send().
+            if (frame.session?.channel === 'ui' && frame.session?.id === SESSION_ID && frame.type !== 'user.message') {
               handleStreamFrame(frame)
             }
           } catch {}
