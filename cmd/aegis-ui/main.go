@@ -13,6 +13,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"io/fs"
 	"log"
 	"net"
@@ -29,6 +30,9 @@ import (
 
 	uiFS "github.com/xfeldman/aegisvm/ui"
 )
+
+//go:embed appicon.png
+var appIcon []byte
 
 func main() {
 	// Single-instance guard: if another instance is running, activate it and exit.
@@ -77,6 +81,7 @@ func main() {
 
 	app := application.New(application.Options{
 		Name: "AegisVM",
+		Icon: appIcon,
 	})
 
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{

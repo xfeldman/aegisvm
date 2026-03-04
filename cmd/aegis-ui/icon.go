@@ -4,83 +4,88 @@ package main
 
 import (
 	"bytes"
+	_ "embed"
 	"image"
 	"image/color"
 	"image/png"
-	"math"
 	"runtime"
+
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/math/fixed"
 )
 
-// generateTrayIcon creates a 22x22 shield-shaped PNG for the system tray.
-// On macOS this is used as a template icon — the system tints it for
-// dark/light mode automatically (black shape on transparent background).
+//go:embed gfs-neohellenic-bold-italic.ttf
+var alphaFont []byte
+
+// generateTrayIcon creates a 22x22 PNG of the Greek letter α (alpha) for the
+// system tray. Uses the same GFS Neohellenic Bold Italic font as the app icon.
 //
-// The shield shape: dome top (semicircle) + tapered body → pointed bottom.
-// This is a placeholder; replace with a designed icon for production.
+// macOS: black on transparent — the system tints it for dark/light mode
+// automatically via SetTemplateIcon.
+// Linux: white on transparent — libappindicator uses the icon as-is.
 func generateTrayIcon() []byte {
 	const size = 22
-	// macOS: black on transparent — system tints it for dark/light via SetTemplateIcon.
-	// Linux: white on transparent — libappindicator uses the icon as-is, most panels are dark.
-	shieldColor := color.NRGBA{A: 255} // black template
+
+	fgColor := color.NRGBA{A: 255} // black template (macOS)
 	if runtime.GOOS == "linux" {
-		shieldColor = color.NRGBA{R: 255, G: 255, B: 255, A: 255} // white
+		fgColor = color.NRGBA{R: 255, G: 255, B: 255, A: 255} // white
 	}
+
+	tt, err := opentype.Parse(alphaFont)
+	if err != nil {
+		return fallbackIcon(size, fgColor)
+	}
+
+	face, err := opentype.NewFace(tt, &opentype.FaceOptions{
+		Size:    40,
+		DPI:     72,
+		Hinting: font.HintingFull,
+	})
+	if err != nil {
+		return fallbackIcon(size, fgColor)
+	}
+	defer face.Close()
+
 	img := image.NewNRGBA(image.Rect(0, 0, size, size))
 
-	cx := float64(size) / 2 // center x = 11
-
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
-			px := float64(x) + 0.5
-			py := float64(y) + 0.5
-
-			if isInShield(px, py, cx) {
-				img.SetNRGBA(x, y, shieldColor) // template (macOS) or white (Linux)
-			}
-		}
+	// Center the glyph. bounds.Min.Y is negative (above baseline),
+	// bounds.Max.Y is positive (below baseline).
+	bounds, _, ok := face.GlyphBounds('α')
+	if !ok {
+		return fallbackIcon(size, fgColor)
 	}
+	glyphW := (bounds.Max.X - bounds.Min.X).Round()
+	glyphH := (bounds.Max.Y - bounds.Min.Y).Round()
+	dotX := (size-glyphW)/2 - bounds.Min.X.Round()
+	dotY := (size-glyphH)/2 - bounds.Min.Y.Round()
+
+	d := &font.Drawer{
+		Dst:  img,
+		Src:  image.NewUniform(fgColor),
+		Face: face,
+		Dot:  fixed.P(dotX, dotY),
+	}
+	d.DrawString("α")
 
 	var buf bytes.Buffer
 	png.Encode(&buf, img)
 	return buf.Bytes()
 }
 
-// isInShield checks if a point (px, py) falls inside the shield shape.
-//
-// Shield geometry (22x22 canvas):
-//
-//	Dome:  semicircle centered at (11, 7) with radius 7
-//	Body:  from y=7 to y=20, width tapers quadratically to a point
-func isInShield(px, py, cx float64) bool {
-	const (
-		domeCenter = 7.0  // y-center of dome arc
-		domeRadius = 6.5  // horizontal and vertical radius
-		bodyBottom = 19.5 // y-coordinate of the shield point
-	)
-
-	// Above the dome
-	if py < domeCenter-domeRadius {
-		return false
-	}
-	// Below the point
-	if py > bodyBottom {
-		return false
-	}
-
-	dx := math.Abs(px - cx)
-
-	if py <= domeCenter {
-		// Dome region: semicircular arc
-		dy := py - domeCenter
-		sq := domeRadius*domeRadius - dy*dy
-		if sq <= 0 {
-			return false
+// fallbackIcon returns a simple filled circle as a last-resort tray icon.
+func fallbackIcon(size int, c color.NRGBA) []byte {
+	img := image.NewNRGBA(image.Rect(0, 0, size, size))
+	cx, cy, r := float64(size)/2, float64(size)/2, float64(size)/2-2
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			dx, dy := float64(x)+0.5-cx, float64(y)+0.5-cy
+			if dx*dx+dy*dy <= r*r {
+				img.SetNRGBA(x, y, c)
+			}
 		}
-		return dx <= math.Sqrt(sq)
 	}
-
-	// Body region: quadratic taper from full width to point
-	t := (py - domeCenter) / (bodyBottom - domeCenter) // 0 at dome, 1 at point
-	halfW := domeRadius * (1 - t*t)                    // quadratic for smoother tip
-	return dx <= halfW
+	var buf bytes.Buffer
+	png.Encode(&buf, img)
+	return buf.Bytes()
 }
