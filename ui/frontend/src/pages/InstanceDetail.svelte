@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { getInstance, startInstance, disableInstance, deleteInstance, openInBrowser, listSecrets, updateInstanceSecrets, type Instance, type SecretInfo } from '../lib/api'
+  import { getInstance, startInstance, restartInstance, disableInstance, deleteInstance, openInBrowser, listSecrets, updateInstanceSecrets, type Instance, type SecretInfo } from '../lib/api'
   import { addToast, showConfirm, consumePendingPort, loadOpenPorts, saveOpenPorts, getUnreadMessages, clearUnreadMessages } from '../lib/store.svelte'
   import LogViewer from '../components/LogViewer.svelte'
   import CommandRunner from '../components/CommandRunner.svelte'
@@ -45,10 +45,7 @@
       switch (action) {
         case 'enable': await startInstance(ref); break
         case 'disable': await disableInstance(ref); break
-        case 'restart':
-          try { await disableInstance(ref) } catch {}
-          await startInstance(ref)
-          break
+        case 'restart': await restartInstance(ref); break
         case 'delete':
           if (!await showConfirm(`Delete instance "${ref}"?`)) return
           await deleteInstance(ref)
@@ -173,7 +170,7 @@
     if (!instance) return
     const ref = instance.handle || instance.id
     try {
-      await startInstance(ref)
+      await restartInstance(ref)
       restartRequired = false
       addToast('Restart requested', 'success')
       setTimeout(load, 500)

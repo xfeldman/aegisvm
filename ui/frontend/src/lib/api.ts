@@ -122,6 +122,9 @@ export const getInstance = (id: string) =>
 export const startInstance = (id: string) =>
   request<unknown>('POST', `/instances/${encodeURIComponent(id)}/start`)
 
+export const restartInstance = (id: string) =>
+  request<unknown>('POST', `/instances/${encodeURIComponent(id)}/restart`)
+
 export const disableInstance = (id: string) =>
   request<unknown>('POST', `/instances/${encodeURIComponent(id)}/disable`)
 

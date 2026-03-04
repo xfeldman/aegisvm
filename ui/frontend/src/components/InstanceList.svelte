@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { tetherPoll, type Instance } from '../lib/api'
-  import { startInstance, disableInstance, deleteInstance } from '../lib/api'
+  import { startInstance, restartInstance, disableInstance, deleteInstance } from '../lib/api'
   import { addToast, refreshInstances, showConfirm, setPendingPort, getUnreadMessages, setUnreadMessages, getMessageSeq, setMessageSeq } from '../lib/store.svelte'
 
   interface Props {
@@ -76,10 +76,7 @@
       switch (action) {
         case 'enable': await startInstance(ref); break
         case 'disable': await disableInstance(ref); break
-        case 'restart':
-          try { await disableInstance(ref) } catch {}
-          await startInstance(ref)
-          break
+        case 'restart': await restartInstance(ref); break
         case 'delete':
           if (!await showConfirm(`Delete instance "${name}"?`)) return
           await deleteInstance(ref)

@@ -1195,21 +1195,14 @@ func cmdInstanceRestart(client *http.Client) {
 		os.Exit(1)
 	}
 
-	// Disable (ignore errors — instance may already be stopped)
-	resp, err := client.Post(fmt.Sprintf("http://aegis/v1/instances/%s/disable", instID), "application/json", nil)
-	if err == nil {
-		resp.Body.Close()
-	}
-
-	// Start
-	resp, err = client.Post(fmt.Sprintf("http://aegis/v1/instances/%s/start", instID), "application/json", nil)
+	resp, err := client.Post(fmt.Sprintf("http://aegis/v1/instances/%s/restart", instID), "application/json", nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "restart: start failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "restart failed: %v\n", err)
 		os.Exit(1)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "restart: start failed (HTTP %d)\n", resp.StatusCode)
+		fmt.Fprintf(os.Stderr, "restart failed (HTTP %d)\n", resp.StatusCode)
 		os.Exit(1)
 	}
 
