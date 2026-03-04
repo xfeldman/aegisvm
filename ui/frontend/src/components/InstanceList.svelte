@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { tetherPoll, getTetherWatermark, startInstance, disableInstance, deleteInstance, type Instance } from '../lib/api'
+  import { getTetherWatermark, startInstance, disableInstance, deleteInstance, type Instance } from '../lib/api'
   import { addToast, refreshInstances, showConfirm, setPendingPort, getUnreadMessages, setUnreadMessages } from '../lib/store.svelte'
 
   interface Props {
@@ -18,13 +18,15 @@
       const id = inst.handle || inst.id
       try {
         const { seq } = await getTetherWatermark(id, 'ui')
-        const result = await tetherPoll(id, 'default', seq, 0, undefined, 'ui')
-        const count = result.frames.filter(f => f.type === 'assistant.done').length
-        if (count > 0) {
-          setUnreadMessages(id, count)
-        } else {
-          setUnreadMessages(id, 0)
-        }
+        const params = new URLSearchParams({
+          channel: 'ui', session_id: 'default',
+          after_seq: String(seq), wait_ms: '0',
+          types: 'assistant.done',
+        })
+        const res = await fetch(`/api/v1/instances/${encodeURIComponent(id)}/tether/poll?${params}`)
+        if (!res.ok) continue
+        const result = await res.json()
+        setUnreadMessages(id, result.frames?.length || 0)
       } catch {}
     }
   }

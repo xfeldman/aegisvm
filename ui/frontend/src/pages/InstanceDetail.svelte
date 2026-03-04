@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { getInstance, startInstance, restartInstance, disableInstance, deleteInstance, openInBrowser, listSecrets, updateInstanceSecrets, getTetherWatermark, tetherPoll, type Instance, type SecretInfo } from '../lib/api'
+  import { getInstance, startInstance, restartInstance, disableInstance, deleteInstance, openInBrowser, listSecrets, updateInstanceSecrets, getTetherWatermark, type Instance, type SecretInfo } from '../lib/api'
   import { addToast, showConfirm, consumePendingPort, loadOpenPorts, saveOpenPorts, getUnreadMessages, setUnreadMessages, clearUnreadMessages } from '../lib/store.svelte'
   import LogViewer from '../components/LogViewer.svelte'
   import CommandRunner from '../components/CommandRunner.svelte'
@@ -182,9 +182,17 @@
   async function checkUnread() {
     try {
       const { seq } = await getTetherWatermark(id, 'ui')
-      const result = await tetherPoll(id, 'default', seq, 0, undefined, 'ui')
-      const count = result.frames.filter((f: any) => f.type === 'assistant.done').length
-      setUnreadMessages(id, count)
+      // Use types filter to only fetch assistant.done — avoids pagination issues
+      // with large numbers of delta frames between watermark and done
+      const params = new URLSearchParams({
+        channel: 'ui', session_id: 'default',
+        after_seq: String(seq), wait_ms: '0',
+        types: 'assistant.done',
+      })
+      const res = await fetch(`/api/v1/instances/${encodeURIComponent(id)}/tether/poll?${params}`)
+      if (!res.ok) return
+      const result = await res.json()
+      setUnreadMessages(id, result.frames?.length || 0)
     } catch {}
   }
 

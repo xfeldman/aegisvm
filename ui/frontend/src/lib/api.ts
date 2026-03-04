@@ -312,7 +312,6 @@ export async function tetherPollBack(
     session_id: sessionId,
     before_seq: String(beforeSeq),
     limit: String(limit),
-    types: 'user.message,assistant.done',
   })
   const res = await fetch(
     `${BASE}/instances/${encodeURIComponent(id)}/tether/poll?${params}`,

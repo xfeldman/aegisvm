@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
-  import { tetherSend, tetherPoll, tetherPollBack, setTetherWatermark, openInBrowser, type TetherFrame } from '../lib/api'
+  import { tetherSend, tetherPollBack, setTetherWatermark, openInBrowser, type TetherFrame } from '../lib/api'
   import { getChatState, initChatState, updateChatState, addToast, clearUnreadMessages, type ChatMessage } from '../lib/store.svelte'
   import { marked } from 'marked'
 
@@ -73,6 +73,26 @@
     }
   }
 
+  // Convert history frames (user.message + assistant.done) to ChatMessages.
+  // Pure function — no streaming state, no side effects.
+  function framesToMessages(frames: TetherFrame[]): ChatMessage[] {
+    const msgs: ChatMessage[] = []
+    for (const f of frames) {
+      if (f.type === 'user.message') {
+        const text = (f as any).content?.text || f.payload?.text || ''
+        if (text) msgs.push({ role: 'user', text, ts: f.ts || '' })
+      } else if (f.type === 'assistant.done') {
+        msgs.push({
+          role: 'assistant',
+          text: f.payload?.text || '',
+          images: f.payload?.images,
+          ts: f.ts || '',
+        })
+      }
+    }
+    return msgs
+  }
+
   async function loadOlder() {
     if (loadingMore || !hasMore || oldestSeq <= 1) return
     loadingMore = true
@@ -83,21 +103,9 @@
       } else {
         const prevHeight = messagesEl?.scrollHeight || 0
         const prevTop = messagesEl?.scrollTop || 0
-
-        // Build older messages from frames
-        const { messages } = getChatState(instanceId)
-        const older: ChatMessage[] = []
-        for (const frame of result.frames) {
-          if (frame.type === 'user.message') {
-            const text = (frame as any).content?.text || frame.payload?.text || ''
-            if (text) older.push({ role: 'user', text, ts: frame.ts || '' })
-          } else if (frame.type === 'assistant.done') {
-            const text = frame.payload?.text || ''
-            const images = frame.payload?.images
-            older.push({ role: 'assistant', text, images, ts: frame.ts || '' })
-          }
-        }
+        const older = framesToMessages(result.frames)
         if (older.length > 0) {
+          const { messages } = getChatState(instanceId)
           updateChatState(instanceId, { messages: [...older, ...messages] })
           await tick()
           if (messagesEl) {
@@ -111,94 +119,63 @@
     loadingMore = false
   }
 
-  function processFrames(frames: TetherFrame[], skipUserMessages = false) {
+  // Handle a single live stream frame — manages streaming state (deltas, presence).
+  function handleStreamFrame(frame: TetherFrame) {
     let { messages, thinking } = getChatState(instanceId)
     messages = [...messages]
-    let changed = false
 
-    for (const frame of frames) {
-      if (frame.type === 'user.message') {
-        if (skipUserMessages) continue
-        const text = frame.content?.text || frame.payload?.text || ''
-        if (text) {
-          messages.push({
-            role: 'user',
-            text,
-            ts: frame.ts || new Date().toISOString(),
-          })
-          changed = true
-        }
-      } else if (frame.type === 'status.presence') {
+    switch (frame.type) {
+      case 'status.presence':
         thinking = frame.payload?.state || 'thinking'
-        changed = true
-      } else if (frame.type === 'reasoning.delta') {
+        break
+      case 'reasoning.delta': {
         const text = frame.payload?.text || ''
         const last = messages[messages.length - 1]
-        if (last && last.role === 'assistant' && last.streaming) {
-          messages[messages.length - 1] = {
-            ...last,
-            reasoning: (last.reasoning || '') + text,
-          }
+        if (last?.role === 'assistant' && last.streaming) {
+          messages[messages.length - 1] = { ...last, reasoning: (last.reasoning || '') + text }
         } else {
-          messages.push({
-            role: 'assistant',
-            text: '',
-            reasoning: text,
-            ts: frame.ts || new Date().toISOString(),
-            streaming: true,
-          })
+          messages.push({ role: 'assistant', text: '', reasoning: text, ts: frame.ts || '', streaming: true })
         }
         thinking = null
-        changed = true
-      } else if (frame.type === 'reasoning.done') {
+        break
+      }
+      case 'reasoning.done': {
         const last = messages[messages.length - 1]
-        if (last && last.role === 'assistant') {
+        if (last?.role === 'assistant') {
           messages[messages.length - 1] = { ...last, reasoningDone: true }
         }
-        changed = true
-      } else if (frame.type === 'assistant.delta') {
+        break
+      }
+      case 'assistant.delta': {
         const text = frame.payload?.text || ''
         const last = messages[messages.length - 1]
-        if (last && last.role === 'assistant' && last.streaming) {
+        if (last?.role === 'assistant' && last.streaming) {
           messages[messages.length - 1] = { ...last, text: last.text + text }
         } else {
-          messages.push({
-            role: 'assistant',
-            text,
-            ts: frame.ts || new Date().toISOString(),
-            streaming: true,
-          })
+          messages.push({ role: 'assistant', text, ts: frame.ts || '', streaming: true })
         }
-        changed = true
-      } else if (frame.type === 'assistant.done') {
-        const text = frame.payload?.text || ''
-        const images = frame.payload?.images
+        break
+      }
+      case 'assistant.done': {
         const last = messages[messages.length - 1]
-        if (last && last.role === 'assistant' && last.streaming) {
-          messages[messages.length - 1] = {
-            ...last,
-            text,
-            images,
-            streaming: false,
-          }
+        const done: ChatMessage = {
+          role: 'assistant', text: frame.payload?.text || '',
+          images: frame.payload?.images, ts: frame.ts || '',
+        }
+        if (last?.role === 'assistant' && last.streaming) {
+          messages[messages.length - 1] = { ...done, reasoning: last.reasoning, reasoningDone: last.reasoningDone }
         } else {
-          messages.push({
-            role: 'assistant',
-            text,
-            ts: frame.ts || new Date().toISOString(),
-            images,
-            streaming: false,
-          })
+          messages.push(done)
         }
         thinking = null
-        changed = true
+        break
       }
+      default:
+        return // unknown frame type — no state change
     }
 
-    if (changed) {
-      updateChatState(instanceId, { messages, thinking })
-      scrollToBottom()
-    }
+    updateChatState(instanceId, { messages, thinking })
+    scrollToBottom()
   }
 
   // Live stream — real-time frame delivery via NDJSON stream.
@@ -229,11 +206,7 @@
             const frame = JSON.parse(line)
             // Only process frames for our channel/session
             if (frame.session?.channel === 'ui' && frame.session?.id === SESSION_ID) {
-              processFrames([frame], true)
-              if (frame.seq) {
-                setTetherWatermark(instanceId, 'ui', frame.seq).catch(() => {})
-                clearUnreadMessages(instanceId)
-              }
+              handleStreamFrame(frame)
             }
           } catch {}
         }
@@ -297,21 +270,17 @@
       updateChatState(instanceId, { messages: [], cursor: 0, thinking: null })
 
       try {
-        // Load last 50 frames (most recent first, returned in chronological order)
-        const result = await tetherPollBack(instanceId, SESSION_ID, Number.MAX_SAFE_INTEGER, 50)
+        const result = await tetherPollBack(instanceId, SESSION_ID, Number.MAX_SAFE_INTEGER, 200)
         if (result.frames.length > 0) {
-          processFrames(result.frames)
+          // Replay all frames to reconstruct exact state (including thinking, tool use, streaming)
+          for (const frame of result.frames) {
+            handleStreamFrame(frame)
+          }
           oldestSeq = result.next_seq
-          hasMore = result.frames.length >= 50
+          hasMore = result.frames.length >= 200
 
-          // Find max seq for watermark
-          let maxSeq = 0
-          for (const f of result.frames) {
-            if (f.seq && f.seq > maxSeq) maxSeq = f.seq
-          }
-          if (maxSeq > 0) {
-            setTetherWatermark(instanceId, 'ui', maxSeq).catch(() => {})
-          }
+          const maxSeq = Math.max(...result.frames.map(f => f.seq || 0))
+          if (maxSeq > 0) setTetherWatermark(instanceId, 'ui', maxSeq).catch(() => {})
         } else {
           hasMore = false
         }
