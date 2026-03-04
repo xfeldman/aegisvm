@@ -419,6 +419,45 @@ func startDaemon(aegisdBin string) {
 	log.Println("aegis-ui: aegisd did not start within timeout")
 }
 
+// stopDaemon sends SIGTERM to aegisd and waits for it to exit.
+func stopDaemon() {
+	data, err := os.ReadFile(pidFilePath())
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return
+	}
+
+	err = proc.Signal(syscall.SIGTERM)
+	if err != nil && errors.Is(err, syscall.EPERM) {
+		// Daemon owned by root (sudo/pkexec) — escalate
+		sudoKill := exec.Command("sudo", "kill", "-TERM", strconv.Itoa(pid))
+		sudoKill.Run()
+	}
+
+	// Wait up to 10s for graceful shutdown
+	for i := 0; i < 100; i++ {
+		if proc.Signal(syscall.Signal(0)) != nil {
+			os.Remove(pidFilePath())
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	log.Println("aegis-ui: daemon did not stop within timeout")
+}
+
+// restartDaemon stops the daemon and starts it again.
+func restartDaemon() {
+	stopDaemon()
+	ensureDaemon()
+}
+
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
