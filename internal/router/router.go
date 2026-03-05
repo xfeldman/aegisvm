@@ -246,8 +246,10 @@ func (r *Router) handlePortConn(ctx context.Context, clientConn net.Conn, pp *po
 	r.lm.ResetActivity(pp.instanceID)
 	defer r.lm.OnConnectionClose(pp.instanceID)
 
-	// Ensure instance is running (wake/boot)
-	ensureCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Single deadline for the entire flow: boot + dial.
+	// Whatever time remains after boot is used for dialing the backend.
+	deadline := time.Now().Add(30 * time.Second)
+	ensureCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
 	if err := r.lm.EnsureInstance(ensureCtx, pp.instanceID); err != nil {
@@ -266,8 +268,12 @@ func (r *Router) handlePortConn(ctx context.Context, clientConn net.Conn, pp *po
 		return
 	}
 
-	// L4 TCP relay to backend
-	r.relay(clientConn, backend)
+	// Use remaining time from the shared deadline for dialing.
+	remaining := time.Until(deadline)
+	if remaining < 5*time.Second {
+		remaining = 5 * time.Second // guarantee minimum dial window
+	}
+	r.relay(clientConn, backend, remaining)
 }
 
 // dialBackend connects to the backend with retries.
@@ -288,8 +294,8 @@ func (r *Router) dialBackend(backend string, timeout time.Duration) (net.Conn, e
 }
 
 // relay does bidirectional TCP copy between client and backend.
-func (r *Router) relay(clientConn net.Conn, backend string) {
-	backendConn, err := r.dialBackend(backend, 10*time.Second)
+func (r *Router) relay(clientConn net.Conn, backend string, dialTimeout time.Duration) {
+	backendConn, err := r.dialBackend(backend, dialTimeout)
 	if err != nil {
 		log.Printf("router: dial backend %s: %v", backend, err)
 		return
@@ -321,8 +327,9 @@ func (r *Router) handleRequest(w http.ResponseWriter, req *http.Request) {
 	r.lm.ResetActivity(inst.ID)
 	defer r.lm.OnConnectionClose(inst.ID)
 
-	// Ensure instance is running (wake if paused, boot if stopped)
-	ctx, cancel := context.WithTimeout(req.Context(), 30*time.Second)
+	// Single deadline for the entire flow: boot + dial.
+	deadline := time.Now().Add(30 * time.Second)
+	ctx, cancel := context.WithDeadline(req.Context(), deadline)
 	defer cancel()
 
 	if err := r.lm.EnsureInstance(ctx, inst.ID); err != nil {
@@ -349,9 +356,15 @@ func (r *Router) handleRequest(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Use remaining time from the shared deadline for dialing.
+	remaining := time.Until(deadline)
+	if remaining < 5*time.Second {
+		remaining = 5 * time.Second
+	}
+
 	// Check for WebSocket upgrade
 	if isWebSocketUpgrade(req) {
-		r.handleWebSocket(w, req, target)
+		r.handleWebSocket(w, req, target, remaining)
 		return
 	}
 
@@ -360,7 +373,7 @@ func (r *Router) handleRequest(w http.ResponseWriter, req *http.Request) {
 	proxy := &httputil.ReverseProxy{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return r.dialBackend(addr, 10*time.Second)
+				return r.dialBackend(addr, remaining)
 			},
 		},
 		Director: func(r *http.Request) {
@@ -378,9 +391,9 @@ func (r *Router) handleRequest(w http.ResponseWriter, req *http.Request) {
 	proxy.ServeHTTP(w, req)
 }
 
-func (r *Router) handleWebSocket(w http.ResponseWriter, req *http.Request, target string) {
+func (r *Router) handleWebSocket(w http.ResponseWriter, req *http.Request, target string, dialTimeout time.Duration) {
 	// Dial backend with retries (app may not have bound port yet after wake)
-	backendConn, err := r.dialBackend(target, 10*time.Second)
+	backendConn, err := r.dialBackend(target, dialTimeout)
 	if err != nil {
 		http.Error(w, "WebSocket backend connection failed", http.StatusBadGateway)
 		return
