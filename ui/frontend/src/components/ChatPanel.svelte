@@ -116,6 +116,11 @@
       }
     } catch {}
     loadingMore = false
+    // If still near top after inserting (e.g. tall message fills viewport), keep loading
+    await tick()
+    if (messagesEl && messagesEl.scrollTop < 50 && hasMore) {
+      loadOlder()
+    }
   }
 
   // Handle a single live stream frame — manages streaming state (deltas, presence).

@@ -64,8 +64,26 @@ func NewStore(persist PersistFunc) *Store {
 
 // Append adds a frame to the instance's ring buffer, assigns a seq,
 // and notifies subscribers and poll waiters. Returns the assigned seq.
+//
+// Delta frames (assistant.delta, reasoning.delta, status.presence) are
+// streamed to live subscribers but NOT stored in the ring buffer. This
+// prevents streaming deltas from evicting boundary frames (user.message,
+// assistant.done) that the UI needs for history replay.
 func (s *Store) Append(instanceID string, frame Frame) int64 {
 	rb := s.getOrCreate(instanceID)
+
+	if isTransientFrame(frame.Type) {
+		// Transient frames: assign seq, notify subscribers, persist, but don't store in ring.
+		seq := rb.broadcastOnly(frame)
+		if s.persist != nil {
+			frame.Seq = seq
+			if data, err := json.Marshal(frame); err == nil {
+				s.persist(instanceID, seq, data)
+			}
+		}
+		return seq
+	}
+
 	seq := rb.append(frame)
 
 	if s.persist != nil {
@@ -76,6 +94,18 @@ func (s *Store) Append(instanceID string, frame Frame) int64 {
 	}
 
 	return seq
+}
+
+// isTransientFrame returns true for frame types that are only useful for
+// live streaming and should not consume ring buffer space.
+// status.presence is kept in the buffer so the UI can restore the correct
+// state indicator (thinking, running tool, etc.) on tab switch.
+func isTransientFrame(typ string) bool {
+	switch typ {
+	case "assistant.delta", "reasoning.delta":
+		return true
+	}
+	return false
 }
 
 // NextSeq bumps the seq counter for an instance and returns the assigned seq.
@@ -243,6 +273,31 @@ func (rb *ringBuffer) append(frame Frame) int64 {
 	copy(subs, rb.subs)
 
 	// Wake poll waiters: close current channel, create new one
+	oldWake := rb.wakeCh
+	rb.wakeCh = make(chan struct{})
+	rb.mu.Unlock()
+
+	close(oldWake)
+
+	for _, ch := range subs {
+		select {
+		case ch <- frame:
+		default:
+		}
+	}
+
+	return seq
+}
+
+// broadcastOnly assigns a seq and notifies subscribers/poll waiters without
+// storing the frame in the ring buffer. Used for transient frames (deltas, presence).
+func (rb *ringBuffer) broadcastOnly(frame Frame) int64 {
+	seq := atomic.AddInt64(&rb.seqCounter, 1)
+	frame.Seq = seq
+
+	rb.mu.Lock()
+	subs := make([]chan Frame, len(rb.subs))
+	copy(subs, rb.subs)
 	oldWake := rb.wakeCh
 	rb.wakeCh = make(chan struct{})
 	rb.mu.Unlock()
