@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AegisVM — Give an AI agent a computer</title>
+  <meta name="description" content="A local, scale-to-zero microVM runtime for autonomous AI agent workloads. Real VM isolation, sub-second boot, wake-on-demand.">
+  <meta property="og:title" content="AegisVM — Give an AI agent a computer">
+  <meta property="og:description" content="Local microVM runtime for AI agents. Real isolation, scale-to-zero, sub-second boot.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://aegisvm.cc">
+  <meta property="og:image" content="https://aegisvm.cc/assets/og-image.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Nav -->
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="/" class="nav-logo">
+        <img src="assets/favicon.svg" alt="AegisVM" width="32" height="32">
+        <span>AegisVM</span>
+      </a>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#agent-kit">Agent Kit</a>
+        <a href="#how-it-works">How It Works</a>
+        <a href="https://github.com/xfeldman/aegisvm/tree/main/docs" target="_blank">Docs</a>
+        <a href="#download" class="btn btn-sm">Download</a>
+      </div>
+      <button class="nav-toggle" aria-label="Menu">
+        <span></span><span></span><span></span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="hero-glow"></div>
+    <div class="container">
+      <div class="hero-badge">Open Source &middot; Apache 2.0</div>
+      <h1>Give an AI agent<br><span class="gradient-text">a computer.</span></h1>
+      <p class="hero-sub">A local, scale-to-zero microVM runtime for autonomous agent workloads.<br>Real VM isolation. Sub-second boot. Wake on demand.</p>
+      <div class="hero-actions">
+        <a href="#download" class="btn btn-primary btn-lg">Download Desktop App</a>
+        <a href="https://github.com/xfeldman/aegisvm" target="_blank" class="btn btn-outline btn-lg">GitHub</a>
+      </div>
+      <div class="hero-stats">
+        <div class="stat">
+          <span class="stat-value">~500ms</span>
+          <span class="stat-label">Cold boot</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value">~35ms</span>
+          <span class="stat-label">Resume from pause</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value">~120MB</span>
+          <span class="stat-label">Agent idle footprint</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- App Screenshot -->
+  <section class="screenshot-section">
+    <div class="container">
+      <img src="assets/app-chat.png" alt="AegisVM Desktop — Agent Chat" class="screenshot-img" loading="lazy">
+    </div>
+  </section>
+
+  <!-- Why -->
+  <section class="section" id="why">
+    <div class="container">
+      <h2 class="section-title">Why AegisVM</h2>
+      <p class="section-sub">Agent workloads don't fit containers or serverless. They run for minutes or hours, need real isolation, maintain long-lived connections, and sit idle most of the time.</p>
+      <div class="grid grid-3">
+        <div class="card">
+          <div class="card-icon gold">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+          </div>
+          <h3>Real VM Isolation</h3>
+          <p>Each instance is a microVM with its own kernel. Not a container sharing the host kernel. Code inside cannot see your files, network, or processes.</p>
+        </div>
+        <div class="card">
+          <div class="card-icon green">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          </div>
+          <h3>Scale to Zero</h3>
+          <p>Nothing runs unless triggered. Paused VMs resume in ~35ms. Stopped VMs cold-boot in ~500ms. The router wakes VMs on incoming connections automatically.</p>
+        </div>
+        <div class="card">
+          <div class="card-icon blue">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+          </div>
+          <h3>Your Machine, Your Data</h3>
+          <p>Everything runs locally. No cloud dependency, no per-second billing, no data leaving your machine. Full control over your agent infrastructure.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Comparison -->
+  <section class="section section-dark" id="comparison">
+    <div class="container">
+      <h2 class="section-title">Why Not Just Use...</h2>
+      <div class="table-wrap">
+        <table class="compare-table">
+          <thead>
+            <tr>
+              <th>Alternative</th>
+              <th>Limitation</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>Docker / Podman</td><td>Shared host kernel — no real isolation. No scale-to-zero or wake-on-connect.</td></tr>
+            <tr><td>E2B</td><td>Cloud-hosted — your data leaves your machine, pay per-second.</td></tr>
+            <tr><td>Firecracker / CH</td><td>VMMs, not runtimes. No lifecycle, networking, port mapping, or guest agent.</td></tr>
+            <tr><td>Lambda / Cloud Functions</td><td>Stateless, second-scale cold starts, no persistent connections or ports.</td></tr>
+            <tr><td>Running on host</td><td>No isolation, no resource limits, agents can read your files and credentials.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="section" id="features">
+    <div class="container">
+      <h2 class="section-title">Platform Features</h2>
+      <div class="grid grid-2">
+        <div class="feature">
+          <h3><span class="feat-icon">&#9889;</span> Sub-second Boot</h3>
+          <p>MicroVMs boot in ~500ms cold, resume in ~35ms from pause. Powered by libkrun on macOS (Apple HVF) and Cloud Hypervisor on Linux (KVM).</p>
+        </div>
+        <div class="feature">
+          <h3><span class="feat-icon">&#128274;</span> Wake-on-Connect</h3>
+          <p>Declare ports with <code>--expose</code>. The router accepts connections, wakes the VM, and proxies traffic. No manual lifecycle management.</p>
+        </div>
+        <div class="feature">
+          <h3><span class="feat-icon">&#128230;</span> OCI Images</h3>
+          <p>Use any Docker image as the VM filesystem. <code>--image python:3.12</code>, <code>--image node:20</code>. Env vars automatically propagated.</p>
+        </div>
+        <div class="feature">
+          <h3><span class="feat-icon">&#128193;</span> Workspaces</h3>
+          <p>Mount host directories into VMs at <code>/workspace</code>. Share project files between host and agents seamlessly.</p>
+        </div>
+        <div class="feature">
+          <h3><span class="feat-icon">&#128273;</span> Encrypted Secrets</h3>
+          <p>AES-256-GCM encrypted store. Explicit injection only — agents get only the secrets you specify. Default: inject nothing.</p>
+        </div>
+        <div class="feature">
+          <h3><span class="feat-icon">&#129302;</span> MCP Integration</h3>
+          <p>Ship with an MCP server that lets LLMs (Claude Code) drive sandboxed VMs directly — start instances, exec commands, read logs, manage secrets.</p>
+        </div>
+        <div class="feature">
+          <h3><span class="feat-icon">&#128257;</span> Kits</h3>
+          <p>Optional add-on bundles that extend the runtime. Core AegisVM is a clean sandbox substrate. Kits add opinionated capabilities on top.</p>
+        </div>
+        <div class="feature">
+          <h3><span class="feat-icon">&#128187;</span> Desktop App</h3>
+          <p>Native app with everything bundled — runtime, CLI, daemon, Agent Kit. Dashboard, chat, logs, exec, config editor, secrets manager.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Agent Kit -->
+  <section class="section section-accent" id="agent-kit">
+    <div class="container">
+      <div class="ak-header">
+        <div class="ak-badge">Agent Kit</div>
+        <h2 class="section-title">Turn a VM into an<br>autonomous LLM agent.</h2>
+        <p class="section-sub">22 built-in tools, persistent memory, scheduled tasks, web search, image generation, multi-agent orchestration. All in a ~120MB idle footprint with scale-to-zero.</p>
+      </div>
+
+      <div class="grid grid-3 ak-tools">
+        <div class="card card-tool">
+          <h4>File Operations</h4>
+          <div class="tool-list">
+            <span class="tool-tag">bash</span>
+            <span class="tool-tag">read_file</span>
+            <span class="tool-tag">write_file</span>
+            <span class="tool-tag">edit_file</span>
+            <span class="tool-tag">glob</span>
+            <span class="tool-tag">grep</span>
+          </div>
+        </div>
+        <div class="card card-tool">
+          <h4>Web & Search</h4>
+          <div class="tool-list">
+            <span class="tool-tag">web_search</span>
+            <span class="tool-tag">image_search</span>
+            <span class="tool-tag">web_fetch</span>
+          </div>
+        </div>
+        <div class="card card-tool">
+          <h4>Image Generation</h4>
+          <div class="tool-list">
+            <span class="tool-tag">image_generate</span>
+            <span class="tool-tag">respond_with_image</span>
+          </div>
+        </div>
+        <div class="card card-tool">
+          <h4>Memory</h4>
+          <div class="tool-list">
+            <span class="tool-tag">memory_store</span>
+            <span class="tool-tag">memory_search</span>
+            <span class="tool-tag">memory_delete</span>
+          </div>
+          <p class="tool-desc">Auto-injection into LLM context</p>
+        </div>
+        <div class="card card-tool">
+          <h4>Scheduled Tasks</h4>
+          <div class="tool-list">
+            <span class="tool-tag">cron_create</span>
+            <span class="tool-tag">cron_list</span>
+            <span class="tool-tag">cron_delete</span>
+            <span class="tool-tag">cron_disable</span>
+          </div>
+          <p class="tool-desc">Scale-to-zero cron</p>
+        </div>
+        <div class="card card-tool">
+          <h4>Self-Management</h4>
+          <div class="tool-list">
+            <span class="tool-tag">self_info</span>
+            <span class="tool-tag">self_restart</span>
+            <span class="tool-tag">notify</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="ak-highlights">
+        <div class="grid grid-3">
+          <div class="highlight">
+            <h4>Messenger Gateway</h4>
+            <p>Connect agents to Telegram and other messengers. The gateway stays running while VMs sleep — wake-on-message with zero config.</p>
+          </div>
+          <div class="highlight">
+            <h4>Multi-Agent Orchestration</h4>
+            <p>Agents can spawn child VMs for sub-tasks. Each child gets its own isolated environment with configurable depth limits.</p>
+          </div>
+          <div class="highlight">
+            <h4>Any LLM</h4>
+            <p>OpenAI, Anthropic, or local models via Ollama/LM Studio/vLLM. Switch models per-agent with a config change.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Agent Kit vs -->
+      <div class="ak-compare">
+        <h3>Agent Kit vs. Alternatives</h3>
+        <div class="table-wrap">
+          <table class="compare-table">
+            <thead>
+              <tr>
+                <th></th>
+                <th>Agent Kit</th>
+                <th>OpenClaw</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>Architecture</td><td>Modular Go binary + optional MCP</td><td>Monolithic Python framework</td></tr>
+              <tr><td>Idle footprint</td><td class="highlight-cell">~120MB</td><td>~200MB+</td></tr>
+              <tr><td>Core tools</td><td class="highlight-cell">22 built-in (Go, zero overhead)</td><td>Python-based, runtime-dependent</td></tr>
+              <tr><td>Memory</td><td class="highlight-cell">Built-in with auto-injection</td><td>Requires external service</td></tr>
+              <tr><td>Cron</td><td class="highlight-cell">Built-in with scale-to-zero</td><td>Not included</td></tr>
+              <tr><td>VM isolation</td><td class="highlight-cell">Real microVM per agent</td><td>Container or process</td></tr>
+              <tr><td>Scale-to-zero</td><td class="highlight-cell">Native (pause/resume in ms)</td><td>Not supported</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Tether -->
+  <section class="section" id="how-it-works">
+    <div class="container">
+      <h2 class="section-title">How It Works</h2>
+      <div class="arch-diagram">
+        <pre class="arch-pre">
+Host
+├── aegisd              daemon: API, lifecycle, router, VMM backend
+├── aegis               CLI
+├── aegis-mcp           MCP server for host LLMs (Claude Code integration)
+├── aegis-gateway       per-instance daemon (Telegram bridge, cron scheduler)
+│
+└── VMM (libkrun / Cloud Hypervisor)
+    ├── VM 1: aegis-harness (PID 1) → user command
+    ├── VM 2: aegis-harness (PID 1) → aegis-agent (Agent Kit)
+    │         ├── 22 built-in tools (Go, compiled in)
+    │         ├── memory, cron, sessions (workspace-backed)
+    │         └── LLM API (OpenAI / Anthropic / local)
+    └── ...</pre>
+      </div>
+
+      <div class="tether-section">
+        <h3>Tether — Bidirectional Agent Messaging</h3>
+        <p>Everything flows through Tether — Claude Code delegation, Telegram messages, cron tasks, multi-agent orchestration.</p>
+        <div class="tether-flow">
+          <pre class="arch-pre">
+Host (Claude Code) ──tether──► Agent VM ──tether──► Child Agent VM
+Telegram ──gateway──► tether ──┘
+Cron     ──gateway──► tether ──┘</pre>
+        </div>
+        <div class="grid grid-3">
+          <div class="feature-mini">
+            <strong>Wake-on-Message</strong>
+            <p>Paused VM wakes in ~35ms on incoming tether frame. Gateway stays running while VMs sleep.</p>
+          </div>
+          <div class="feature-mini">
+            <strong>Sessions</strong>
+            <p>Each conversation gets independent history. Persists across VM restarts.</p>
+          </div>
+          <div class="feature-mini">
+            <strong>Async Streaming</strong>
+            <p>Send messages and read responses later. Long-poll support for real-time streaming.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Workflow: Claude Code -->
+  <section class="section section-dark" id="workflows">
+    <div class="container">
+      <h2 class="section-title">Workflows</h2>
+
+      <div class="workflow">
+        <h3>Claude Code + AegisVM</h3>
+        <p>Install the MCP server and Claude Code can drive sandboxed VMs directly.</p>
+        <div class="code-block">
+          <div class="code-header">Terminal</div>
+          <pre><code>$ aegis mcp install     <span class="code-comment"># register with Claude Code</span>
+
+<span class="code-comment"># Now in Claude Code:</span>
+Claude: tether_send(instance="my-agent", text="Research ML frameworks")
+Claude: tether_read(instance="my-agent", wait_ms=30000)
+        → The agent responded with a detailed comparison...</code></pre>
+        </div>
+      </div>
+
+      <div class="workflow">
+        <h3>Telegram Bot Agent</h3>
+        <p>Connect an agent to Telegram — messages wake the VM, agent responds, VM goes back to sleep.</p>
+        <div class="code-block">
+          <div class="code-header">Terminal</div>
+          <pre><code>$ aegis secret set OPENAI_API_KEY sk-...
+$ aegis secret set TELEGRAM_BOT_TOKEN 123456:ABC-...
+$ aegis instance start --kit agent --name my-bot \
+    --secret OPENAI_API_KEY --secret TELEGRAM_BOT_TOKEN
+
+<span class="code-comment"># Send a message to your bot on Telegram — it just works.</span>
+<span class="code-comment"># VM wakes in ~35ms, processes, responds, sleeps.</span></code></pre>
+        </div>
+      </div>
+
+      <div class="workflow">
+        <h3>Scheduled Agent Tasks</h3>
+        <p>Agents can create their own cron jobs. The gateway triggers them even while the VM is paused.</p>
+        <div class="code-block">
+          <div class="code-header">Agent Chat</div>
+          <pre><code>You: Check Hacker News every morning and send me a summary on Telegram.
+Agent: I'll set up a daily cron job for that.
+       → cron_create("0 8 * * *", "Check HN top stories and notify")
+       Done. You'll get a summary at 8 AM daily.</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Quick Start -->
+  <section class="section" id="quickstart">
+    <div class="container">
+      <h2 class="section-title">Quick Start</h2>
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-content">
+            <h4>Install</h4>
+            <p>Download the desktop app or install via Homebrew.</p>
+            <div class="code-block code-sm">
+              <pre><code>brew tap xfeldman/aegisvm && brew install aegisvm</code></pre>
+            </div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-content">
+            <h4>Start the daemon</h4>
+            <div class="code-block code-sm">
+              <pre><code>aegis up</code></pre>
+            </div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-content">
+            <h4>Run your first VM</h4>
+            <div class="code-block code-sm">
+              <pre><code>aegis run -- echo "hello from a microVM"</code></pre>
+            </div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">4</div>
+          <div class="step-content">
+            <h4>Start an agent</h4>
+            <div class="code-block code-sm">
+              <pre><code>aegis secret set OPENAI_API_KEY sk-...
+aegis instance start --kit agent --name my-agent --secret OPENAI_API_KEY</code></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Download -->
+  <section class="section section-accent" id="download">
+    <div class="container">
+      <h2 class="section-title">Download</h2>
+      <p class="section-sub">Desktop app with everything bundled — core runtime, CLI, daemon, Agent Kit.</p>
+
+      <div class="grid grid-3 download-grid">
+        <div class="download-card">
+          <div class="dl-icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2z"/><path d="M15.5 8.5c0-1.38-1.12-2.5-2.5-2.5-.58 0-1.12.2-1.54.54A3.98 3.98 0 008 5C5.79 5 4 6.79 4 9c0 .88.29 1.7.78 2.36A2.5 2.5 0 003 13.5C3 14.88 4.12 16 5.5 16h13c1.38 0 2.5-1.12 2.5-2.5 0-1.17-.81-2.15-1.9-2.41.26-.55.4-1.16.4-1.79A4.27 4.27 0 0015.5 5a4.27 4.27 0 00-2.38.73"/></svg>
+          </div>
+          <h3>macOS</h3>
+          <p>Apple Silicon (M1–M5)<br>macOS Ventura+</p>
+          <a href="https://github.com/xfeldman/aegisvm/releases/latest/download/AegisVM.dmg" class="btn btn-primary">Download .dmg</a>
+        </div>
+        <div class="download-card">
+          <div class="dl-icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+          </div>
+          <h3>Linux x86_64</h3>
+          <p>KVM required<br>WebKitGTK 4.1</p>
+          <a href="https://github.com/xfeldman/aegisvm/releases/latest/download/AegisVM-amd64.AppImage" class="btn btn-primary">Download AppImage</a>
+        </div>
+        <div class="download-card">
+          <div class="dl-icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+          </div>
+          <h3>Linux arm64</h3>
+          <p>KVM required<br>WebKitGTK 4.1</p>
+          <a href="https://github.com/xfeldman/aegisvm/releases/latest/download/AegisVM-arm64.AppImage" class="btn btn-primary">Download AppImage</a>
+        </div>
+      </div>
+
+      <div class="alt-install">
+        <h4>Alternative: Homebrew (macOS)</h4>
+        <div class="code-block code-sm code-center">
+          <pre><code>brew tap xfeldman/aegisvm && brew install aegisvm</code></pre>
+        </div>
+        <h4>Alternative: Linux (CLI only)</h4>
+        <div class="code-block code-sm code-center">
+          <pre><code>curl -sSL https://raw.githubusercontent.com/xfeldman/aegisvm/main/install.sh | sh</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-inner">
+        <div class="footer-brand">
+          <img src="assets/favicon.svg" alt="AegisVM" width="24" height="24">
+          <span>AegisVM</span>
+        </div>
+        <div class="footer-links">
+          <a href="https://github.com/xfeldman/aegisvm" target="_blank">GitHub</a>
+          <a href="https://github.com/xfeldman/aegisvm/tree/main/docs" target="_blank">Docs</a>
+          <a href="https://github.com/xfeldman/aegisvm/releases" target="_blank">Releases</a>
+          <a href="https://github.com/xfeldman/aegisvm/blob/main/LICENSE" target="_blank">Apache 2.0</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // Mobile nav toggle
+    document.querySelector('.nav-toggle').addEventListener('click', function() {
+      document.querySelector('.nav-links').classList.toggle('open');
+    });
+    // Smooth scroll
+    document.querySelectorAll('a[href^="#"]').forEach(a => {
+      a.addEventListener('click', e => {
+        e.preventDefault();
+        const target = document.querySelector(a.getAttribute('href'));
+        if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          document.querySelector('.nav-links').classList.remove('open');
+        }
+      });
+    });
+  </script>
+</body>
+</html>
