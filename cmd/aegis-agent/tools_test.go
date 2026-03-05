@@ -371,3 +371,4 @@ func TestJsonError(t *testing.T) {
 		t.Errorf("error = %v, want 'something failed'", parsed["error"])
 	}
 }
+
