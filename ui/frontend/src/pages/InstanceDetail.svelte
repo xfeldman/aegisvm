@@ -23,15 +23,22 @@
   let canExec = $derived(instance?.enabled !== false)
 
   let secretsInitialized = false
+  let prevState: string | undefined = undefined
 
   async function load() {
     try {
+      const prev = prevState
       instance = await getInstance(id)
+      prevState = instance.state
       error = null
       // Sync bound keys on first load only (don't overwrite user edits on poll)
       if (!secretsInitialized) {
         syncBoundKeys()
         secretsInitialized = true
+      }
+      // Auto-refresh iframe when instance transitions to running while a port tab is active
+      if (prev && prev !== 'running' && instance.state === 'running' && activePort()) {
+        iframeKey++
       }
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to load instance'

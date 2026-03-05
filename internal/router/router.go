@@ -248,7 +248,7 @@ func (r *Router) handlePortConn(ctx context.Context, clientConn net.Conn, pp *po
 
 	// Single deadline for the entire flow: boot + dial.
 	// Whatever time remains after boot is used for dialing the backend.
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	ensureCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
@@ -328,7 +328,7 @@ func (r *Router) handleRequest(w http.ResponseWriter, req *http.Request) {
 	defer r.lm.OnConnectionClose(inst.ID)
 
 	// Single deadline for the entire flow: boot + dial.
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	ctx, cancel := context.WithDeadline(req.Context(), deadline)
 	defer cancel()
 
