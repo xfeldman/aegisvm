@@ -70,19 +70,19 @@ var builtinTools = []Tool{
 	},
 	{
 		Name:        "write_file",
-		Description: "Write content to a file. Path must be under /workspace/. Creates parent directories if needed.",
+		Description: "Write content to a file. Path must be under /workspace/. Creates parent directories if needed. IMPORTANT: content is written byte-for-byte as parsed from JSON. Use JSON escape sequences for special characters: a JSON \\n becomes a real newline in the file, a JSON \\t becomes a real tab. Do NOT double-escape: writing \\\\n produces a literal backslash-n in the file, not a newline.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"path":    map[string]string{"type": "string", "description": "File path"},
-				"content": map[string]string{"type": "string", "description": "File content to write"},
+				"content": map[string]string{"type": "string", "description": "File content. Use JSON \\n for newlines, \\t for tabs. Written verbatim after JSON parsing."},
 			},
 			"required": []string{"path", "content"},
 		},
 	},
 	{
 		Name:        "edit_file",
-		Description: "Edit a file by replacing text or a line range. Path must be under /workspace/. Use old_text/new_text for text replacement, or start_line/end_line for line range replacement. Returns a diff of the changes.",
+		Description: "Edit a file by replacing text or a line range. Path must be under /workspace/. Use old_text/new_text for text replacement, or start_line/end_line for line range replacement. Returns a diff of the changes. Same escaping rules as write_file: JSON \\n = real newline, JSON \\\\n = literal backslash-n.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

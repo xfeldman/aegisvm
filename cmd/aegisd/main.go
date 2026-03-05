@@ -157,11 +157,28 @@ func main() {
 		reg.UpdatePublicPorts(id, ports)
 	}
 
-	// Router port allocation — called from CreateInstance for every new instance
+	// Router port allocation — called from CreateInstance for every new instance.
+	// Checks the registry for a persisted port mapping; uses it if available,
+	// otherwise allocates a random port. This handles both fresh creates and
+	// restores from the registry in a single path.
 	lm.OnAllocatePorts(func(inst *lifecycle.Instance) {
+		// Look up persisted port mapping (nil for new instances)
+		var persisted map[int]int
+		if ri, err := reg.GetInstance(inst.ID); err == nil && ri != nil {
+			persisted = ri.PublicPorts
+		}
 		for _, ep := range inst.ExposePorts {
-			if _, err := rtr.AllocatePort(inst.ID, ep.GuestPort, 0, ep.Protocol); err != nil {
-				log.Printf("allocate port for %s guest:%d: %v", inst.ID, ep.GuestPort, err)
+			requestedPort := 0
+			if persisted != nil {
+				requestedPort = persisted[ep.GuestPort]
+			}
+			if _, err := rtr.AllocatePort(inst.ID, ep.GuestPort, requestedPort, ep.Protocol); err != nil {
+				if requestedPort > 0 {
+					log.Printf("restore port :%d for %s failed, allocating random: %v", requestedPort, inst.ID, err)
+					rtr.AllocatePort(inst.ID, ep.GuestPort, 0, ep.Protocol)
+				} else {
+					log.Printf("allocate port for %s guest:%d: %v", inst.ID, ep.GuestPort, err)
+				}
 			}
 		}
 		persistPublicPorts(inst.ID)
@@ -271,29 +288,8 @@ func main() {
 				inst.UpdatedAt = ri.UpdatedAt
 			}
 
-			// Re-allocate public ports via router only if enabled
-			// Disabled instances are unreachable — no listeners allocated
-			if ri.Enabled {
-				for _, guestPort := range ri.ExposePorts {
-					requestedPort := 0
-					if ri.PublicPorts != nil {
-						requestedPort = ri.PublicPorts[guestPort]
-					}
-					if _, err := rtr.AllocatePort(ri.ID, guestPort, requestedPort, "http"); err != nil {
-						// Port may be taken — fall back to random
-						if requestedPort > 0 {
-							log.Printf("restore port :%d for %s failed, allocating random: %v", requestedPort, ri.ID, err)
-							if _, err := rtr.AllocatePort(ri.ID, guestPort, 0, "http"); err != nil {
-								log.Printf("restore port for %s: %v", ri.ID, err)
-							}
-						} else {
-							log.Printf("restore port for %s: %v", ri.ID, err)
-						}
-					}
-				}
-				// Persist actual port assignments (may differ from requested if port was taken)
-				persistPublicPorts(ri.ID)
-			}
+			// Port allocation is handled by OnAllocatePorts (triggered by
+			// CreateInstance above) which reads persisted ports from the registry.
 
 			// Start instance daemons for enabled kit instances
 			if ri.Enabled && ri.Kit != "" {

@@ -168,7 +168,7 @@ func (gw *Gateway) run(ctx context.Context) {
 	gw.reloadConfig()
 	gw.checkCronChange()
 
-	ticker := time.NewTicker(3 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	// Cron ticker: align to next minute boundary, then tick every minute
@@ -188,6 +188,14 @@ func (gw *Gateway) run(ctx context.Context) {
 		case <-gw.reloadCh:
 			gw.applyConfig(ctx)
 		case <-ticker.C:
+			if !gw.healthCheck() {
+				log.Println("health check failed (daemon gone or instance deleted), exiting")
+				gw.stopAllChannels()
+				if cronTicker != nil {
+					cronTicker.Stop()
+				}
+				return
+			}
 			gw.checkConfigChange(ctx)
 			gw.checkCronChange()
 		case <-cronTimer.C:
@@ -206,6 +214,18 @@ func (gw *Gateway) run(ctx context.Context) {
 			}()
 		}
 	}
+}
+
+// healthCheck verifies aegisd is running and this instance still exists.
+// Returns false if the daemon is gone or the instance was deleted.
+func (gw *Gateway) healthCheck() bool {
+	resp, err := gw.aegisClient.httpClient.Get(
+		fmt.Sprintf("http://aegis/v1/instances/%s", gw.instanceHandle))
+	if err != nil {
+		return false // daemon unreachable
+	}
+	resp.Body.Close()
+	return resp.StatusCode == 200
 }
 
 // configPath returns the per-instance config file path.

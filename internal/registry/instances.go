@@ -38,7 +38,11 @@ func (d *DB) SaveInstance(inst *Instance) error {
 	portsJSON, _ := json.Marshal(inst.ExposePorts)
 	envJSON, _ := json.Marshal(inst.Env)
 	secretKeysJSON, _ := json.Marshal(inst.SecretKeys)
-	publicPortsJSON, _ := json.Marshal(inst.PublicPorts)
+	publicPortsStr := "{}"
+	if inst.PublicPorts != nil {
+		b, _ := json.Marshal(inst.PublicPorts)
+		publicPortsStr = string(b)
+	}
 
 	enabledInt := 0
 	if inst.Enabled {
@@ -68,7 +72,7 @@ func (d *DB) SaveInstance(inst *Instance) error {
 			workspace = excluded.workspace,
 			env = excluded.env,
 			secret_keys = excluded.secret_keys,
-			public_ports = excluded.public_ports,
+			public_ports = CASE WHEN excluded.public_ports = '{}' THEN instances.public_ports ELSE excluded.public_ports END,
 			enabled = excluded.enabled,
 			memory_mb = excluded.memory_mb,
 			vcpus = excluded.vcpus,
@@ -80,7 +84,7 @@ func (d *DB) SaveInstance(inst *Instance) error {
 			updated_at = excluded.updated_at
 	`, inst.ID, inst.State, string(cmdJSON), string(portsJSON), inst.VMID,
 		inst.Handle, inst.ImageRef, inst.Workspace, string(envJSON), string(secretKeysJSON),
-		string(publicPortsJSON), enabledInt, inst.MemoryMB, inst.VCPUs, stoppedAtStr,
+		publicPortsStr, enabledInt, inst.MemoryMB, inst.VCPUs, stoppedAtStr,
 		inst.ParentID, inst.Capabilities, inst.Kit, autoWsInt,
 		inst.CreatedAt.Format(time.RFC3339), time.Now().Format(time.RFC3339))
 	return err

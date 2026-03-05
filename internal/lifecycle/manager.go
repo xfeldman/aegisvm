@@ -512,7 +512,8 @@ func (m *Manager) bootInstance(ctx context.Context, inst *Instance) error {
 	inst.mu.Lock()
 	if inst.State != StateStopped {
 		inst.mu.Unlock()
-		return nil
+		// Another goroutine is already booting — wait for it to finish.
+		return m.waitForRunning(ctx, inst)
 	}
 
 	// Crash backoff: if the instance crashed recently, delay or refuse boot.

@@ -32,6 +32,14 @@
       if (!secretsInitialized) {
         syncBoundKeys()
         secretsInitialized = true
+        // Prune stale port tabs that no longer match instance endpoints
+        const validPorts = new Set(instance.endpoints?.map(ep => ep.public_port) || [])
+        const pruned = openPorts.filter(p => validPorts.has(p))
+        if (pruned.length !== openPorts.length) {
+          openPorts = pruned
+          saveOpenPorts(id, openPorts)
+          if (tab.startsWith('port:') && !validPorts.has(parseInt(tab.slice(5)))) tab = 'info'
+        }
       }
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to load instance'
