@@ -65,23 +65,17 @@ func NewStore(persist PersistFunc) *Store {
 // Append adds a frame to the instance's ring buffer, assigns a seq,
 // and notifies subscribers and poll waiters. Returns the assigned seq.
 //
-// Delta frames (assistant.delta, reasoning.delta, status.presence) are
-// streamed to live subscribers but NOT stored in the ring buffer. This
-// prevents streaming deltas from evicting boundary frames (user.message,
+// Transient frames (assistant.delta, reasoning.delta) are streamed to live
+// subscribers but NOT stored in the ring buffer or persisted to the database.
+// This prevents streaming deltas from evicting boundary frames (user.message,
 // assistant.done) that the UI needs for history replay.
 func (s *Store) Append(instanceID string, frame Frame) int64 {
 	rb := s.getOrCreate(instanceID)
 
 	if isTransientFrame(frame.Type) {
-		// Transient frames: assign seq, notify subscribers, persist, but don't store in ring.
-		seq := rb.broadcastOnly(frame)
-		if s.persist != nil {
-			frame.Seq = seq
-			if data, err := json.Marshal(frame); err == nil {
-				s.persist(instanceID, seq, data)
-			}
-		}
-		return seq
+		// Transient frames: assign seq, notify subscribers, but don't store or persist.
+		// They're only useful for live streaming, not history replay.
+		return rb.broadcastOnly(frame)
 	}
 
 	seq := rb.append(frame)
