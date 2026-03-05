@@ -172,6 +172,8 @@
           messages.push(done)
         }
         thinking = null
+        // Advance watermark so checkUnread doesn't flag this as unread
+        if (frame.seq) setTetherWatermark(instanceId, 'ui', frame.seq).catch(() => {})
         break
       }
       default:
