@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/xfeldman/aegisvm/internal/lifecycle"
@@ -241,25 +242,26 @@ func (r *Router) acceptLoop(ctx context.Context, pp *portProxy) {
 
 func (r *Router) handlePortConn(ctx context.Context, clientConn net.Conn, pp *portProxy) {
 	defer clientConn.Close()
+	start := time.Now()
 
 	// Track connection BEFORE ensure to prevent idle timer race
 	r.lm.ResetActivity(pp.instanceID)
 	defer r.lm.OnConnectionClose(pp.instanceID)
 
-	// Single deadline for the entire flow: boot + dial.
-	// Whatever time remains after boot is used for dialing the backend.
-	deadline := time.Now().Add(15 * time.Second)
-	ensureCtx, cancel := context.WithDeadline(ctx, deadline)
+	// Ensure instance is running (wake/boot). Separate generous timeout —
+	// cold boot can take 10-15s (VM create + kernel + harness + run RPC).
+	ensureCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	if err := r.lm.EnsureInstance(ensureCtx, pp.instanceID); err != nil {
 		if errors.Is(err, lifecycle.ErrInstanceDisabled) {
 			log.Printf("router: instance %s disabled, rejecting connection on port :%d", pp.instanceID, pp.publicPort)
 		} else {
-			log.Printf("router: port :%d ensure instance %s: %v", pp.publicPort, pp.instanceID, err)
+			log.Printf("router: port :%d ensure instance %s failed after %v: %v", pp.publicPort, pp.instanceID, time.Since(start), err)
 		}
 		return
 	}
+	log.Printf("router: port :%d instance %s ready after %v", pp.publicPort, pp.instanceID, time.Since(start))
 
 	// Get VMM backend endpoint
 	backend, err := r.lm.GetEndpoint(pp.instanceID, pp.guestPort)
@@ -268,29 +270,69 @@ func (r *Router) handlePortConn(ctx context.Context, clientConn net.Conn, pp *po
 		return
 	}
 
-	// Use remaining time from the shared deadline for dialing.
-	remaining := time.Until(deadline)
-	if remaining < 5*time.Second {
-		remaining = 5 * time.Second // guarantee minimum dial window
-	}
-	r.relay(clientConn, backend, remaining)
+	// Dial backend with retries — app may not have bound its port yet.
+	r.relay(clientConn, backend, 15*time.Second)
 }
 
 // dialBackend connects to the backend with retries.
-// After EnsureInstance the VM is running, but the app may not have bound
-// its port yet. Retry with short backoff to avoid dropping the client.
+// Handles two failure modes:
+//  1. Dial refused — app hasn't bound its port yet (normal retry)
+//  2. Dial succeeds but connection closes immediately — the network proxy
+//     (gvproxy) accepted the TCP connection but couldn't forward to the guest
+//     because the app isn't ready. Detected via a non-destructive peek.
 func (r *Router) dialBackend(backend string, timeout time.Duration) (net.Conn, error) {
 	deadline := time.Now().Add(timeout)
 	for {
 		conn, err := net.DialTimeout("tcp", backend, 1*time.Second)
-		if err == nil {
-			return conn, nil
+		if err != nil {
+			if time.Now().After(deadline) {
+				return nil, err
+			}
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
-		if time.Now().After(deadline) {
-			return nil, err
-		}
+
+		// Peek to check if the connection is alive. gvproxy accepts then
+		// immediately closes if the guest app isn't listening — detect this
+		// with a non-blocking peek so we can retry instead of relaying into
+		// a dead connection. Give the network proxy time to attempt the forward.
 		time.Sleep(100 * time.Millisecond)
+		if tc, ok := conn.(*net.TCPConn); ok {
+			if !connAlive(tc) {
+				conn.Close()
+				if time.Now().After(deadline) {
+					return nil, fmt.Errorf("backend %s: connection accepted but closed (app not ready)", backend)
+				}
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+		}
+
+		return conn, nil
 	}
+}
+
+// connAlive checks if a TCP connection is still open using a non-destructive
+// peek (MSG_PEEK). Returns false if the remote end has already closed.
+func connAlive(tc *net.TCPConn) bool {
+	rc, err := tc.SyscallConn()
+	if err != nil {
+		return true // can't check, assume alive
+	}
+	alive := true
+	rc.Read(func(fd uintptr) bool {
+		buf := make([]byte, 1)
+		n, _, err := syscall.Recvfrom(int(fd), buf, syscall.MSG_PEEK|syscall.MSG_DONTWAIT)
+		if err == syscall.EAGAIN || err == syscall.EWOULDBLOCK {
+			alive = true // no data yet, connection open
+		} else if err != nil {
+			alive = false // ECONNRESET, etc.
+		} else if n == 0 {
+			alive = false // EOF — remote closed the connection
+		}
+		return true
+	})
+	return alive
 }
 
 // relay does bidirectional TCP copy between client and backend.
@@ -327,12 +369,11 @@ func (r *Router) handleRequest(w http.ResponseWriter, req *http.Request) {
 	r.lm.ResetActivity(inst.ID)
 	defer r.lm.OnConnectionClose(inst.ID)
 
-	// Single deadline for the entire flow: boot + dial.
-	deadline := time.Now().Add(15 * time.Second)
-	ctx, cancel := context.WithDeadline(req.Context(), deadline)
+	// Ensure instance is running (wake/boot)
+	ensureCtx, cancel := context.WithTimeout(req.Context(), 30*time.Second)
 	defer cancel()
 
-	if err := r.lm.EnsureInstance(ctx, inst.ID); err != nil {
+	if err := r.lm.EnsureInstance(ensureCtx, inst.ID); err != nil {
 		if errors.Is(err, lifecycle.ErrInstanceDisabled) {
 			http.Error(w, "instance disabled", http.StatusServiceUnavailable)
 		} else {
@@ -356,15 +397,9 @@ func (r *Router) handleRequest(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Use remaining time from the shared deadline for dialing.
-	remaining := time.Until(deadline)
-	if remaining < 5*time.Second {
-		remaining = 5 * time.Second
-	}
-
 	// Check for WebSocket upgrade
 	if isWebSocketUpgrade(req) {
-		r.handleWebSocket(w, req, target, remaining)
+		r.handleWebSocket(w, req, target, 15*time.Second)
 		return
 	}
 
@@ -373,7 +408,7 @@ func (r *Router) handleRequest(w http.ResponseWriter, req *http.Request) {
 	proxy := &httputil.ReverseProxy{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return r.dialBackend(addr, remaining)
+				return r.dialBackend(addr, 15*time.Second)
 			},
 		},
 		Director: func(r *http.Request) {

@@ -23,22 +23,23 @@
   let canExec = $derived(instance?.enabled !== false)
 
   let secretsInitialized = false
-  let prevState: string | undefined = undefined
 
   async function load() {
     try {
-      const prev = prevState
       instance = await getInstance(id)
-      prevState = instance.state
       error = null
       // Sync bound keys on first load only (don't overwrite user edits on poll)
       if (!secretsInitialized) {
         syncBoundKeys()
         secretsInitialized = true
-      }
-      // Auto-refresh iframe when instance transitions to running while a port tab is active
-      if (prev && prev !== 'running' && instance.state === 'running' && activePort()) {
-        iframeKey++
+        // Prune stale port tabs that no longer match instance endpoints
+        const validPorts = new Set(instance.endpoints?.map(ep => ep.public_port) || [])
+        const pruned = openPorts.filter(p => validPorts.has(p))
+        if (pruned.length !== openPorts.length) {
+          openPorts = pruned
+          saveOpenPorts(id, openPorts)
+          if (tab.startsWith('port:') && !validPorts.has(parseInt(tab.slice(5)))) tab = 'info'
+        }
       }
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to load instance'
