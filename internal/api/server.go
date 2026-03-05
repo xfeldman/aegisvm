@@ -770,14 +770,23 @@ func (s *Server) handleExecInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	execID, startedAt, doneCh, err := s.lifecycle.ExecInstance(r.Context(), inst.ID, req.Command, req.Env)
-	if err != nil {
+	// Wake-on-exec: ensure instance is running before executing (same pattern as tether ingress).
+	// Stopped instances wake instead of 409'ing. Disabled instances still 409.
+	wakeCtx, wakeCancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer wakeCancel()
+	if err := s.lifecycle.EnsureInstance(wakeCtx, inst.ID); err != nil {
 		if err == lifecycle.ErrInstanceDisabled {
 			writeError(w, http.StatusConflict, "instance is disabled")
 			return
 		}
-		if err == lifecycle.ErrInstanceStopped {
-			writeError(w, http.StatusConflict, "instance is stopped")
+		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("wake failed: %v", err))
+		return
+	}
+
+	execID, startedAt, doneCh, err := s.lifecycle.ExecInstance(r.Context(), inst.ID, req.Command, req.Env)
+	if err != nil {
+		if err == lifecycle.ErrInstanceDisabled {
+			writeError(w, http.StatusConflict, "instance is disabled")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
