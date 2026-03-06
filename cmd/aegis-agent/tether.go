@@ -33,7 +33,13 @@ func (a *Agent) handleTetherRecv(w http.ResponseWriter, r *http.Request) {
 	}
 	switch frame.Type {
 	case "user.message":
+		// Cancel any in-flight run for this session before starting a new one
+		sessKey := frame.Session.Channel + "_" + frame.Session.ID
+		a.cancelRun(sessKey)
 		go a.handleUserMessage(frame)
+	case "control.cancel":
+		sessKey := frame.Session.Channel + "_" + frame.Session.ID
+		a.cancelRun(sessKey)
 	}
 	w.WriteHeader(http.StatusAccepted)
 }

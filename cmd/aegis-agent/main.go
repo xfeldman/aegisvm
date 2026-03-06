@@ -42,6 +42,7 @@ const (
 type Agent struct {
 	mu              sync.Mutex
 	sessions        map[string]*Session
+	activeRuns      map[string]activeRun // per-session cancel for in-flight agent loops
 	llm             LLM
 	hostLLM         *HostLLM // non-nil when using host: model prefix
 	systemPrompt    string
@@ -80,6 +81,7 @@ func main() {
 
 	agent := &Agent{
 		sessions:        make(map[string]*Session),
+		activeRuns:      make(map[string]activeRun),
 		maxContextTurns: maxTurns,
 		maxContextChars: maxChars,
 	}
@@ -191,6 +193,42 @@ func main() {
 	log.Println("aegis-agent stopped")
 }
 
+// activeRun tracks a cancellable in-flight agent loop.
+type activeRun struct {
+	cancel context.CancelFunc
+	ctx    context.Context
+}
+
+// cancelRun cancels any in-flight agent loop for the given session key.
+func (a *Agent) cancelRun(sessKey string) {
+	a.mu.Lock()
+	if run, ok := a.activeRuns[sessKey]; ok {
+		run.cancel()
+		delete(a.activeRuns, sessKey)
+		log.Printf("session %s: cancelled previous run", sessKey)
+	}
+	a.mu.Unlock()
+}
+
+// registerRun registers a cancellation function for the given session key.
+// Returns the context to use for the agent loop.
+func (a *Agent) registerRun(sessKey string) context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	a.mu.Lock()
+	a.activeRuns[sessKey] = activeRun{cancel: cancel, ctx: ctx}
+	a.mu.Unlock()
+	return ctx
+}
+
+// finishRun cleans up the active run entry only if it's still ours.
+func (a *Agent) finishRun(sessKey string, ctx context.Context) {
+	a.mu.Lock()
+	if run, ok := a.activeRuns[sessKey]; ok && run.ctx == ctx {
+		delete(a.activeRuns, sessKey)
+	}
+	a.mu.Unlock()
+}
+
 // handleUserMessage processes an incoming user message through the agentic loop.
 func (a *Agent) handleUserMessage(frame TetherFrame) {
 	var payload struct {
@@ -246,6 +284,10 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 		turnContent = content
 	}
 
+	sessKey := frame.Session.Channel + "_" + frame.Session.ID
+	ctx := a.registerRun(sessKey)
+	defer a.finishRun(sessKey, ctx)
+
 	sess.appendTurn(Turn{Role: "user", Content: turnContent, TS: frame.TS, User: userName})
 	a.pendingImages = nil // reset for this message
 	a.sendPresence(frame.Session, "thinking")
@@ -277,6 +319,11 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 
 	// Agentic loop: call LLM with streaming, execute tools, repeat
 	for round := 0; round < maxToolRounds; round++ {
+		if ctx.Err() != nil {
+			log.Printf("session %s: cancelled", sessKey)
+			return
+		}
+
 		messages := sess.assembleContext(sysPrompt, a.maxContextTurns, a.maxContextChars)
 
 		var fullText strings.Builder
@@ -285,8 +332,12 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 			a.sendDelta(frame.Session, delta)
 		}
 
-		resp, err := a.llm.StreamChat(context.Background(), messages, a.allTools, onDelta)
+		resp, err := a.llm.StreamChat(ctx, messages, a.allTools, onDelta)
 		if err != nil {
+			if ctx.Err() != nil {
+				log.Printf("session %s: cancelled during LLM call", sessKey)
+				return
+			}
 			errMsg := fmt.Sprintf("LLM error: %v", err)
 			log.Printf("%s", errMsg)
 			a.sendDone(frame.Session, errMsg)
@@ -310,6 +361,10 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 
 		// Execute tools
 		for _, tc := range resp.ToolCalls {
+			if ctx.Err() != nil {
+				log.Printf("session %s: cancelled during tool execution", sessKey)
+				return
+			}
 			a.sendPresence(frame.Session, fmt.Sprintf("tool: %s", tc.Name))
 			result := a.executeTool(tc.Name, tc.Input)
 			log.Printf("tool %s: %d bytes result", tc.Name, len(result))

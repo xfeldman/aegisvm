@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
-  import { tetherSend, tetherPollBack, setTetherWatermark, openInBrowser, type TetherFrame } from '../lib/api'
+  import { tetherSend, tetherCancel, tetherPollBack, setTetherWatermark, openInBrowser, type TetherFrame } from '../lib/api'
   import { getChatState, initChatState, updateChatState, addToast, clearUnreadMessages, type ChatMessage } from '../lib/store.svelte'
   import { marked } from 'marked'
 
@@ -252,6 +252,15 @@
     }
   }
 
+  async function stop() {
+    try {
+      await tetherCancel(instanceId, SESSION_ID)
+      updateChatState(instanceId, { thinking: null })
+    } catch (e) {
+      addToast(`Cancel failed: ${e instanceof Error ? e.message : 'unknown'}`, 'error')
+    }
+  }
+
   function onKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -379,7 +388,11 @@
       {disabled}
       rows="1"
     ></textarea>
-    <button class="send-btn" onclick={send} disabled={disabled || !input.trim()}>Send</button>
+    {#if state.thinking}
+      <button class="stop-btn" onclick={stop}>Stop</button>
+    {:else}
+      <button class="send-btn" onclick={send} disabled={disabled || !input.trim()}>Send</button>
+    {/if}
   </div>
 </div>
 
@@ -690,5 +703,19 @@
   .send-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  .stop-btn {
+    padding: 8px 16px;
+    border-radius: var(--radius);
+    border: 1px solid var(--red, #e5534b);
+    background: transparent;
+    color: var(--red, #e5534b);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .stop-btn:hover {
+    background: rgba(229, 83, 75, 0.1);
   }
 </style>

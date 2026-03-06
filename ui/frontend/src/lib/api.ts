@@ -272,6 +272,16 @@ export function tetherSend(id: string, sessionId: string, text: string): Promise
   return request<TetherSendResult>('POST', `/instances/${encodeURIComponent(id)}/tether`, frame)
 }
 
+export function tetherCancel(id: string, sessionId: string): Promise<void> {
+  const frame = {
+    v: 1,
+    type: 'control.cancel',
+    ts: new Date().toISOString(),
+    session: { channel: 'ui', id: sessionId },
+  }
+  return request<void>('POST', `/instances/${encodeURIComponent(id)}/tether`, frame)
+}
+
 export async function tetherPoll(
   id: string,
   sessionId: string,
