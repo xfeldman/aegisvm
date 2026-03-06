@@ -120,18 +120,10 @@ func (s *Session) assembleContext(systemPrompt string, maxTurns, maxChars int) [
 		break
 	}
 
-	// Trim from the tail: if the last turn is an assistant with tool_use
-	// but no following tool results (crash, OOM, etc.), drop it to avoid API errors.
-	for len(selected) > 0 {
-		last := selected[len(selected)-1]
-		if last.Role == "assistant" {
-			if _, isStr := last.Content.(string); !isStr {
-				selected = selected[:len(selected)-1]
-				continue
-			}
-		}
-		break
-	}
+	// Validate tool call chains: every assistant turn with tool_use must have
+	// a matching tool result for EACH tool_call_id. If any are missing (VM paused
+	// mid-execution, crash, etc.), drop the assistant turn and any partial tool results.
+	selected = pruneIncompleteToolChains(selected)
 
 	messages := []Message{{Role: "system", Content: systemPrompt}}
 	for _, t := range selected {
@@ -176,6 +168,66 @@ func loadImageBlobs(t Turn) interface{} {
 		} else {
 			result = append(result, b)
 		}
+	}
+	return result
+}
+
+// pruneIncompleteToolChains removes assistant+tool_use turns that don't have
+// matching tool result turns for every tool_call_id. This handles the case where
+// the VM was paused/stopped mid-tool-execution, leaving partial tool results.
+func pruneIncompleteToolChains(turns []Turn) []Turn {
+	var result []Turn
+	for i := 0; i < len(turns); i++ {
+		t := turns[i]
+		if t.Role != "assistant" {
+			result = append(result, t)
+			continue
+		}
+		// Check if this assistant turn has tool_use blocks
+		blocks, ok := parseContentBlocks(t.Content)
+		if !ok {
+			// Plain string content — no tool calls
+			result = append(result, t)
+			continue
+		}
+		var expectedIDs []string
+		for _, b := range blocks {
+			if b["type"] == "tool_use" {
+				if id, _ := b["id"].(string); id != "" {
+					expectedIDs = append(expectedIDs, id)
+				}
+			}
+		}
+		if len(expectedIDs) == 0 {
+			result = append(result, t)
+			continue
+		}
+		// Collect following tool result turns
+		gotIDs := make(map[string]bool)
+		j := i + 1
+		for j < len(turns) && turns[j].Role == "tool" {
+			gotIDs[turns[j].ToolCallID] = true
+			j++
+		}
+		// Check if all expected tool_call_ids have results
+		allPresent := true
+		for _, id := range expectedIDs {
+			if !gotIDs[id] {
+				allPresent = false
+				break
+			}
+		}
+		if allPresent {
+			// Keep the assistant turn and all its tool results
+			result = append(result, t)
+			for k := i + 1; k < j; k++ {
+				result = append(result, turns[k])
+			}
+		} else {
+			log.Printf("pruning incomplete tool chain: expected %d tool results, got %d", len(expectedIDs), len(gotIDs))
+			// Skip the assistant turn and any partial tool results
+		}
+		i = j - 1 // advance past the tool results
 	}
 	return result
 }
