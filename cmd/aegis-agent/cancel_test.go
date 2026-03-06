@@ -22,7 +22,7 @@ type mockLLM struct {
 	blockCh   chan struct{} // if non-nil, blocks until closed or ctx cancelled
 }
 
-func (m *mockLLM) StreamChat(ctx context.Context, messages []Message, tools []Tool, onDelta func(string)) (*LLMResponse, error) {
+func (m *mockLLM) StreamChat(ctx context.Context, messages []Message, tools []Tool, onDelta func(string), onReasoning func(string), onReasoningDone func()) (*LLMResponse, error) {
 	m.mu.Lock()
 	idx := m.calls
 	m.calls++
@@ -60,11 +60,13 @@ func TestRegisterAndCancelRun(t *testing.T) {
 		activeRuns: make(map[string]activeRun),
 	}
 
-	ctx := agent.registerRun("sess1")
+	ctx, done := agent.registerRun("sess1")
 	if ctx.Err() != nil {
 		t.Fatal("context should not be cancelled yet")
 	}
 
+	// Simulate goroutine finishing
+	close(done)
 	agent.cancelRun("sess1")
 	if ctx.Err() == nil {
 		t.Fatal("context should be cancelled after cancelRun")
@@ -76,7 +78,8 @@ func TestCancelRunRemovesEntry(t *testing.T) {
 		activeRuns: make(map[string]activeRun),
 	}
 
-	agent.registerRun("sess1")
+	_, done := agent.registerRun("sess1")
+	close(done)
 	agent.cancelRun("sess1")
 
 	if _, ok := agent.activeRuns["sess1"]; ok {
@@ -97,8 +100,8 @@ func TestRegisterRunReplacesExisting(t *testing.T) {
 		activeRuns: make(map[string]activeRun),
 	}
 
-	ctx1 := agent.registerRun("sess1")
-	ctx2 := agent.registerRun("sess1")
+	ctx1, _ := agent.registerRun("sess1")
+	ctx2, _ := agent.registerRun("sess1")
 
 	// ctx1 is NOT automatically cancelled — that's cancelRun's job.
 	// But the active entry now points to ctx2.
@@ -117,9 +120,9 @@ func TestFinishRunOnlyRemovesOwnContext(t *testing.T) {
 		activeRuns: make(map[string]activeRun),
 	}
 
-	ctx1 := agent.registerRun("sess1")
+	ctx1, _ := agent.registerRun("sess1")
 	// Simulate a newer run replacing us
-	_ = agent.registerRun("sess1")
+	_, _ = agent.registerRun("sess1")
 
 	// Old run finishes — should NOT remove the newer entry
 	agent.finishRun("sess1", ctx1)
@@ -134,7 +137,7 @@ func TestFinishRunRemovesOwnContext(t *testing.T) {
 		activeRuns: make(map[string]activeRun),
 	}
 
-	ctx := agent.registerRun("sess1")
+	ctx, _ := agent.registerRun("sess1")
 	agent.finishRun("sess1", ctx)
 
 	if _, ok := agent.activeRuns["sess1"]; ok {
@@ -150,7 +153,8 @@ func TestControlCancelFrame(t *testing.T) {
 		sessions:   make(map[string]*Session),
 	}
 
-	ctx := agent.registerRun("ui_default")
+	ctx, done := agent.registerRun("ui_default")
+	close(done) // simulate goroutine already finished
 
 	frame := TetherFrame{
 		V:       1,
@@ -202,7 +206,8 @@ func TestNewMessageCancelsPreviousRun(t *testing.T) {
 
 	// Override harnessAPI for this test — not possible since it's a const.
 	// Instead, test at the cancelRun level.
-	ctx1 := agent.registerRun("ui_default")
+	ctx1, done1 := agent.registerRun("ui_default")
+	close(done1) // simulate goroutine finished
 
 	// Simulate receiving a new user.message which cancels previous
 	agent.cancelRun("ui_default")
@@ -211,9 +216,37 @@ func TestNewMessageCancelsPreviousRun(t *testing.T) {
 		t.Fatal("previous run context should be cancelled")
 	}
 
-	ctx2 := agent.registerRun("ui_default")
+	ctx2, _ := agent.registerRun("ui_default")
+	_ = ctx1 // used above
 	if ctx2.Err() != nil {
 		t.Fatal("new run context should be active")
+	}
+}
+
+// --- cancelRun waits for goroutine to finish ---
+
+func TestCancelRunWaitsForDone(t *testing.T) {
+	agent := &Agent{
+		activeRuns: make(map[string]activeRun),
+	}
+
+	_, done := agent.registerRun("sess1")
+
+	// Simulate a goroutine that takes 100ms to finish
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		close(done)
+	}()
+
+	start := time.Now()
+	agent.cancelRun("sess1")
+	elapsed := time.Since(start)
+
+	if elapsed < 50*time.Millisecond {
+		t.Fatal("cancelRun should have waited for the goroutine to finish")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatal("cancelRun waited too long")
 	}
 }
 
@@ -232,8 +265,9 @@ func TestConcurrentCancelRegister(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ctx := agent.registerRun("sess1")
+			ctx, done := agent.registerRun("sess1")
 			time.Sleep(time.Millisecond)
+			close(done) // simulate goroutine exit
 			agent.cancelRun("sess1")
 			if ctx.Err() != nil {
 				cancelled.Add(1)
@@ -259,7 +293,7 @@ func TestStreamChatCancelledByContext(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := llm.StreamChat(ctx, nil, nil, func(string) {})
+		_, err := llm.StreamChat(ctx, nil, nil, func(string) {}, nil, nil)
 		done <- err
 	}()
 

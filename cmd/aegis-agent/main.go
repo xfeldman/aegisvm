@@ -53,8 +53,6 @@ type Agent struct {
 	toolsConfig     map[string]ToolConfig
 	memory          *MemoryStore
 	cron            *CronStore
-	pendingImages   []ImageRef // images queued by respond_with_image during current turn
-	restartPending  bool       // set by self_restart tool, checked after tool round
 }
 
 func main() {
@@ -197,27 +195,40 @@ func main() {
 type activeRun struct {
 	cancel context.CancelFunc
 	ctx    context.Context
+	done   chan struct{} // closed when the goroutine exits
 }
 
-// cancelRun cancels any in-flight agent loop for the given session key.
+// cancelRun cancels any in-flight agent loop for the given session key
+// and waits for it to finish (up to 5s) to prevent concurrent runs.
 func (a *Agent) cancelRun(sessKey string) {
 	a.mu.Lock()
-	if run, ok := a.activeRuns[sessKey]; ok {
+	run, ok := a.activeRuns[sessKey]
+	if ok {
 		run.cancel()
 		delete(a.activeRuns, sessKey)
-		log.Printf("session %s: cancelled previous run", sessKey)
+		log.Printf("session %s: cancelling previous run", sessKey)
 	}
 	a.mu.Unlock()
+
+	if ok {
+		select {
+		case <-run.done:
+			log.Printf("session %s: previous run finished", sessKey)
+		case <-time.After(5 * time.Second):
+			log.Printf("session %s: previous run did not finish in 5s, proceeding", sessKey)
+		}
+	}
 }
 
 // registerRun registers a cancellation function for the given session key.
 // Returns the context to use for the agent loop.
-func (a *Agent) registerRun(sessKey string) context.Context {
+func (a *Agent) registerRun(sessKey string) (context.Context, chan struct{}) {
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 	a.mu.Lock()
-	a.activeRuns[sessKey] = activeRun{cancel: cancel, ctx: ctx}
+	a.activeRuns[sessKey] = activeRun{cancel: cancel, ctx: ctx, done: done}
 	a.mu.Unlock()
-	return ctx
+	return ctx, done
 }
 
 // finishRun cleans up the active run entry only if it's still ours.
@@ -285,11 +296,13 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 	}
 
 	sessKey := frame.Session.Channel + "_" + frame.Session.ID
-	ctx := a.registerRun(sessKey)
+	ctx, done := a.registerRun(sessKey)
+	defer close(done)
 	defer a.finishRun(sessKey, ctx)
 
 	sess.appendTurn(Turn{Role: "user", Content: turnContent, TS: frame.TS, User: userName})
-	a.pendingImages = nil // reset for this message
+	sess.pendingImages = nil
+	sess.restartPending = false
 	a.sendPresence(frame.Session, "thinking")
 
 	if a.llm == nil {
@@ -307,14 +320,12 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 		}
 	}
 
-	// Wire reasoning callbacks for host LLM (Ollama chain-of-thought)
-	if a.hostLLM != nil {
-		a.hostLLM.onReasoning = func(text string) {
-			a.sendReasoning(frame.Session, text)
-		}
-		a.hostLLM.onReasoningDone = func() {
-			a.sendReasoningDone(frame.Session)
-		}
+	// Reasoning callbacks as closures — no shared state on hostLLM
+	onReasoning := func(text string) {
+		a.sendReasoning(frame.Session, text)
+	}
+	onReasoningDone := func() {
+		a.sendReasoningDone(frame.Session)
 	}
 
 	// Agentic loop: call LLM with streaming, execute tools, repeat
@@ -332,7 +343,7 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 			a.sendDelta(frame.Session, delta)
 		}
 
-		resp, err := a.llm.StreamChat(ctx, messages, a.allTools, onDelta)
+		resp, err := a.llm.StreamChat(ctx, messages, a.allTools, onDelta, onReasoning, onReasoningDone)
 		if err != nil {
 			if ctx.Err() != nil {
 				log.Printf("session %s: cancelled during LLM call", sessKey)
@@ -347,8 +358,8 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 
 		if len(resp.ToolCalls) == 0 {
 			text := fullText.String()
-			if len(a.pendingImages) > 0 {
-				a.sendDoneWithImages(frame.Session, text, a.pendingImages)
+			if len(sess.pendingImages) > 0 {
+				a.sendDoneWithImages(frame.Session, text, sess.pendingImages)
 			} else {
 				a.sendDone(frame.Session, text)
 			}
@@ -366,14 +377,14 @@ func (a *Agent) handleUserMessage(frame TetherFrame) {
 				return
 			}
 			a.sendPresence(frame.Session, fmt.Sprintf("tool: %s", tc.Name))
-			result := a.executeTool(tc.Name, tc.Input)
+			result := a.executeTool(tc.Name, tc.Input, sess)
 			log.Printf("tool %s: %d bytes result", tc.Name, len(result))
 			sess.appendTurn(Turn{Role: "tool", Content: result, TS: now(), ToolCallID: tc.ID})
 		}
 
 		// Handle self_restart: all tool results are written, now exit cleanly
-		if a.restartPending {
-			a.restartPending = false
+		if sess.restartPending {
+			sess.restartPending = false
 			msg := "Restarting to apply configuration changes..."
 			a.sendDone(frame.Session, msg)
 			sess.appendTurn(Turn{Role: "assistant", Content: msg, TS: now()})
@@ -461,6 +472,7 @@ You ARE the agent running inside the VM. Do not ask the user about "their setup"
 - IMPORTANT: Make services reboot-resilient. Your VM may be stopped and cold-booted on the next request. Write a proper shell script (with shebang, real newlines) at /workspace/.aegis/startup/app.start (chmod +x) to auto-launch your services on boot. Always do this when creating any long-running service.
 - If this is Alpine Linux (musl libc), Playwright/Puppeteer's bundled Chromium won't work. Use system Chromium instead: "apk add chromium" then set PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser before running Playwright.
 - Configuration file: /workspace/.aegis/agent.json. Use it to add MCP servers (under "mcp") or configure built-in tools (under "tools": {"tool_name": {"enabled": false}}). Call self_restart after editing to apply changes.
+- When downloading files, libraries, or assets: if a download fails, try at most 2 alternative URLs before giving up and telling the user. Do not spend more than 3 tool rounds on download retries. Move on or ask the user for help.
 
 ## Image handling
 When the user asks you to GENERATE an image (draw, create, make): use image_generate with a detailed prompt. The image is automatically attached to your response.

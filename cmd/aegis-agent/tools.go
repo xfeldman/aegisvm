@@ -313,7 +313,7 @@ var builtinTools = []Tool{
 }
 
 // executeTool dispatches a tool call to the appropriate handler.
-func (a *Agent) executeTool(name string, input json.RawMessage) string {
+func (a *Agent) executeTool(name string, input json.RawMessage, sess *Session) string {
 	switch name {
 	case "bash":
 		return toolBash(input)
@@ -350,13 +350,13 @@ func (a *Agent) executeTool(name string, input json.RawMessage) string {
 	case "self_info":
 		return a.toolSelfInfo(input)
 	case "self_restart":
-		return a.toolSelfRestart(input)
+		return a.toolSelfRestart(input, sess)
 	case "notify":
 		return a.toolNotify(input)
 	case "respond_with_image":
-		return a.toolRespondWithImage(input)
+		return a.toolRespondWithImage(input, sess)
 	case "image_generate":
-		return a.toolImageGenerate(input)
+		return a.toolImageGenerate(input, sess)
 	case "web_search":
 		return a.toolWebSearch(input)
 	case "image_search":
@@ -1101,7 +1101,7 @@ func stripHTML(s string) string {
 	return strings.TrimSpace(s)
 }
 
-func (a *Agent) toolImageGenerate(input json.RawMessage) string {
+func (a *Agent) toolImageGenerate(input json.RawMessage, sess *Session) string {
 	var params struct {
 		Prompt string `json:"prompt"`
 		Size   string `json:"size"`
@@ -1182,7 +1182,7 @@ func (a *Agent) toolImageGenerate(input json.RawMessage) string {
 		return jsonError(fmt.Sprintf("store image: %v", err))
 	}
 
-	a.pendingImages = append(a.pendingImages, ImageRef{
+	sess.pendingImages = append(sess.pendingImages, ImageRef{
 		MediaType: "image/png",
 		Blob:      key,
 		Size:      int64(len(imgData)),
@@ -1210,8 +1210,8 @@ func (a *Agent) toolSelfInfo(input json.RawMessage) string {
 	return string(data)
 }
 
-func (a *Agent) toolSelfRestart(input json.RawMessage) string {
-	a.restartPending = true
+func (a *Agent) toolSelfRestart(input json.RawMessage, sess *Session) string {
+	sess.restartPending = true
 	return jsonResult(map[string]interface{}{
 		"ok":      true,
 		"message": "Restart scheduled. It will happen after this response completes.",
@@ -1248,7 +1248,7 @@ func (a *Agent) toolNotify(input json.RawMessage) string {
 	})
 }
 
-func (a *Agent) toolRespondWithImage(input json.RawMessage) string {
+func (a *Agent) toolRespondWithImage(input json.RawMessage, sess *Session) string {
 	var params struct {
 		Path string `json:"path"`
 	}
@@ -1285,7 +1285,7 @@ func (a *Agent) toolRespondWithImage(input json.RawMessage) string {
 		return jsonError(fmt.Sprintf("store blob: %v", err))
 	}
 
-	a.pendingImages = append(a.pendingImages, ImageRef{
+	sess.pendingImages = append(sess.pendingImages, ImageRef{
 		MediaType: mediaType,
 		Blob:      key,
 		Size:      int64(len(data)),

@@ -18,7 +18,7 @@ type ClaudeLLM struct {
 	maxTokens int
 }
 
-func (c *ClaudeLLM) StreamChat(ctx context.Context, messages []Message, tools []Tool, onDelta func(string)) (*LLMResponse, error) {
+func (c *ClaudeLLM) StreamChat(ctx context.Context, messages []Message, tools []Tool, onDelta func(string), onReasoning func(string), onReasoningDone func()) (*LLMResponse, error) {
 	var system string
 	var chatMessages []interface{}
 

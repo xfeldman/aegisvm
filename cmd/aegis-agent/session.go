@@ -18,6 +18,11 @@ type Session struct {
 	key      string
 	filePath string
 	turns    []Turn
+
+	// Per-run state — reset at the start of each handleUserMessage.
+	// Only accessed by the single active goroutine for this session.
+	pendingImages  []ImageRef
+	restartPending bool
 }
 
 // Turn is a single conversation turn.

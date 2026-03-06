@@ -36,6 +36,7 @@ type Message struct {
 // LLM is the interface for LLM providers.
 type LLM interface {
 	// StreamChat calls the LLM with streaming. Text content is delivered via
-	// onDelta in real-time. Returns tool calls (if any) after the stream ends.
-	StreamChat(ctx context.Context, messages []Message, tools []Tool, onDelta func(string)) (*LLMResponse, error)
+	// onDelta in real-time. Reasoning tokens (if supported) via onReasoning/onReasoningDone.
+	// Returns tool calls (if any) after the stream ends.
+	StreamChat(ctx context.Context, messages []Message, tools []Tool, onDelta func(string), onReasoning func(string), onReasoningDone func()) (*LLMResponse, error)
 }
