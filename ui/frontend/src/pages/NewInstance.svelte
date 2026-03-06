@@ -16,6 +16,30 @@
   let workspace = $state('')
   let selectedSecrets: Record<string, boolean> = $state({})
   let ports: string[] = $state([''])
+  let kitDropdownOpen = $state(false)
+  let imageDropdownOpen = $state(false)
+
+  const popularImages = [
+    { ref: 'alpine:3.21', desc: 'Minimal Alpine Linux', size: '~4 MB', mem: 256 },
+    { ref: 'python:3.12-alpine', desc: 'Python 3.12', size: '~17 MB', mem: 512 },
+    { ref: 'python:3.13-alpine', desc: 'Python 3.13', size: '~18 MB', mem: 512 },
+    { ref: 'node:22-alpine', desc: 'Node.js 22 LTS', size: '~42 MB', mem: 512 },
+    { ref: 'node:23-alpine', desc: 'Node.js 23', size: '~44 MB', mem: 512 },
+    { ref: 'golang:1.23-alpine', desc: 'Go 1.23', size: '~85 MB', mem: 1024 },
+    { ref: 'ruby:3.3-alpine', desc: 'Ruby 3.3', size: '~28 MB', mem: 512 },
+    { ref: 'rust:1.82-alpine', desc: 'Rust 1.82', size: '~95 MB', mem: 1024 },
+    { ref: 'bun:1-alpine', desc: 'Bun runtime', size: '~36 MB', mem: 512 },
+    { ref: 'denoland/deno:alpine', desc: 'Deno runtime', size: '~42 MB', mem: 512 },
+  ]
+
+  let filteredImages = $derived(
+    image.trim()
+      ? popularImages.filter(img =>
+          img.ref.toLowerCase().includes(image.trim().toLowerCase()) ||
+          img.desc.toLowerCase().includes(image.trim().toLowerCase())
+        )
+      : popularImages
+  )
 
   let activeKit = $derived(kits.find(k => k.name === selectedKit))
 
@@ -103,9 +127,17 @@
     }
   }
 
+  function handleClickOutside(e: MouseEvent) {
+    const target = e.target as HTMLElement
+    if (!target.closest('.custom-select')) kitDropdownOpen = false
+    if (!target.closest('.image-field')) imageDropdownOpen = false
+  }
+
   onMount(() => {
     listKits().then(k => kits = k).catch(() => {})
     listSecrets().then(s => secrets = s).catch(() => {})
+    document.addEventListener('click', handleClickOutside)
+    return () => document.removeEventListener('click', handleClickOutside)
   })
 </script>
 
@@ -121,30 +153,57 @@
   <div class="form">
     <div class="field">
       <label for="name">Name</label>
-      <input id="name" type="text" bind:value={name} placeholder="my-instance (optional)" class:input-error={!!handleError} />
+      <input id="name" type="text" bind:value={name} placeholder="my-instance (optional)" class:input-error={!!handleError} autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" />
       {#if handleError}
         <span class="field-error">{handleError}</span>
       {/if}
     </div>
 
     <div class="field">
-      <label for="kit">Kit</label>
-      <select id="kit" bind:value={selectedKit} onchange={onKitChange}>
-        <option value="">None</option>
-        {#each kits as kit}
-          <option value={kit.name}>{kit.name}{kit.description ? ` — ${kit.description}` : ''}</option>
-        {/each}
-      </select>
+      <label>Kit</label>
+      <div class="custom-select">
+        <button class="custom-select-trigger" onclick={() => kitDropdownOpen = !kitDropdownOpen} type="button">
+          <span>{selectedKit || 'None'}</span>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><path d="M2.5 4.5L6 8l3.5-3.5z"/></svg>
+        </button>
+        {#if kitDropdownOpen}
+          <div class="custom-select-menu">
+            <button class="custom-select-option" class:selected={selectedKit === ''} onclick={() => { selectedKit = ''; kitDropdownOpen = false; onKitChange() }} type="button">None</button>
+            {#each kits as kit}
+              <button class="custom-select-option" class:selected={selectedKit === kit.name} onclick={() => { selectedKit = kit.name; kitDropdownOpen = false; onKitChange() }} type="button">
+                {kit.name}{kit.description ? ` — ${kit.description}` : ''}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
     </div>
 
     <div class="field">
       <label for="image">Image</label>
-      <input id="image" type="text" bind:value={image} placeholder="python:3.12-alpine" />
+      <div class="image-field">
+        <input id="image" type="text" bind:value={image} placeholder="python:3.12-alpine" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false"
+          onfocus={() => imageDropdownOpen = true} />
+        <button class="image-dropdown-toggle" onclick={() => imageDropdownOpen = !imageDropdownOpen} type="button">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><path d="M2.5 4.5L6 8l3.5-3.5z"/></svg>
+        </button>
+        {#if imageDropdownOpen && filteredImages.length > 0}
+          <div class="image-dropdown">
+            {#each filteredImages as img}
+              <button class="image-option" onclick={() => { image = img.ref; memory = img.mem; imageDropdownOpen = false }} type="button">
+                <span class="image-option-ref">{img.ref}</span>
+                <span class="image-option-desc">{img.desc}</span>
+                <span class="image-option-size">{img.size}</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
     </div>
 
     <div class="field">
       <label for="command">Command</label>
-      <input id="command" type="text" bind:value={command} placeholder="echo hello" disabled={!!activeKit?.defaults?.command} />
+      <input id="command" type="text" bind:value={command} placeholder="echo hello" disabled={!!activeKit?.defaults?.command} autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" />
       {#if activeKit?.defaults?.command}
         <span class="hint">Set by kit</span>
       {/if}
@@ -157,7 +216,7 @@
       </div>
       <div class="field">
         <label for="workspace">Workspace</label>
-        <input id="workspace" type="text" bind:value={workspace} placeholder="Auto-created if empty" />
+        <input id="workspace" type="text" bind:value={workspace} placeholder="Auto-created if empty" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" />
       </div>
     </div>
 
@@ -370,4 +429,95 @@
   }
   .btn-create:hover:not(:disabled) { background: var(--accent-hover); }
   .btn-create:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Custom select (kit dropdown) */
+  .custom-select { position: relative; }
+  .custom-select-trigger {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 7px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 13px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    text-align: left;
+  }
+  .custom-select-trigger:hover { border-color: var(--accent); }
+  .custom-select-trigger svg { color: var(--text-muted); flex-shrink: 0; }
+  .custom-select-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0; right: 0;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    z-index: 20;
+    overflow: hidden;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+  .custom-select-option {
+    display: block;
+    width: 100%;
+    padding: 7px 10px;
+    background: none;
+    border: none;
+    color: var(--text);
+    font-size: 13px;
+    font-family: var(--font-mono);
+    text-align: left;
+    cursor: pointer;
+  }
+  .custom-select-option:hover { background: rgba(255,255,255,0.05); }
+  .custom-select-option.selected { color: var(--accent); }
+
+  /* Image field with dropdown */
+  .image-field { position: relative; display: flex; }
+  .image-field input { flex: 1; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  .image-dropdown-toggle {
+    padding: 0 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-left: none;
+    border-radius: 0 var(--radius) var(--radius) 0;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+  }
+  .image-dropdown-toggle:hover { color: var(--text); }
+  .image-dropdown {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0; right: 0;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    z-index: 20;
+    overflow: hidden;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    max-height: 280px;
+    overflow-y: auto;
+  }
+  .image-option {
+    display: flex;
+    width: 100%;
+    padding: 7px 10px;
+    background: none;
+    border: none;
+    color: var(--text);
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+    gap: 8px;
+    align-items: baseline;
+  }
+  .image-option:hover { background: rgba(255,255,255,0.05); }
+  .image-option-ref { font-family: var(--font-mono); color: var(--text); }
+  .image-option-desc { font-size: 11px; color: var(--text-muted); flex: 1; }
+  .image-option-size { font-size: 11px; color: var(--text-muted); opacity: 0.6; white-space: nowrap; }
 </style>
