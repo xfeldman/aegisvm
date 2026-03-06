@@ -31,24 +31,43 @@ func countEstablishedTCP() int {
 	return count
 }
 
-// processUsedCPUTicks returns the total CPU ticks (utime + stime) for a process.
-// Returns 0 if the process doesn't exist or /proc is unavailable.
-// Caller should compute delta between samples to get actual CPU usage.
+// processUsedCPUTicks returns total CPU ticks used by the entire VM.
+// Since this is a single-purpose microVM, we use system-wide CPU from /proc/stat
+// rather than per-process stats. This correctly captures child processes
+// (bash tool calls, git clone, pip install, etc.) that would otherwise be missed.
+// Falls back to per-process stats if /proc/stat is unavailable.
 func processUsedCPUTicks(pid int) int64 {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	// Try system-wide CPU first — covers all processes in the VM
+	data, err := os.ReadFile("/proc/stat")
+	if err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(line, "cpu ") {
+				fields := strings.Fields(line)
+				// cpu user nice system idle iowait irq softirq steal
+				// Sum user + nice + system (fields 1-3) for active CPU
+				if len(fields) >= 4 {
+					var total int64
+					for _, f := range fields[1:4] {
+						v, _ := strconv.ParseInt(f, 10, 64)
+						total += v
+					}
+					return total
+				}
+			}
+		}
+	}
+
+	// Fallback: per-process stats
+	data, err = os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
 		return 0
 	}
-	// /proc/pid/stat format: pid (comm) state ... utime stime ...
-	// utime is field 14 (1-indexed), stime is field 15.
-	// Find the closing paren to skip the comm field (which can contain spaces).
 	s := string(data)
 	closeParen := strings.LastIndex(s, ")")
 	if closeParen < 0 || closeParen+2 >= len(s) {
 		return 0
 	}
 	fields := strings.Fields(s[closeParen+2:])
-	// After ")", fields[0]=state, fields[1]=ppid, ..., fields[11]=utime, fields[12]=stime
 	if len(fields) < 13 {
 		return 0
 	}
