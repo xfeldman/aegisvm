@@ -8,7 +8,7 @@
       "path": ".aegis/agent.json",
       "label": "Agent",
       "default": {
-        "model": "openai/gpt-4.1",
+        "model": "openai/gpt-5.4",
         "api_key_env": "OPENAI_API_KEY",
         "max_tokens": 4096,
         "tools": {

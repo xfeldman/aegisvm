@@ -18,7 +18,7 @@ type OpenAILLM struct {
 	maxTokens int
 }
 
-func (o *OpenAILLM) StreamChat(ctx context.Context, messages []Message, tools []Tool, onDelta func(string)) (*LLMResponse, error) {
+func (o *OpenAILLM) StreamChat(ctx context.Context, messages []Message, tools []Tool, onDelta func(string), onReasoning func(string), onReasoningDone func()) (*LLMResponse, error) {
 	var chatMessages []map[string]interface{}
 
 	for _, m := range messages {
@@ -103,7 +103,7 @@ func (o *OpenAILLM) StreamChat(ctx context.Context, messages []Message, tools []
 
 	model := o.model
 	if model == "" {
-		model = "gpt-5.2"
+		model = "gpt-5.4"
 	}
 	body := map[string]interface{}{
 		"model":    model,

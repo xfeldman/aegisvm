@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xfeldman/aegisvm/internal/blob"
 	"github.com/xfeldman/aegisvm/internal/config"
 	"github.com/xfeldman/aegisvm/internal/daemon"
 	"github.com/xfeldman/aegisvm/internal/kit"
@@ -84,6 +85,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /v1/instances/{id}/workspace/tree", s.handleWorkspaceTree)
 	s.mux.HandleFunc("GET /v1/instances/{id}/workspace", s.handleWorkspaceRead)
 	s.mux.HandleFunc("POST /v1/instances/{id}/workspace", s.handleWorkspaceWrite)
+	s.mux.HandleFunc("POST /v1/instances/{id}/blob", s.handleBlobUpload)
 
 	// Kit config file access (host-side, ~/.aegis/kits/{handle}/)
 	s.mux.HandleFunc("GET /v1/instances/{id}/kit-config", s.handleKitConfigRead)
@@ -1506,6 +1508,53 @@ func (s *Server) handleWorkspaceWrite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleBlobUpload accepts an image upload and stores it in the workspace blob store.
+// Returns the blob key for use in tether frame payloads.
+func (s *Server) handleBlobUpload(w http.ResponseWriter, r *http.Request) {
+	id := pathParam(r, "id")
+
+	inst := s.lifecycle.GetInstance(id)
+	if inst == nil {
+		inst = s.lifecycle.GetInstanceByHandle(id)
+	}
+	if inst == nil {
+		writeError(w, http.StatusNotFound, "instance not found")
+		return
+	}
+	if inst.WorkspacePath == "" {
+		writeError(w, http.StatusNotFound, "instance has no workspace")
+		return
+	}
+
+	data, err := io.ReadAll(io.LimitReader(r.Body, int64(blob.MaxImageBytes)+1))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "read body failed")
+		return
+	}
+	if len(data) > blob.MaxImageBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("image exceeds %d byte limit", blob.MaxImageBytes))
+		return
+	}
+
+	mediaType := r.Header.Get("Content-Type")
+	if mediaType == "" {
+		mediaType = "image/png"
+	}
+
+	store := blob.NewWorkspaceBlobStore(inst.WorkspacePath)
+	key, err := store.Put(data, mediaType)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("blob store: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"blob":       key,
+		"media_type": mediaType,
+		"size":       len(data),
+	})
 }
 
 // writeDefaultKitConfigs writes default config files from the kit manifest

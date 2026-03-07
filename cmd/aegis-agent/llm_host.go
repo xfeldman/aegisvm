@@ -22,9 +22,6 @@ type HostLLM struct {
 
 	mu      sync.Mutex
 	pending map[string]chan hostLLMFrame // req_id → channel
-
-	onReasoning     func(string) // called with reasoning text chunks
-	onReasoningDone func()       // called when reasoning→content transition
 }
 
 type hostLLMFrame struct {
@@ -34,7 +31,7 @@ type hostLLMFrame struct {
 	Error string `json:"error,omitempty"`
 }
 
-func (h *HostLLM) StreamChat(ctx context.Context, messages []Message, tools []Tool, onDelta func(string)) (*LLMResponse, error) {
+func (h *HostLLM) StreamChat(ctx context.Context, messages []Message, tools []Tool, onDelta func(string), onReasoning func(string), onReasoningDone func()) (*LLMResponse, error) {
 	reqID := fmt.Sprintf("llm-%d", time.Now().UnixNano())
 
 	// Register pending channel
@@ -195,13 +192,13 @@ func (h *HostLLM) StreamChat(ctx context.Context, messages []Message, tools []To
 				}
 
 				delta := event.Choices[0].Delta
-				if delta.Reasoning != "" && h.onReasoning != nil {
-					h.onReasoning(delta.Reasoning)
+				if delta.Reasoning != "" && onReasoning != nil {
+					onReasoning(delta.Reasoning)
 					wasReasoning = true
 				}
 				if delta.Content != "" {
-					if wasReasoning && h.onReasoningDone != nil {
-						h.onReasoningDone()
+					if wasReasoning && onReasoningDone != nil {
+						onReasoningDone()
 						wasReasoning = false
 					}
 					onDelta(delta.Content)

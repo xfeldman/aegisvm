@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
-  import { tetherSend, tetherPollBack, setTetherWatermark, openInBrowser, type TetherFrame } from '../lib/api'
+  import { tetherSend, tetherCancel, tetherPollBack, setTetherWatermark, openInBrowser, uploadBlob, type TetherFrame, type BlobRef } from '../lib/api'
   import { getChatState, initChatState, updateChatState, addToast, clearUnreadMessages, type ChatMessage } from '../lib/store.svelte'
   import { marked } from 'marked'
 
@@ -48,6 +48,9 @@
   let loadingMore = $state(false)
   let ready = $state(false)
   let lightboxSrc: string | null = $state(null)
+  let pendingFiles: File[] = $state([])
+  let pendingPreviews: string[] = $state([])
+  let uploading = $state(false)
 
   function openLightbox(src: string) { lightboxSrc = src }
   function closeLightbox() { lightboxSrc = null }
@@ -79,7 +82,8 @@
     for (const f of frames) {
       if (f.type === 'user.message') {
         const text = (f as any).content?.text || f.payload?.text || ''
-        if (text) msgs.push({ role: 'user', text, ts: f.ts || '' })
+        const images = f.payload?.images
+        if (text || images?.length) msgs.push({ role: 'user', text: text || '(image)', images, ts: f.ts || '' })
       } else if (f.type === 'assistant.done') {
         msgs.push({
           role: 'assistant',
@@ -126,7 +130,8 @@
     switch (frame.type) {
       case 'user.message': {
         const text = (frame as any).content?.text || frame.payload?.text || ''
-        if (text) messages.push({ role: 'user', text, ts: frame.ts || '' })
+        const images = frame.payload?.images
+        if (text || images?.length) messages.push({ role: 'user', text: text || '(image)', images, ts: frame.ts || '' })
         break
       }
       case 'status.presence':
@@ -230,25 +235,97 @@
 
   async function send() {
     const text = input.trim()
-    if (!text || disabled) return
+    if ((!text && pendingFiles.length === 0) || disabled) return
 
+    const filesToSend = [...pendingFiles]
+    const previewsToClean = [...pendingPreviews]
     input = ''
+    pendingFiles = []
+    pendingPreviews = []
 
-    // Add user message locally for instant display
+    // Add user message locally for instant display (with local previews)
     const { messages } = getChatState(instanceId)
-    updateChatState(instanceId, {
-      messages: [...messages, {
-        role: 'user',
-        text,
-        ts: new Date().toISOString(),
-      }],
-    })
+    const userMsg: ChatMessage = {
+      role: 'user',
+      text: text || (filesToSend.length > 0 ? '(image)' : ''),
+      ts: new Date().toISOString(),
+    }
+    if (previewsToClean.length > 0) {
+      userMsg.localImages = previewsToClean
+    }
+    updateChatState(instanceId, { messages: [...messages, userMsg] })
     scrollToBottom()
 
     try {
-      await tetherSend(instanceId, SESSION_ID, text)
+      // Upload images to blob store
+      let blobRefs: BlobRef[] | undefined
+      if (filesToSend.length > 0) {
+        uploading = true
+        blobRefs = []
+        for (const f of filesToSend) {
+          const ref = await uploadBlob(instanceId, f)
+          blobRefs.push(ref)
+        }
+        uploading = false
+      }
+      await tetherSend(instanceId, SESSION_ID, text, blobRefs)
     } catch (e) {
+      uploading = false
       addToast(`Send failed: ${e instanceof Error ? e.message : 'unknown'}`, 'error')
+    } finally {
+      previewsToClean.forEach(u => URL.revokeObjectURL(u))
+    }
+  }
+
+  const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
+
+  function addFiles(files: FileList | File[]) {
+    for (const f of files) {
+      if (!IMAGE_TYPES.includes(f.type)) continue
+      if (pendingFiles.length >= 4) break
+      pendingFiles = [...pendingFiles, f]
+      const url = URL.createObjectURL(f)
+      pendingPreviews = [...pendingPreviews, url]
+    }
+  }
+
+  function removeFile(idx: number) {
+    URL.revokeObjectURL(pendingPreviews[idx])
+    pendingFiles = pendingFiles.filter((_, i) => i !== idx)
+    pendingPreviews = pendingPreviews.filter((_, i) => i !== idx)
+  }
+
+  function onPaste(e: ClipboardEvent) {
+    const items = e.clipboardData?.items
+    if (!items) return
+    const images: File[] = []
+    for (const item of items) {
+      if (IMAGE_TYPES.includes(item.type)) {
+        const f = item.getAsFile()
+        if (f) images.push(f)
+      }
+    }
+    if (images.length > 0) {
+      e.preventDefault()
+      addFiles(images)
+    }
+  }
+
+  function onDrop(e: DragEvent) {
+    e.preventDefault()
+    if (e.dataTransfer?.files) addFiles(e.dataTransfer.files)
+  }
+
+  function onDragOver(e: DragEvent) {
+    e.preventDefault()
+  }
+
+  async function stop() {
+    try {
+      await tetherCancel(instanceId, SESSION_ID)
+      updateChatState(instanceId, { thinking: null })
+    } catch (e) {
+      addToast(`Cancel failed: ${e instanceof Error ? e.message : 'unknown'}`, 'error')
     }
   }
 
@@ -269,17 +346,26 @@
   }
 
   // On mount: load recent messages from the end (reverse), then connect stream.
-  // No full history replay — older messages load on scroll-to-top.
+  // If we already have state (tab switch), just reconnect the stream — don't wipe.
   onMount(() => {
     initChatState(instanceId)
 
     async function loadRecent() {
+      const existing = getChatState(instanceId)
+      if (existing.messages.length > 0) {
+        // State survived tab switch — just reconnect stream, don't reload
+        ready = true
+        await tick()
+        if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight
+        startStream()
+        return
+      }
+
       updateChatState(instanceId, { messages: [], cursor: 0, thinking: null })
 
       try {
         const result = await tetherPollBack(instanceId, SESSION_ID, Number.MAX_SAFE_INTEGER, 200)
         if (result.frames.length > 0) {
-          // Replay all frames to reconstruct exact state (including thinking, tool use, streaming)
           for (const frame of result.frames) {
             handleStreamFrame(frame)
           }
@@ -293,7 +379,6 @@
         }
         clearUnreadMessages(instanceId)
 
-        // Wait for DOM update, then wait for all images to load before scrolling
         await tick()
         if (messagesEl) {
           const imgs = messagesEl.querySelectorAll('img')
@@ -305,8 +390,6 @@
           messagesEl.scrollTop = messagesEl.scrollHeight
         }
         ready = true
-
-        // Connect to live stream for real-time frames
         startStream()
       } catch {
         ready = true
@@ -349,6 +432,15 @@
           <div class="message-text markdown">{@html renderMarkdown(msg.text)}{#if msg.streaming}<span class="cursor">|</span>{/if}</div>
         {:else}
           <div class="message-text">{msg.text}</div>
+          {#if msg.localImages && msg.localImages.length > 0}
+            <div class="message-images">
+              {#each msg.localImages as src}
+                <button class="image-btn" onclick={() => openLightbox(src)}>
+                  <img {src} alt="Attached" class="tether-image" />
+                </button>
+              {/each}
+            </div>
+          {/if}
         {/if}
         {#if msg.images && msg.images.length > 0}
           <div class="message-images">
@@ -369,17 +461,41 @@
       </div>
     {/if}
   </div>
-  <div class="input-bar">
-    <textarea
-      class="chat-input"
-      bind:value={input}
-      onkeydown={onKeydown}
-      oninput={autoResize}
-      placeholder={disabled ? 'Instance is disabled' : 'Message the agent...'}
-      {disabled}
-      rows="1"
-    ></textarea>
-    <button class="send-btn" onclick={send} disabled={disabled || !input.trim()}>Send</button>
+  <div class="input-bar" ondrop={onDrop} ondragover={onDragOver}>
+    {#if pendingPreviews.length > 0}
+      <div class="pending-images">
+        {#each pendingPreviews as src, idx}
+          <div class="pending-thumb">
+            <img {src} alt="Pending" />
+            <button class="pending-remove" onclick={() => removeFile(idx)}>&times;</button>
+          </div>
+        {/each}
+      </div>
+    {/if}
+    <div class="input-row">
+      <label class="attach-btn" class:disabled>
+        <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden
+          onchange={(e) => { if (e.currentTarget.files) addFiles(e.currentTarget.files); e.currentTarget.value = '' }} />
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+      </label>
+      <textarea
+        class="chat-input"
+        bind:value={input}
+        onkeydown={onKeydown}
+        oninput={autoResize}
+        onpaste={onPaste}
+        placeholder={disabled ? 'Instance is disabled' : 'Message the agent... (paste or drop images)'}
+        {disabled}
+        rows="1"
+      ></textarea>
+      {#if state.thinking}
+        <button class="stop-btn" onclick={stop}>Stop</button>
+      {:else}
+        <button class="send-btn" onclick={send} disabled={disabled || (!input.trim() && pendingFiles.length === 0) || uploading}>
+          {uploading ? '...' : 'Send'}
+        </button>
+      {/if}
+    </div>
   </div>
 </div>
 
@@ -644,11 +760,65 @@
 
   .input-bar {
     display: flex;
-    align-items: flex-end;
-    gap: 8px;
+    flex-direction: column;
     padding: 8px 12px;
     background: var(--bg-secondary);
     border-top: 1px solid var(--border);
+  }
+
+  .input-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+  }
+
+  .attach-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border-radius: var(--radius);
+    color: var(--text-muted);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .attach-btn:hover { color: var(--text); }
+  .attach-btn.disabled { opacity: 0.4; pointer-events: none; }
+
+  .pending-images {
+    display: flex;
+    gap: 6px;
+    padding: 6px 0;
+  }
+  .pending-thumb {
+    position: relative;
+    width: 48px;
+    height: 48px;
+  }
+  .pending-thumb img {
+    width: 48px;
+    height: 48px;
+    object-fit: cover;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+  }
+  .pending-remove {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--red, #e5534b);
+    color: #fff;
+    border: none;
+    font-size: 10px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
   }
 
   .chat-input {
@@ -690,5 +860,19 @@
   .send-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  .stop-btn {
+    padding: 8px 16px;
+    border-radius: var(--radius);
+    border: 1px solid var(--red, #e5534b);
+    background: transparent;
+    color: var(--red, #e5534b);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .stop-btn:hover {
+    background: rgba(229, 83, 75, 0.1);
   }
 </style>

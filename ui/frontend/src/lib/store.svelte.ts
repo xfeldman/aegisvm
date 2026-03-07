@@ -73,6 +73,7 @@ export interface ChatMessage {
   reasoning?: string        // accumulated reasoning text (chain-of-thought)
   reasoningDone?: boolean   // true when reasoning phase is over
   images?: { media_type: string; blob: string }[]
+  localImages?: string[]    // object URLs for user-attached images (display only)
   ts: string
   streaming?: boolean
 }
