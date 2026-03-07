@@ -259,15 +259,36 @@ export interface TetherPollResult {
   timed_out: boolean
 }
 
-export function tetherSend(id: string, sessionId: string, text: string): Promise<TetherSendResult> {
+export interface BlobRef {
+  blob: string
+  media_type: string
+  size: number
+}
+
+export async function uploadBlob(id: string, file: File): Promise<BlobRef> {
+  const data = await file.arrayBuffer()
+  const res = await fetch(`${BASE}/instances/${encodeURIComponent(id)}/blob`, {
+    method: 'POST',
+    headers: { 'Content-Type': file.type || 'image/png' },
+    body: data,
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export function tetherSend(id: string, sessionId: string, text: string, images?: BlobRef[]): Promise<TetherSendResult> {
   const msgId = `ui-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const payload: Record<string, unknown> = { text }
+  if (images && images.length > 0) {
+    payload.images = images
+  }
   const frame = {
     v: 1,
     type: 'user.message',
     ts: new Date().toISOString(),
     session: { channel: 'ui', id: sessionId },
     msg_id: msgId,
-    payload: { text },
+    payload,
   }
   return request<TetherSendResult>('POST', `/instances/${encodeURIComponent(id)}/tether`, frame)
 }
