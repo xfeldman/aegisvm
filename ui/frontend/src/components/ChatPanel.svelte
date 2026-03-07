@@ -345,21 +345,16 @@
     ta.style.height = Math.min(ta.scrollHeight, 72) + 'px' // 3 lines ≈ 72px
   }
 
-  // On mount: load recent messages from the end (reverse), then connect stream.
-  // If we already have state (tab switch), just reconnect the stream — don't wipe.
+  // On mount: always reload from tether (source of truth) but preserve any
+  // in-progress streaming message so tab switches don't lose partial responses.
   onMount(() => {
     initChatState(instanceId)
 
     async function loadRecent() {
+      // Save streaming state before reload
       const existing = getChatState(instanceId)
-      if (existing.messages.length > 0) {
-        // State survived tab switch — just reconnect stream, don't reload
-        ready = true
-        await tick()
-        if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight
-        startStream()
-        return
-      }
+      const streamingMsg = existing.messages.find(m => m.streaming)
+      const thinkingState = existing.thinking
 
       updateChatState(instanceId, { messages: [], cursor: 0, thinking: null })
 
@@ -378,6 +373,23 @@
           hasMore = false
         }
         clearUnreadMessages(instanceId)
+
+        // Restore in-progress streaming message if tether didn't have a done frame for it
+        if (streamingMsg) {
+          const { messages: reloaded } = getChatState(instanceId)
+          const lastMsg = reloaded[reloaded.length - 1]
+          // Only restore if the last message isn't already a complete assistant response
+          if (!lastMsg || lastMsg.role !== 'assistant' || lastMsg.streaming) {
+            // Replace the last streaming placeholder (if any) or append
+            const msgs = [...reloaded]
+            if (lastMsg?.streaming) {
+              msgs[msgs.length - 1] = streamingMsg
+            } else {
+              msgs.push(streamingMsg)
+            }
+            updateChatState(instanceId, { messages: msgs, thinking: thinkingState })
+          }
+        }
 
         await tick()
         if (messagesEl) {
