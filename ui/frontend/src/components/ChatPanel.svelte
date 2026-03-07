@@ -346,17 +346,26 @@
   }
 
   // On mount: load recent messages from the end (reverse), then connect stream.
-  // No full history replay — older messages load on scroll-to-top.
+  // If we already have state (tab switch), just reconnect the stream — don't wipe.
   onMount(() => {
     initChatState(instanceId)
 
     async function loadRecent() {
+      const existing = getChatState(instanceId)
+      if (existing.messages.length > 0) {
+        // State survived tab switch — just reconnect stream, don't reload
+        ready = true
+        await tick()
+        if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight
+        startStream()
+        return
+      }
+
       updateChatState(instanceId, { messages: [], cursor: 0, thinking: null })
 
       try {
         const result = await tetherPollBack(instanceId, SESSION_ID, Number.MAX_SAFE_INTEGER, 200)
         if (result.frames.length > 0) {
-          // Replay all frames to reconstruct exact state (including thinking, tool use, streaming)
           for (const frame of result.frames) {
             handleStreamFrame(frame)
           }
@@ -370,7 +379,6 @@
         }
         clearUnreadMessages(instanceId)
 
-        // Wait for DOM update, then wait for all images to load before scrolling
         await tick()
         if (messagesEl) {
           const imgs = messagesEl.querySelectorAll('img')
@@ -382,8 +390,6 @@
           messagesEl.scrollTop = messagesEl.scrollHeight
         }
         ready = true
-
-        // Connect to live stream for real-time frames
         startStream()
       } catch {
         ready = true
