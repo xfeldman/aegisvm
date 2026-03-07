@@ -95,12 +95,37 @@ code { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; font-siz
 .stat-label { font-size: 13px; color: var(--text-dim); }
 
 /* ── Screenshot ──────────────────────────────── */
-.screenshot-section { padding: 0 0 80px; }
+.screenshot-section { padding: 0 0 140px; }
+.screenshot-stack {
+  position: relative;
+  max-width: 900px;
+  margin: 0 auto;
+}
 .screenshot-img {
-  max-width: 900px; margin: 0 auto; display: block;
+  display: block;
   border-radius: var(--radius);
   box-shadow: 0 40px 80px rgba(0,0,0,0.4), 0 0 120px rgba(251,191,36,0.05);
-  width: 100%;
+}
+.screenshot-back {
+  width: 80%;
+}
+.screenshot-front {
+  position: absolute;
+  width: 75%;
+  right: -40px;
+  bottom: -60px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+}
+@media (max-width: 768px) {
+  .screenshot-stack { max-width: 100%; }
+  .screenshot-back { width: 100%; }
+  .screenshot-front {
+    position: relative;
+    width: 100%;
+    right: auto;
+    bottom: auto;
+    margin-top: 16px;
+  }
 }
 
 /* ── Sections ────────────────────────────────── */
